@@ -38,6 +38,32 @@ class EntryMetaFeatureMatrix:
     manifest: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class EntryMetaFeatureContext:
+    bar_time: Any
+    bar_index: int
+    strategy: str
+    direction: str
+    confidence: float
+    entry_price: float
+    indicators: dict[str, dict[str, Any]]
+    regime: str
+    session: str
+
+
+@dataclass(frozen=True)
+class EntryMetaFeatureRow:
+    values: np.ndarray
+    feature_keys: list[str]
+    bar_time: str
+    strategy: str
+    direction: str
+
+
+class EntryMetaFeatureBuildError(ValueError):
+    """Raised when a current entry cannot be converted into artifact features."""
+
+
 class EntryMetaFeatureBuilder:
     def __init__(
         self,
@@ -183,6 +209,89 @@ class EntryMetaFeatureBuilder:
         }
 
 
+class EntryMetaFeatureRowBuilder:
+    def __init__(
+        self,
+        *,
+        feature_keys: list[str],
+        category_mappings: dict[str, dict[str, float]],
+    ) -> None:
+        self._feature_keys = [str(key) for key in feature_keys]
+        self._category_mappings = {
+            category: {str(name): float(code) for name, code in mapping.items()}
+            for category, mapping in category_mappings.items()
+        }
+
+    def build(self, context: EntryMetaFeatureContext) -> EntryMetaFeatureRow:
+        strategy = _required_context_text(context.strategy, "strategy")
+        direction = _required_context_direction(context.direction)
+        confidence = _finite_context_float(context.confidence, "confidence")
+        entry_price = _positive_context_float(context.entry_price, "entry_price")
+        values = [
+            self._value_for_key(
+                key,
+                context,
+                strategy=strategy,
+                direction=direction,
+                confidence=confidence,
+                entry_price=entry_price,
+            )
+            for key in self._feature_keys
+        ]
+        return EntryMetaFeatureRow(
+            values=np.asarray(values, dtype=float),
+            feature_keys=list(self._feature_keys),
+            bar_time=_format_bar_time(context.bar_time),
+            strategy=strategy,
+            direction=direction,
+        )
+
+    def _value_for_key(
+        self,
+        key: str,
+        context: EntryMetaFeatureContext,
+        *,
+        strategy: str,
+        direction: str,
+        confidence: float,
+        entry_price: float,
+    ) -> float:
+        if key == "entry.confidence":
+            return confidence
+        if key == "entry.direction.buy":
+            return 1.0 if direction == "buy" else 0.0
+        if key == "entry.direction.sell":
+            return 1.0 if direction == "sell" else 0.0
+        if key == "entry.price":
+            return entry_price
+        if key == "entry.strategy_code":
+            return self._category_code("strategy", strategy)
+        if key == "matrix.regime_code":
+            return self._category_code("regime", _semantic_name(context.regime))
+        if key == "matrix.session_code":
+            return self._category_code("session", _semantic_name(context.session))
+        if key.startswith("indicator."):
+            return self._indicator_value(key, context.indicators)
+        raise EntryMetaFeatureBuildError(f"unsupported entry meta feature key {key}")
+
+    def _category_code(self, category: str, name: str) -> float:
+        mapping = self._category_mappings.get(category, {})
+        key = str(name)
+        if key not in mapping:
+            raise EntryMetaFeatureBuildError(f"unknown {category} category {key}")
+        return float(mapping[key])
+
+    def _indicator_value(self, key: str, indicators: dict[str, dict[str, Any]]) -> float:
+        parts = key.split(".", 2)
+        if len(parts) != 3:
+            raise EntryMetaFeatureBuildError(f"unsupported indicator feature key {key}")
+        _, indicator, field = parts
+        payload = indicators.get(indicator)
+        if not isinstance(payload, dict) or field not in payload:
+            raise EntryMetaFeatureBuildError(f"missing indicator {indicator}.{field}")
+        return _to_float(payload[field])
+
+
 def _validate_matrix_contract(matrix: Any) -> dict[str, Any]:
     required_fields = ["bar_times", "indicator_series", "regimes", "sessions"]
     for field in required_fields:
@@ -287,6 +396,40 @@ def _required_non_empty_string(trade: dict[str, Any], field: str, index: int) ->
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"sample {index} field {field} must be a non-empty string")
     return value.strip()
+
+
+def _required_context_text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise EntryMetaFeatureBuildError(
+            f"context field {field} must be a non-empty string"
+        )
+    return value.strip()
+
+
+def _required_context_direction(value: Any) -> str:
+    direction = _required_context_text(value, "direction").lower()
+    if direction not in {"buy", "sell"}:
+        raise EntryMetaFeatureBuildError("context field direction must be buy or sell")
+    return direction
+
+
+def _finite_context_float(value: Any, field: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise EntryMetaFeatureBuildError(
+            f"context field {field} must be finite"
+        ) from exc
+    if not math.isfinite(result):
+        raise EntryMetaFeatureBuildError(f"context field {field} must be finite")
+    return result
+
+
+def _positive_context_float(value: Any, field: str) -> float:
+    result = _finite_context_float(value, field)
+    if result <= 0.0:
+        raise EntryMetaFeatureBuildError(f"context field {field} must be > 0")
+    return result
 
 
 def _stable_codes(values: Any) -> dict[str, float]:

@@ -8,7 +8,12 @@ import numpy as np
 import pytest
 
 from src.research.entry_meta.dataset import EntryMetaDataset
-from src.research.entry_meta.features import EntryMetaFeatureBuilder
+from src.research.entry_meta.features import (
+    EntryMetaFeatureBuildError,
+    EntryMetaFeatureBuilder,
+    EntryMetaFeatureContext,
+    EntryMetaFeatureRowBuilder,
+)
 from src.research.entry_meta.labels import EntryMetaLabelBuilder
 
 
@@ -44,6 +49,87 @@ def _matrix() -> SimpleNamespace:
         regimes=[_Regime.RANGE, _Regime.TREND, _Regime.RANGE],
         sessions=["asia", "london", "asia"],
     )
+
+
+def _context() -> EntryMetaFeatureContext:
+    return EntryMetaFeatureContext(
+        bar_time=datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc),
+        bar_index=1,
+        strategy="breakout",
+        direction="buy",
+        confidence=0.75,
+        entry_price=1.2345,
+        indicators={"ema": {"value": 2.0}, "rsi": {"value": 50.0}},
+        regime="trend",
+        session="london",
+    )
+
+
+def test_feature_row_builder_matches_training_feature_order() -> None:
+    builder = EntryMetaFeatureRowBuilder(
+        feature_keys=[
+            "entry.confidence",
+            "entry.direction.buy",
+            "entry.direction.sell",
+            "entry.price",
+            "entry.strategy_code",
+            "indicator.ema.value",
+            "indicator.rsi.value",
+            "matrix.regime_code",
+            "matrix.session_code",
+        ],
+        category_mappings={
+            "strategy": {"breakout": 0.0, "mean_reversion": 1.0},
+            "regime": {"range": 0.0, "trend": 1.0},
+            "session": {"asia": 0.0, "london": 1.0},
+        },
+    )
+
+    row = builder.build(_context())
+
+    assert row.bar_time == "2026-01-01T00:05:00+00:00"
+    assert row.strategy == "breakout"
+    assert row.direction == "buy"
+    assert row.values.shape == (9,)
+    np.testing.assert_allclose(
+        row.values,
+        np.asarray([0.75, 1.0, 0.0, 1.2345, 0.0, 2.0, 50.0, 1.0, 1.0]),
+    )
+
+
+def test_feature_row_builder_rejects_unknown_category_without_implicit_code() -> None:
+    builder = EntryMetaFeatureRowBuilder(
+        feature_keys=["entry.strategy_code"],
+        category_mappings={
+            "strategy": {"breakout": 0.0},
+            "regime": {"trend": 0.0},
+            "session": {"london": 0.0},
+        },
+    )
+    context = EntryMetaFeatureContext(
+        bar_time="2026-01-01T00:05:00Z",
+        bar_index=1,
+        strategy="unknown",
+        direction="buy",
+        confidence=0.75,
+        entry_price=1.2345,
+        indicators={},
+        regime="trend",
+        session="london",
+    )
+
+    with pytest.raises(EntryMetaFeatureBuildError, match="unknown strategy category"):
+        builder.build(context)
+
+
+def test_feature_row_builder_rejects_missing_indicator_field() -> None:
+    builder = EntryMetaFeatureRowBuilder(
+        feature_keys=["indicator.atr14.atr"],
+        category_mappings={"strategy": {}, "regime": {}, "session": {}},
+    )
+
+    with pytest.raises(EntryMetaFeatureBuildError, match="missing indicator"):
+        builder.build(_context())
 
 
 def test_builds_entry_context_visible_indicators_and_codes_in_stable_order() -> None:
