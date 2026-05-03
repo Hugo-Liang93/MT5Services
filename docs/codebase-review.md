@@ -74,7 +74,8 @@
 - Backtest 验收限定在 Research + Backtest overlay：通过 `entry_meta_lab` 产出 artifact，通过 `backtest_runner --entry-meta-artifact/--entry-meta-mode/--entry-meta-threshold-grid` 做 shadow/filter，对外用 `entry_meta_overlay_report` 汇总验收。
 - 职责边界要求保持公开端口：Backtest 侧通过 `entry_meta_overlay` 注入，并用 `record_blocked_entry()` 写出 blocked entry 事件；报告消费 `execution_summary.blocked_entry_events` 与 baseline `raw_results.trades` 做 `blocked_trade_attribution`，不探测私有字段。验收必须检查是否挡掉大盈利单，防止只按交易数下降误判过滤有效。
 - 2026-05-03：Entry Meta overlay 增加动态打分端口。职责边界：training 产出 JSON-native scorer payload，feature row builder 负责当前 entry 特征同构，overlay 只做 lookup/dynamic score/filter/report。动态失败默认放行并记录，不进入 demo/live。
-- 已知限制：session 无法从当前 SessionFilter 判定时会写为 `unknown`；pending-entry 当前仍在 signal 产生时用 signal bar/time/close 构建 `feature_context` 并打分，不会等到后续 fill time/price 重新打分。
+- 2026-05-03：Entry Meta backtest session context 已与策略 session 过滤职责拆分；即使未配置 `strategy_sessions`，也会从 `bar.time` 推导 `asia/london/new_york/off_hours`，避免动态 scorer 因默认 `unknown` 降低覆盖率。`unknown` 仅保留为 resolver 失败兜底并继续进入 overlay coverage report。
+- 已知限制：pending-entry 当前仍在 signal 产生时用 signal bar/time/close 构建 `feature_context` 并打分，不会等到后续 fill time/price 重新打分。该问题属于入场评价时点变更，应另行设计。
 
 ---
 
