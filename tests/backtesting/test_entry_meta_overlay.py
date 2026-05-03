@@ -318,6 +318,38 @@ def test_process_decision_records_entry_meta_blocked_event_before_entry() -> Non
     assert overlay.report()["blocked"] == 1
 
 
+def test_process_decision_passes_entry_meta_feature_context() -> None:
+    captured: list[object] = []
+    entry_meta_overlay = _EntryMetaOverlayCapturingContext(captured)
+    engine = _ProcessDecisionEngine(
+        state_edge_overlay=None,
+        entry_meta_overlay=entry_meta_overlay,
+        rejections=[],
+        blocked_events=[],
+    )
+
+    process_decision(
+        engine,
+        _decision(),
+        _bar(),
+        1,
+        {"atr14": {"atr": 0.5}},
+        "trend",
+        entry_session="london",
+    )
+
+    context = captured[0]
+    assert context.bar_time == _bar().time
+    assert context.bar_index == 1
+    assert context.strategy == "breakout"
+    assert context.direction == "buy"
+    assert context.confidence == 0.9
+    assert context.entry_price == 1.0
+    assert context.indicators == {"atr14": {"atr": 0.5}}
+    assert context.regime == "trend"
+    assert context.session == "london"
+
+
 def test_backtest_engine_entry_meta_overlay_report_uses_public_overlay_report() -> None:
     overlay = EntryMetaBacktestOverlay(_artifact(), mode="shadow")
     engine = BacktestEngine.__new__(BacktestEngine)
@@ -499,14 +531,40 @@ class _EntryMetaOverlayStub:
         direction: str,
         *,
         confidence: float = 0.0,
+        feature_context=None,
     ) -> SimpleNamespace:
-        del bar_time, strategy, direction, confidence
+        del bar_time, strategy, direction, confidence, feature_context
         self.calls += 1
         return SimpleNamespace(
             allowed=self._allowed,
             reason="allowed" if self._allowed else "entry_meta_test_block",
             take_entry_prob=0.1,
             block_entry_prob=0.9,
+            threshold=0.65,
+            prediction=None,
+        )
+
+
+class _EntryMetaOverlayCapturingContext:
+    def __init__(self, captured: list[object]) -> None:
+        self._captured = captured
+
+    def evaluate(
+        self,
+        bar_time: datetime,
+        strategy: str,
+        direction: str,
+        *,
+        confidence: float = 0.0,
+        feature_context=None,
+    ) -> SimpleNamespace:
+        del bar_time, strategy, direction, confidence
+        self._captured.append(feature_context)
+        return SimpleNamespace(
+            allowed=False,
+            reason="entry_meta_test_block",
+            take_entry_prob=0.9,
+            block_entry_prob=0.1,
             threshold=0.65,
             prediction=None,
         )

@@ -9,6 +9,7 @@ from src.signals.confidence import apply_intrabar_decay
 from src.signals.evaluation.regime import RegimeType
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalDecision
+from src.research.entry_meta.features import EntryMetaFeatureContext
 from src.trading.execution.sizing import RegimeSizing, compute_trade_params
 
 from ..models import SignalEvaluation
@@ -224,13 +225,36 @@ def _entry_meta_block_event(
     }
 
 
+def _entry_meta_feature_context(
+    decision: SignalDecision,
+    bar: OHLC,
+    bar_index: int,
+    indicators: Dict[str, Dict[str, Any]],
+    regime: RegimeType | str,
+    entry_session: str,
+) -> EntryMetaFeatureContext:
+    return EntryMetaFeatureContext(
+        bar_time=bar.time,
+        bar_index=int(bar_index),
+        strategy=str(decision.strategy),
+        direction=str(decision.direction),
+        confidence=float(decision.confidence),
+        entry_price=float(bar.close),
+        indicators=dict(indicators),
+        regime=str(getattr(regime, "value", regime)),
+        session=str(entry_session or "unknown"),
+    )
+
+
 def process_decision(
     engine: "BacktestEngine",
     decision: SignalDecision,
     bar: OHLC,
     bar_index: int,
     indicators: Dict[str, Dict[str, Any]],
-    regime: RegimeType,
+    regime: RegimeType | str,
+    *,
+    entry_session: str = "unknown",
 ) -> None:
     if decision.direction not in ("buy", "sell"):
         if engine._config.enable_state_machine:
@@ -298,6 +322,14 @@ def process_decision(
             decision.strategy,
             decision.direction,
             confidence=decision.confidence,
+            feature_context=_entry_meta_feature_context(
+                decision,
+                bar,
+                bar_index,
+                indicators,
+                regime,
+                entry_session,
+            ),
         )
         if not verdict.allowed:
             engine.record_execution_rejection("entry_meta_filter")

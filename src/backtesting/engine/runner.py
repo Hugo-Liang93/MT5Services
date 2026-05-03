@@ -991,8 +991,19 @@ class BacktestEngine:
                         bar.time,
                     ):
                         continue
+                entry_session = "unknown"
+                if self._session_filter is not None:
+                    sessions = self._session_filter.current_sessions(bar.time)
+                    if sessions:
+                        entry_session = str(sessions[0])
                 _process_decision_helper(
-                    self, decision, bar, bar_index, indicators, regime
+                    self,
+                    decision,
+                    bar,
+                    bar_index,
+                    indicators,
+                    regime,
+                    entry_session=entry_session,
                 )
 
             # 9. 收集本 bar 的策略方向（供下一 bar 的 Chandelier 信号反转检查）
