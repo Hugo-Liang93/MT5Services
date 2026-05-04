@@ -37,22 +37,13 @@ src/signals/
 │   └── wal_queue.py           # WAL 持久化信号队列
 ├── strategies/
 │   ├── base.py                # SignalStrategy Protocol + TimeframeScaler + get_tf_param()
-│   ├── catalog.py             # build_named_strategy_catalog() (12 个结构化策略类，14 个注册实例 — trend_continuation 衍生 2 个 H4 变体)
+│   ├── catalog.py             # build_named_strategy_catalog() (当前注册 structured_micro_momentum + structured_price_action)
 │   ├── structured/            # 结构化策略 (Why/When/Where 三层 + _entry_spec 入场规格)
 │   │   ├── base.py            # StructuredStrategyBase
-│   │   ├── trend_continuation.py        # default + structured_trend_h4 + structured_trend_h4_momentum
-│   │   ├── sweep_reversal.py
-│   │   ├── breakout_follow.py
-│   │   ├── range_reversion.py
-│   │   ├── session_breakout.py          # 冻结
-│   │   ├── trendline_touch.py
-│   │   ├── lowbar_entry.py              # 冻结
-│   │   ├── pullback_window.py
-│   │   ├── open_range_breakout.py
-│   │   ├── price_action.py
-│   │   ├── regime_exhaustion.py
-│   │   ├── strong_trend_follow.py
-│   │   ├── trendline_utils.py # 趋势线检测纯函数
+│   │   ├── micro_momentum.py  # M1/M5 confirmed-bar 高频原型
+│   │   ├── price_action_m15.py
+│   │   ├── mined_rule.py
+│   │   ├── mined_rule_loader.py
 │   │   └── checks.py         # 通用检查工具函数集 (HTF/ADX/RSI/Bar/Volume 纯函数)
 │   ├── adapters.py            # UnifiedIndicatorSourceAdapter
 │   ├── htf_cache.py           # HTFStateCache
@@ -204,18 +195,31 @@ def evaluate(self, context: SignalContext) -> SignalDecision:
 | 均值回归 | 0.20–0.30 | 1.00 | 0.30–0.40 | 0.60 |
 | 突破/波动率 | 0.30–0.90 | 0.15–0.55 | 1.00 | 0.45–0.65 |
 
-### 3.4 新增步骤（结构化策略）
+### 3.4 当前 M1/M5 高频主线
+
+`structured_micro_momentum` 是当前 M1/M5 日内高频原型：
+
+- 输入：`bar_stats20`、`price_struct20`、`atr14`、`boll20`、`keltner20`、`adx14`、`volume_ratio20`
+- scope：仅 `confirmed`，即 M1/M5 收盘 bar 触发
+- 输出：标准 `SignalDecision` + `ENTRY_INTENT` + `exit_spec`，入场由 `entry_policy.ini` 映射到 `market`
+- deployment：`demo_validation`，`locked_timeframes=M1,M5`，不具备 live 执行资格
+- tick：不进入交易触发链路，仅作为后续 spread/slippage 与 tick-derived feature 数据资产
+
+目标频率门槛是 `>= 1 trade/day`，目标区间 `3-10 trades/day`；PF 先过 `1.0` 才继续 demo，对 demo 晋级 `active_guarded` 的目标是 `>= 1.2`。
+
+### 3.5 新增步骤（结构化策略）
 
 1. `src/signals/strategies/structured/` 新建文件，继承 `StructuredStrategyBase`
 2. 实现 `_why()` + `_when()`（硬门控），可选 `_where()` + `_volume_bonus()`（软门控）
-3. 实现 `_entry_spec()`（入场规格：market/limit/stop + 入场价 + zone_atr）
+3. 实现 `_exit_spec()`，策略不再实现入场；入场由 `src/trading/entry_policy/` 按 `(strategy, timeframe)` 决定
 4. `src/signals/strategies/structured/__init__.py` 导出
 5. `src/signals/strategies/catalog.py` 注册
-6. `signal.ini` + `signal.local.ini` 的 `[strategy_timeframes]` **必须同时添加**
-7. `tests/signals/` 添加测试
-8. 横切关注点（performance/calibrator）通过装饰器接入，**不在策略内部重复实现**
+6. `signal.ini` 增加 `[strategy_timeframes]` 与 `[strategy_deployment.<strategy>]`；本机账户启用写 `signal.local.ini`
+7. `entry_policy.ini` 增加 strategy → policy 映射
+8. `tests/signals/` 与必要配置测试添加覆盖
+9. 横切关注点（performance/calibrator）通过装饰器接入，**不在策略内部重复实现**
 
-### 3.5 Intrabar 决策
+### 3.6 Intrabar 决策
 
 ```
 新策略依赖"盘中实时状态"?
@@ -231,7 +235,7 @@ def evaluate(self, context: SignalContext) -> SignalDecision:
 
 Intrabar 指标集合由策略 `preferred_scopes` + `required_indicators` 在启动时**自动推导**，无需手动配置。
 
-### 3.6 Intrabar 指标自动推导机制
+### 3.7 Intrabar 指标自动推导机制
 
 ```
 intrabar 指标集合 = 所有满足以下条件的指标并集：
@@ -244,18 +248,9 @@ intrabar 指标集合 = 所有满足以下条件的指标并集：
     → indicator manager 的 intrabar pipeline 仅计算该集合中的指标
 ```
 
-**当前自动推导结果**（来自 `preferred_scopes` 含 "intrabar" 的策略）：
+**当前自动推导结果**：空集合。`structured_micro_momentum` 与 `structured_price_action` 都是 confirmed-only 策略，`config/signal.ini [intrabar_trading].enabled_strategies` 也保持为空。intrabar 仅作为后续增强支线，不能替代 M1/M5 confirmed 主线。
 
-| 指标 | 来源策略 | 盘中语义 |
-|------|---------|---------|
-| `rsi14` | structured_range_reversion | 超买超卖是实时状态，盘中触极值即预警 |
-| `atr14` | structured_range_reversion | ATR 变化缓慢，盘中值与收盘差距极小 |
-| `adx14` | structured_range_reversion | ADX 变化缓慢 |
-| `boll20` | structured_range_reversion | 盘中触及通道边界即可预警 |
-
-当前仅 `structured_range_reversion` 支持 intrabar scope。其余策略仅在 confirmed 链路评估。
-
-### 3.7 指标语义分析（intrabar 适用性判断依据）
+### 3.8 指标语义分析（intrabar 适用性判断依据）
 
 | 指标类别 | 代表指标 | 盘中语义 | 适合 intrabar |
 |---------|---------|---------|:------------:|
@@ -268,7 +263,7 @@ intrabar 指标集合 = 所有满足以下条件的指标并集：
 | 趋势强度（ADX） | adx14 | ADX 变化缓慢，盘中值与收盘值差距极小，可信 | **Yes** |
 | 波动率基准（ATR） | atr14 | 消费方（sizing/fake_breakout）全在 confirmed 时执行；keltner20 内部自行计算 ATR | **No** |
 
-### 3.8 策略 scope 经验判断表
+### 3.9 策略 scope 经验判断表
 
 | 策略类型 | preferred_scopes | 代表指标 | 原因 |
 |---------|:---------------:|---------|------|
@@ -282,18 +277,18 @@ intrabar 指标集合 = 所有满足以下条件的指标并集：
 | **Keltner 挤压** | **intrabar + confirmed** | boll20/keltner20 | BB 完全在 KC 内是实时状态 |
 | Donchian 突破（需站稳） | confirmed | donchian20 | 需收盘确认站稳通道外，防假突破 |
 
-### 3.9 TFParamResolver — Per-TF 策略参数
+### 3.10 TFParamResolver — Per-TF 策略参数
 
 策略参数按时间框架独立配置。查找优先级：`[strategy_params.<TF>]` → `[strategy_params]` → 策略代码 default。
 
 ```ini
 # 全局默认（所有 TF 兜底）
 [strategy_params]
-structured_range_reversion__some_param = 0.5
+structured_micro_momentum__min_volume_ratio = 1.15
 
 # M15 特化
 [strategy_params.M15]
-structured_range_reversion__some_param = 0.4
+structured_micro_momentum__min_volume_ratio = 1.25
 ```
 
 **键格式**：双下划线 `__` 分隔策略名和参数名。策略中通过 `get_tf_param(self, "overbought", context.timeframe, default)` 查表。

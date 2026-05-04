@@ -5,6 +5,16 @@
 （1+ trades/day 起步）。本文盘点当前框架对高频交易的支撑度、关键 gap、与
 **为高频策略落地必须先解决的基础设施先决条件**。
 
+## 2026-05-04 Goal v1 决策更新
+
+本轮实现把"高频"收敛为个人可实盘验证的 M1/M5 日内高频，不做 tick scalping：
+
+- 交易主线：M1/M5 confirmed bar → indicators → `structured_micro_momentum` → EntryPolicy market → risk gates → execution intent
+- intrabar：保留为空白增强支线；`enabled_strategies` 不再引用已删除策略
+- tick：定义为数据资产，用于后续 spread/slippage 与 tick-derived feature；本轮不新增 tick-to-order 接口
+- deployment：`structured_micro_momentum` 进入 `demo_validation`，只锁定 M1/M5 + london/new_york
+- 风控：demo/live profile 分别在 `config/instances/demo-main/risk.ini`、`config/instances/live-main/risk.ini` 显式声明频率、仓位、手数、日亏损和 margin guard
+
 ## 评估维度
 
 按数据 → 信号 → 执行 → 过滤 → 风控 → 延迟 → 回测真实度 → 持仓管理 → 可观测性
@@ -17,14 +27,14 @@
 | 能力 | 当前状态 | High-Freq 适配度 | Gap |
 |---|---|---|---|
 | OHLC M1/M5/M15/M30/H1/H4 | ✅ TimescaleDB hypertable | ✅ | — |
-| Tick / L1 quote stream | ❌ 不存储 | ❌ | broker MT5 API 不便取 tick；如要做 sub-bar 策略需自建 ticks 表 + ingestor |
+| Tick / L1 quote stream | 数据资产，不进入触发链路 | ⚠️ | 本轮不新增 tick-to-order；后续只用于 spread/slippage 建模和 tick-derived 特征 |
 | L2 / DOM | ❌ MT5 不开放 | ❌ | broker 限制，无解 |
 | 跨品种 (DXY / 10Y / SPX) | ❌ 仅 XAUUSD | ❌ | 数据库 ingestor 改动 + symbol_table 扩展 |
 | 历史长度 | 1y M15 / 1.1y H4 | ⚠️ | 高频策略要 walk-forward 验证至少需 2-3 年 |
 | Volume 数据 | ✅ tick volume on bars | ✅ | XAUUSD 是 tick volume，非真实 volume |
 | 经济日历 | ✅ EconomicCalendarService | ✅ | high-freq 策略对 news event 极敏感，已有 |
 
-**结论**：bar-level (M5+) 已够用；tick / DOM / 跨品种均缺，意味着**真正的微观结构高频策略不可做**——可做的是"M5 bar-driven 高频"。
+**结论**：M1/M5 bar-level 已作为个人日内高频 v1 主线；tick / DOM 不作为触发事实源，意味着**真正的微观结构高频策略不在本轮范围**。
 
 ---
 
@@ -38,7 +48,7 @@
 | Event-driven evaluation | ⚠️ confirmed 是 bar close 触发，intrabar 是子 TF close | ⚠️ | 最低延迟 = 子 TF bar 周期（M1=1min） |
 | Indicator pipeline 性能 | ⚠️ 35 indicators × incremental compute | ⚠️ | M5 上每 bar 5min 重算 35 个 indicator，CPU bound 可能 |
 
-**结论**：M5 bar-driven 高频可行，但需要确认 indicator pipeline 在 M5 / M1 频次下的 CPU 开销。Intrabar 链路若要用，需要降低 `min_stable_bars` 到 1（牺牲稳定性换响应）。
+**结论**：M1/M5 confirmed-bar 高频可行，但需要确认 indicator pipeline 在 M5 / M1 频次下的 CPU 开销。Intrabar 链路若要用，必须先显式声明策略 scope 与白名单，再跑 `replay_intrabar` 验收。
 
 ---
 
@@ -85,7 +95,7 @@
 | IntrabarTradeGuard | ✅ | ✅ |
 | RegimeSizing (TF 差异化) | ✅ | ✅ |
 
-**关键 Gap**：`TradeFrequency` rule 默认 1 trade/min — 真正 high-freq (5+/min) 会被它拦。需要**调高 frequency cap 或改成 per-strategy/per-symbol cap**。
+**本轮处理**：不为制造频率放宽风控。`demo-main` 使用 `max_trades_per_day=20`、`max_trades_per_hour=4`、`max_positions_per_symbol=3`、`max_volume_per_symbol=0.03`；`live-main` 使用更窄的 active_guarded profile。quote freshness、spread、daily loss、margin guard 仍是硬门禁。
 
 ---
 
@@ -154,26 +164,29 @@
 ## 综合 Gap 优先级（高频前必须解决）
 
 ### P0（不解决就无法可信跑高频）
-1. **EntryMetaOverlay live runtime 接入**
+1. **M1/M5 confirmed-bar 原型与验收**
+   - `structured_micro_momentum` 已接入 catalog / deployment / EntryPolicy / demo risk profile
+   - 仍必须跑 1y/forward backtest，证明 `>= 1 trade/day` 且 PF 先过 1.0
+2. **EntryMetaOverlay live runtime 接入**
    - artifact 已有 `runtime_safe` scope + `dynamic_scoring_supported=true`
    - 需要：`SignalRuntime` 注入 overlay 端口 + per-decision 调 `evaluate(...)` + block 时记录 metadata
    - 工作量：~2-3 天
-2. **TradeFrequency rule 调整**
-   - 当前默认 1 trade/min — 高频上限就是它
-   - 需要：per-strategy / per-symbol cap，以及 high-freq 策略明确白名单
 3. **Spread 时序模型 (回测真实度)**
    - 当前 session-aware 固定 spread 不够；高频需要 spread spike 模拟
-   - 数据来源：demo 跑积累 spread tick history → 离线建模
+   - 数据来源：demo 跑积累 spread/tick history → 离线建模
+4. **TradeFrequency profile 审计**
+   - 本轮已有 demo/live 实例级 cap；若真实交易被频率规则误挡，再评估 per-strategy / per-symbol cap
+   - 不能通过关闭 daily loss、spread、margin guard 来制造交易频率
 
 ### P1（有就更好，没有也能起跑）
-4. **End-to-end latency tracking**：埋点 + Prometheus，先看 baseline
-5. **`max_concurrent_positions_per_symbol` 放开到 3-5**
-6. **HealthMonitor ring_size 提到 28800 (=24h × 12 bar/h × 100)**
+5. **End-to-end latency tracking**：埋点 + Prometheus，先看 baseline
+6. **`max_concurrent_positions_per_symbol` 放开到 3-5**
+7. **HealthMonitor ring_size 提到 28800 (=24h × 12 bar/h × 100)**
 
 ### P2（高频策略稳定后再做）
-7. **DOM / tick ingestor**（基础设施重投入）
-8. **Slippage 时序模型**
-9. **Position scaling (加减仓)**
+8. **DOM / tick ingestor**（基础设施重投入）
+9. **Slippage 时序模型**
+10. **Position scaling (加减仓)**
 
 ---
 
@@ -181,28 +194,24 @@
 
 ### 做高频策略前的 3 个先决条件
 
-**先决条件 1 — EntryMeta live 接入（P0）**
+**先决条件 1 — M1/M5 原型先过 baseline（P0）**
+不先证明 `structured_micro_momentum` 至少能达到 1 trade/day 且 PF > 1.0，后续 demo/live 都没有统计意义。
+
+**先决条件 2 — EntryMeta live 接入（P0）**
 没有它，高频原始策略 PF 1.1 上 live 就是亏。必须先做这个。
 
-**先决条件 2 — TradeFrequency cap 调整（P0）**
-否则任何 5+ trade/day 的策略在风控层就被拦。
+**先决条件 3 — 性能与风控基线（P0）**
+至少跑 `intent_latency_probe` 与 `storage_saturation`，确认 execution intent latency 与 storage queue saturation 没有压垮 M1/M5 主线。
 
-**先决条件 3 — 1 个高频策略原型（DDV: design / dev / verify）**
-- design：选 1-2 个 alpha 来源（推荐：volume spike + bar 极端，或 squeeze breakout）
-- dev：写策略 + tests
-- verify：跑 1y backtest，频次 ≥ 1/day + PF ≥ 1.0 才算"通过原型"
-- 不通过 → 重新设计 alpha；通过 → 跑 EntryMeta lab 训练 ML 过滤
+若 baseline 不通过 → 回到 alpha 设计；通过 → 跑 EntryMeta lab 训练 ML 过滤，再进入 demo 真实交易对账。
 
 ### 建议路径
 
 ```
-Week 1-2: 写第一条高频策略原型 (M5 / M15)
-          + 先决条件 1 (EntryMeta live runtime)
-Week 2-3: 跑 baseline backtest → entry_meta_lab 训练
-          + 先决条件 2 (TradeFrequency cap)
-Week 3-4: forward shadow on demo
-          + 先决条件 3 落地
-Month 2+: 满足 PLAN.md gate (PF≥1.20, n≥80, DD≤15%) → demo_validation → active_guarded
+Week 1:   structured_micro_momentum M1/M5 baseline backtest
+Week 2:   intent/storage 性能基线 + entry_meta_lab 训练
+Week 3-4: demo_validation 积累 20 笔真实交易
+Month 2+: demo_vs_backtest 通过后，再进入 active_guarded 小资金 live
 ```
 
 ### 不建议路径

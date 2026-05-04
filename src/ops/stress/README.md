@@ -21,8 +21,8 @@ MT5 下单往返 + pre-trade checks 实际耗时多少？
 **输出**：publish→claim / claim→complete / publish→complete 三段延迟 p50/p95/p99/max。
 
 ```bash
-python -m src.ops.stress.intent_latency_probe --days 3
-python -m src.ops.stress.intent_latency_probe --days 7 --strategy breakout_follow --json
+python -m src.ops.stress.intent_latency_probe --environment live --days 3
+python -m src.ops.stress.intent_latency_probe --environment live --days 7 --strategy structured_micro_momentum --json
 ```
 
 **如何读数**：
@@ -41,9 +41,9 @@ python -m src.ops.stress.intent_latency_probe --days 7 --strategy breakout_follo
 **做法**：按 (symbol, parent_tf, strategy) 分组、时序排序，重放到 `IntrabarTradeCoordinator`，扫描 N ∈ {2, 3, 4} 看 armed 次数和首次 armed 延迟。
 
 ```bash
-python -m src.ops.stress.replay_intrabar --days 7
-python -m src.ops.stress.replay_intrabar --days 14 --tf H1
-python -m src.ops.stress.replay_intrabar --strategy breakout_follow --sweep 2,3,4,5
+python -m src.ops.stress.replay_intrabar --environment live --tf M5 --days 7
+python -m src.ops.stress.replay_intrabar --environment live --days 14 --tf H1
+python -m src.ops.stress.replay_intrabar --environment live --strategy structured_micro_momentum --sweep 2,3,4,5
 ```
 
 **如何读数**：
@@ -52,6 +52,7 @@ python -m src.ops.stress.replay_intrabar --strategy breakout_follow --sweep 2,3,
 - 结合回测 armed 信号的后续胜率（另做），决定 N 的性价比
 
 **限制**：历史 preview 事件在评估时的 scope 可能与当前不同；若 intrabar_trading 刚开启不久历史数据稀疏。
+M1/M5 v1 高频主线不依赖 intrabar；只有重新启用 intrabar 白名单后才需要把该脚本作为必跑验收。
 
 ---
 

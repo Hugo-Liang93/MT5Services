@@ -29,6 +29,7 @@ config/
 - 根目录 `config/mt5.ini` 不再维护多账户字典，也不再支持 `default_account`。
 - `market.ini` 只负责 HTTP 暴露参数；`worker` 默认绑定 `127.0.0.1`，并建议关闭 docs/redoc。
 - `risk.ini` 是唯一允许账户级实例覆盖的业务配置文件；用于每个账户自己的风控阈值。
+- `demo-main/risk.ini` 与 `live-main/risk.ini` 现在分别承载 M1/M5 高频 `demo_validation` 与 `active_guarded` profile：交易频率、单品种仓位数、单品种手数、日亏损、margin guard 必须在实例级文件显式声明。
 - `signal.ini` 继续作为共享策略与 `account_bindings` 配置；账户别名来自实例自己的 `mt5.ini`。
 - `app.ini`、`db.ini`、`signal.ini`、`topology.ini`、`economic.ini`、`ingest.ini`、`storage.ini`、`cache.ini` 都视为共享配置，实例目录下即使存在同名文件也不会参与合并。
 - 运行期本地文件会自动按实例隔离：

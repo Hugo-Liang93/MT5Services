@@ -108,6 +108,21 @@
   [入口日志] ------------------------------------> [data/logs/*.log]
 ```
 
+### 1.1 M1/M5 高频主线边界
+
+2026-05-04 起，个人日内高频 v1 的交易主线限定为 M1/M5 confirmed bar：
+
+| 节点 | 事实源 | 状态拥有者 | 输出 |
+|---|---|---|---|
+| 市场数据输入 | MT5 OHLC M1/M5 confirmed bar | `BackgroundIngestor` / `MarketDataService` | closed-bar event |
+| 指标计算 | `bar_stats20`、`price_struct20`、`atr14`、`boll20`、`keltner20`、`adx14`、`volume_ratio20` | `UnifiedIndicatorManager` | confirmed indicator snapshot |
+| 信号生成 | `structured_micro_momentum` confirmed-only capability | `SignalRuntime` / `SignalModule` | `confirmed_buy/sell` + `ENTRY_INTENT` + `exit_spec` |
+| 入场执行 | `config/entry_policy.ini` 中 `structured_micro_momentum = market` | `trading.entry_policy` / `ExecutionIntentPublisher` | execution intent |
+| 风控门禁 | `config/instances/demo-main/risk.ini` 或 `live-main/risk.ini` | `PreTradeRiskService` / `src/risk/rules.py` | allow/block 风控结果 |
+| tick 数据 | tick / quote history（若运行环境已采集） | 数据层/研究层 | spread、slippage、tick-derived feature 建模；不触发下单 |
+
+Intrabar 仍是增强支线：只有策略显式声明 `preferred_scopes` 包含 `intrabar` 且 `[intrabar_trading].enabled_strategies` 非空时才进入盘中 armed 链路。当前 M1/M5 高频原型不新增 tick-to-order 或 intrabar-to-order 接口。
+
 ---
 
 ## 2. 装配与启动顺序

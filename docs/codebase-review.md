@@ -1,9 +1,57 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-05-03
+> 最近更新：2026-05-04
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
+
+---
+
+## 0s. 2026-05-04 M1/M5 日内高频 Goal v1：confirmed-bar 主线
+
+### 触发
+
+用户决策："个人日内高频"不做 tick scalping，M1/M5 可以作为主线；tick 暂不进入下单触发链路，只保留为后续 spread/slippage 与 tick-derived feature 数据资产。
+
+### 新增职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `StructuredMicroMomentum` | M1/M5 confirmed indicators：`bar_stats20`、`price_struct20`、`atr14`、`boll20`、`keltner20`、`adx14`、`volume_ratio20` | 无内部持久状态 | `SignalDecision` + `ENTRY_INTENT` + BARRIER `exit_spec` | 不读 tick、不读私有 runtime 字段、不声明 intrabar/HTF |
+| `strategy_capability_catalog` | 策略类公开属性 | `SignalModule` | confirmed-only capability | 不通过私有属性探测策略能力 |
+| `entry_policy.ini` | `(strategy, timeframe)` | `trading.entry_policy` | `structured_micro_momentum = market` | 不新增 tick-to-order 入场接口 |
+| `strategy_deployment.*` | `signal.ini` | signal config/deployment contract | `demo_validation` + `locked_timeframes=M1,M5` | 不直接 live active |
+| 实例级 `risk.ini` | demo/live account profile | `RiskConfig` / `src/risk/rules.py` | day/hour trades、positions、symbol volume、daily loss、margin guard | 不放宽 spread/daily loss/margin 硬门禁 |
+
+### 本次变更
+
+- 新增 `src/signals/strategies/structured/micro_momentum.py`，注册为 `structured_micro_momentum`。
+- `config/signal.ini`：
+  - `structured_micro_momentum = M1,M5`
+  - deployment 状态为 `demo_validation`
+  - `account_bindings.demo_main = structured_micro_momentum`
+  - 清空 `[intrabar_trading].enabled_strategies` 中已删除策略名
+  - 增加 M1/M5 per-TF strategy params
+- `config/entry_policy.ini` 映射 `structured_micro_momentum = market`。
+- `src/trading/broker/comment_codec.py` 登记 broker comment alias `mm`，维持新增 catalog 策略的启动期 fail-fast 合同。
+- `config/instances/demo-main/risk.ini` 与 `config/instances/live-main/risk.ini` 增加 M1/M5 高频 demo/live profile。
+- 文档同步：`docs/signal-system.md`、`docs/design/full-runtime-dataflow.md`、`docs/research/2026-05-03-high-freq-architecture-audit.md`、`src/ops/stress/README.md`、`config/instances/README.md`。
+
+### 验证与门禁
+
+- TDD 合同回归已覆盖：
+  - 策略 buy/sell/low-volume hold
+  - `StrategyCapability` confirmed-only
+  - 默认 `signal.ini` deployment / account binding / intrabar whitelist
+  - `entry_policy.ini` market 映射
+  - demo/live 实例级 risk profile
+- Goal 门槛仍未宣称通过：需要后续跑 M1/M5 baseline backtest，证明 `>= 1 trade/day` 且 PF 先过 `1.0`；demo 晋级前目标 PF `>= 1.2`，并完成至少 20 笔 demo 真实交易的 `demo_vs_backtest` 对账。
+
+### 未决项
+
+- tick-derived spread/slippage 建模尚未进入 runtime；本轮没有新增 tick-to-order 执行接口。
+- EntryMeta live runtime 过滤仍是后续增强项；不得把原型策略直接提升到 live active。
+- 若真实 demo 被频率规则误挡，下一轮应基于 `TradeFrequency` 审计数据评估 per-strategy/per-symbol cap，而不是放宽硬风控。
 
 ---
 

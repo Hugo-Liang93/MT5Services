@@ -201,6 +201,37 @@ def test_signal_config_loads_chandelier_from_exit_ini(monkeypatch):
     assert cfg.chandelier_tf_trail_scale["H1"] == 0.95
 
 
+def test_default_signal_config_declares_m1_m5_micro_momentum_mainline():
+    signal_config.get_signal_config.cache_clear()
+    try:
+        cfg = signal_config.get_signal_config()
+    finally:
+        signal_config.get_signal_config.cache_clear()
+
+    assert cfg.strategy_timeframes["structured_micro_momentum"] == ["m1", "m5"]
+    assert cfg.account_bindings["demo_main"] == ["structured_micro_momentum"]
+    assert cfg.intrabar_trading_enabled_strategies == []
+
+    deployment = cfg.strategy_deployments["structured_micro_momentum"]
+    assert deployment.status is StrategyDeploymentStatus.DEMO_VALIDATION
+    assert deployment.locked_timeframes == ("M1", "M5")
+    assert deployment.locked_sessions == ("london", "new_york")
+
+    assert cfg.strategy_params["structured_micro_momentum__min_volume_ratio"] == 1.15
+    assert (
+        cfg.strategy_params_per_tf["M1"][
+            "structured_micro_momentum__time_bars"
+        ]
+        == 8.0
+    )
+    assert (
+        cfg.strategy_params_per_tf["M5"][
+            "structured_micro_momentum__time_bars"
+        ]
+        == 6.0
+    )
+
+
 def test_signal_config_rejects_chandelier_in_signal_ini(monkeypatch):
     """signal.ini 残留 [chandelier] 段时必须 fail-fast，要求迁移到 exit.ini。"""
     configs = {

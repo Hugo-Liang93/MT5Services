@@ -17,6 +17,7 @@ _COMMENT_TOKEN_RE = re.compile(r"[^A-Za-z0-9]+")
 # 新增策略**必须**在此登记，否则 validate_strategy_aliases() 在装配阶段 raise
 # 阻止启动（fail-fast 强契约，参 Q2=B）。
 _STRATEGY_ALIAS: Mapping[str, str] = {
+    "structured_micro_momentum": "mm",
     "structured_price_action": "pa",
 }
 _LEGACY_REQUEST_TAG_RE = re.compile(r"_r([a-z0-9]{1,8})$", re.IGNORECASE)

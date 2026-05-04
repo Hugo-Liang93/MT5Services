@@ -6,6 +6,7 @@ from .base import (
     StructureBias,
     StructuredStrategyBase,
 )
+from .micro_momentum import StructuredMicroMomentum
 from .price_action_m15 import StructuredPriceAction
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "HtfPolicy",
     "StructureBias",
     "StructuredStrategyBase",
+    "StructuredMicroMomentum",
     "StructuredPriceAction",
 ]

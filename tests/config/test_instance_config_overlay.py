@@ -159,6 +159,23 @@ max_trades_per_day = 2
     )
 
 
+def test_repo_m1_m5_high_frequency_risk_profiles_are_instance_scoped() -> None:
+    _, demo_parser = load_config_with_base("risk.ini", instance_name="demo-main")
+    _, live_parser = load_config_with_base("risk.ini", instance_name="live-main")
+
+    assert demo_parser is not None
+    assert live_parser is not None
+    assert demo_parser["risk"]["max_trades_per_day"] == "20"
+    assert demo_parser["risk"]["max_trades_per_hour"] == "4"
+    assert demo_parser["risk"]["max_positions_per_symbol"] == "3"
+    assert demo_parser["risk"]["max_volume_per_symbol"] == "0.03"
+
+    assert live_parser["risk"]["max_trades_per_day"] == "8"
+    assert live_parser["risk"]["max_trades_per_hour"] == "2"
+    assert live_parser["risk"]["max_positions_per_symbol"] == "2"
+    assert live_parser["risk"]["max_volume_per_symbol"] == "0.02"
+
+
 def test_load_mt5_settings_reads_instance_bound_account_profile(tmp_path) -> None:
     _write(
         tmp_path / "config" / "mt5.ini",

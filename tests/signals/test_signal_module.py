@@ -8,7 +8,10 @@ from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext, SignalDecision
 from src.signals.service import SignalModule
 from src.signals.strategies.catalog import build_default_strategy_set
-from src.signals.strategies.structured import StructuredPriceAction
+from src.signals.strategies.structured import (
+    StructuredMicroMomentum,
+    StructuredPriceAction,
+)
 
 
 class DummyIndicatorSource:
@@ -281,9 +284,17 @@ def test_signal_module_exposes_strategy_requirements() -> None:
 
     requirements = module.dispatch_operation("strategy_requirements")
 
-    # 2026-04-30 大清场后 catalog 仅 price_action
     assert "atr14" in requirements["structured_price_action"]
     assert "candle_pattern" in requirements["structured_price_action"]
+    assert requirements["structured_micro_momentum"] == [
+        "bar_stats20",
+        "price_struct20",
+        "atr14",
+        "boll20",
+        "keltner20",
+        "adx14",
+        "volume_ratio20",
+    ]
 
 
 def test_signal_module_exposes_required_indicator_groups() -> None:
@@ -297,6 +308,26 @@ def test_signal_module_exposes_required_indicator_groups() -> None:
     # price_action 必要指标
     assert "atr14" in flat
     assert "candle_pattern" in flat
+    assert "volume_ratio20" in flat
+
+
+def test_m1_m5_micro_momentum_capability_is_confirmed_only() -> None:
+    module = SignalModule(indicator_source=DummyIndicatorSource())
+
+    capability = module.strategy_capability("structured_micro_momentum")
+
+    assert capability.valid_scopes == ("confirmed",)
+    assert capability.needs_intrabar is False
+    assert capability.needs_htf is False
+    assert capability.needed_indicators == (
+        "bar_stats20",
+        "price_struct20",
+        "atr14",
+        "boll20",
+        "keltner20",
+        "adx14",
+        "volume_ratio20",
+    )
 
 
 def test_signal_module_summary_returns_aggregates() -> None:
@@ -693,13 +724,12 @@ def test_signal_module_recent_signals_passes_explicit_strategy_filter() -> None:
 def test_intrabar_required_indicators_derives_from_strategy_scopes() -> None:
     """intrabar_required_indicators() 自动推导：仅收集 intrabar 策略的指标。
 
-    2026-04-30 大清场后 catalog 仅 price_action（confirmed-only），故 intrabar
-    集合应为空。后续如果有 intrabar-capable 新策略上线，扩此测试。
+    M1/M5 高频主线使用 confirmed bar；intrabar 是增强支线。confirmed-only
+    策略不应把自身指标加入 intrabar runtime 需求。
     """
     module = SignalModule(
         indicator_source=DummyIndicatorSource(),
-        strategies=[StructuredPriceAction()],
+        strategies=[StructuredPriceAction(), StructuredMicroMomentum()],
     )
     result = module.intrabar_required_indicators()
-    # price_action preferred_scopes=("confirmed",) 不参与 intrabar
     assert result == set() or result == frozenset() or len(result) == 0

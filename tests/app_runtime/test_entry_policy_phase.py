@@ -39,6 +39,12 @@ class TestEntryPolicyPhase:
         policy = registry.resolve("structured_unknown_strategy", "M15")
         assert policy.name == "market"
 
+    def test_micro_momentum_resolves_to_market_policy(self):
+        reset_entry_policy_config_cache()
+        registry = build_entry_policy_registry(get_entry_policy_config())
+        assert registry.resolve("structured_micro_momentum", "M1").name == "market"
+        assert registry.resolve("structured_micro_momentum", "M5").name == "market"
+
     def test_describe_includes_registered_policies(self):
         reset_entry_policy_config_cache()
         registry = build_entry_policy_registry(get_entry_policy_config())
