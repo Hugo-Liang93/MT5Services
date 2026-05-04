@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import configparser
 from pathlib import Path
 
 from src.config.instance_context import resolve_instance_scoped_dir, set_current_instance_name
@@ -10,10 +11,18 @@ from src.config.topology import (
 )
 from src.config.utils import get_merged_option_source, load_config_with_base
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _read_repo_ini(path: str) -> configparser.ConfigParser:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(REPO_ROOT / path, encoding="utf-8")
+    return parser
 
 
 def test_load_config_with_base_applies_instance_market_overrides(tmp_path) -> None:
@@ -160,11 +169,9 @@ max_trades_per_day = 2
 
 
 def test_repo_m1_m5_high_frequency_risk_profiles_are_instance_scoped() -> None:
-    _, demo_parser = load_config_with_base("risk.ini", instance_name="demo-main")
-    _, live_parser = load_config_with_base("risk.ini", instance_name="live-main")
+    demo_parser = _read_repo_ini("config/instances/demo-main/risk.ini")
+    live_parser = _read_repo_ini("config/instances/live-main/risk.ini")
 
-    assert demo_parser is not None
-    assert live_parser is not None
     assert demo_parser["risk"]["max_trades_per_day"] == "20"
     assert demo_parser["risk"]["max_trades_per_hour"] == "4"
     assert demo_parser["risk"]["max_positions_per_symbol"] == "3"

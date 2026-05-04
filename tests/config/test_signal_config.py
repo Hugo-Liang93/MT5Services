@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import configparser
+from pathlib import Path
+
 import pytest
 
 import src.config.signal as signal_config
 from src.signals.contracts import StrategyDeploymentStatus
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _read_repo_ini(name: str) -> dict[str, dict[str, str]]:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(REPO_ROOT / "config" / name, encoding="utf-8")
+    return {section: dict(parser.items(section)) for section in parser.sections()}
 
 
 def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
@@ -201,7 +212,14 @@ def test_signal_config_loads_chandelier_from_exit_ini(monkeypatch):
     assert cfg.chandelier_tf_trail_scale["H1"] == 0.95
 
 
-def test_default_signal_config_declares_m1_m5_micro_momentum_mainline():
+def test_default_signal_config_declares_m1_m5_micro_momentum_mainline(monkeypatch):
+    configs = {
+        "signal.ini": _read_repo_ini("signal.ini"),
+        "exit.ini": _read_repo_ini("exit.ini"),
+    }
+    monkeypatch.setattr(
+        signal_config, "get_merged_config", lambda name: configs.get(name, {})
+    )
     signal_config.get_signal_config.cache_clear()
     try:
         cfg = signal_config.get_signal_config()
