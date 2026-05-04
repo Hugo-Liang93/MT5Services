@@ -441,9 +441,13 @@ class BacktestEngine:
                 or "confirmed" not in self._strategy_capabilities[name].valid_scopes
             }
         )
-        if not self._target_strategies:
-            raise ValueError(
-                "No supported confirmed strategies remain after capability filtering"
+        self._has_no_eligible_strategies: bool = not self._target_strategies
+        if self._has_no_eligible_strategies:
+            logger.warning(
+                "BacktestEngine: no strategies eligible for confirmed scope after "
+                "capability filtering — engine will run but produce no signals/trades. "
+                "Pre-scope filtered strategies: %s",
+                self._scope_filtered_strategies,
             )
 
         self._required_indicators: List[str] = []
@@ -752,6 +756,32 @@ class BacktestEngine:
         run_id = generate_run_id()
         started_at = datetime.now(timezone.utc)
         t0 = time.monotonic()
+
+        if self._has_no_eligible_strategies:
+            logger.warning(
+                "Backtest %s: no eligible strategies — returning empty result",
+                run_id,
+            )
+            completed_at = datetime.now(timezone.utc)
+            from ..analysis.metrics import _empty_metrics
+
+            return BacktestResult(
+                config=self._config,
+                run_id=run_id,
+                started_at=started_at,
+                completed_at=completed_at,
+                trades=[],
+                equity_curve=[],
+                metrics=_empty_metrics(),
+                metrics_by_regime={},
+                metrics_by_strategy={},
+                metrics_by_confidence={},
+                param_set=self._config.strategy_params,
+                filter_stats=None,
+                strategy_capability_execution_plan=self.strategy_capability_execution_plan(),
+                execution_summary=self.execution_summary(),
+                signal_evaluations=[],
+            )
 
         symbol = self._config.symbol
         timeframe = self._config.timeframe
