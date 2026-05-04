@@ -240,3 +240,128 @@ Month 2+: demo_vs_backtest 通过后，再进入 active_guarded 小资金 live
    预估 ~1-3 trades/day，alpha = 波动率扩张
 3. **Multi-Indicator Confluence Reversal (M15)**：rsi 极端 + bb 触轨 + pin
    预估 ~2-4 trades/day，alpha = 短期均值回归
+
+---
+
+## Phase 0 Sanity (2026-05-03)
+
+> 执行人：subagent Task 0.1，branch `feature/mining-feature-pool-expansion`
+> 目标：在投入 Phase 1（CME volume + cross-asset）前，验证现有 ML pipeline 端到端可用。
+
+### Step 1：research config 加载验证
+
+```
+feature providers enabled: ['temporal_enabled', 'microstructure_enabled',
+  'regime_transition_enabled', 'session_event_enabled',
+  'intrabar_enabled', 'candle_patterns_enabled']
+```
+
+6 个 provider 全部启用（temporal/microstructure/regime_transition/session_event/intrabar/candle_patterns）。
+
+Baseline feature pool: 169 candidates (feature_manifest), 85 effective in H1 training (intrabar provider contributes 0 in H1 — no child-TF confirmed bars in mining window).
+
+### Step 2：state_edge_lab H1 12mo 运行结果
+
+- **退出码**：0（成功）
+- **artifact 大小**：`artifacts/phase0_state_edge_h1_baseline.json` = 3,058 bytes（汇总）；
+  per-TF artifact `artifacts/state_edge/state-edge-H1-20260503132356-a886e3/state_edge_artifact.json` = 2,076,333 bytes
+- **数据覆盖**：H1 6,374 bars（2025-04-01 ~ 2026-04-30）
+- **模型类型**：`hist_gradient_boosting`
+- **标签分布**：long 3,092 / short 2,526 / no_trade 304
+- **OOS samples**：1,656
+- **OOS accuracy**：0.5103（基线约 51%，略高于随机）
+- **高置信度桶 hit rate**：
+  - short bucket：0.6211（threshold 0.740，样本 322）
+  - long bucket：0.5759（threshold 0.553，样本 323）
+- **特征池**：85 个有效特征（feature_manifest 报告 169 个候选，含 intrabar 0 个——H1 无子 TF 数据）
+
+### Step 3：backtest_runner H1 运行结果
+
+- **退出码**：1（失败，基础设施 bug）
+- **错误信息**：`ValueError: No supported confirmed strategies remain after capability filtering`
+- **根因**：`structured_price_action` 在 `signal.ini [strategy_timeframes]` 仅注册 `M15,M30`，
+  H1 回测中无任何可用策略 → `BacktestEngine.__init__` 直接 raise 而非输出 0 trades 报告。
+- **这是基础设施 bug**：runner 应在空策略集时优雅返回 0 trades 报告而非 crash。
+  修复位置：`src/backtesting/engine/runner.py:444`，将 `raise ValueError(...)` 改为
+  warning log + 返回空结果。
+- **artifact**：未写入（crash 前退出）
+
+### Verdict
+
+**HALT and fix: backtest_runner crashes on empty strategy set (ValueError at runner.py:444)**
+
+- state_edge_lab H1 12mo run：**PASS** — 退出码 0，artifact 完整，OOS accuracy 51%，
+  short hit rate 62%（远高于随机）。ML pipeline 自身工作正常。
+- backtest_runner：**FAIL** — `ValueError: No supported confirmed strategies remain`。
+  这是 Phase 0 应该捕获的 infra bug。修复后重跑 backtest，再评估是否 PROCEED to Phase 1。
+
+> **Note on Verdict tension**: plan §0 Step 3 originally allowed treating this crash as a separate-fix issue not blocking Phase 1. We chose the stricter `HALT and fix` interpretation because Phase 0's stated purpose ("ML pipeline end-to-end usable") is incomplete if backtest_runner can't run. Phase 1 implementer subagents should fix `runner.py:444` empty-catalog crash before Task 1.7 (mining run + report). Phase 1 Tasks 1.0 through 1.6 don't depend on backtest_runner so can proceed in parallel with the runner.py fix.
+
+> 注意：此 bug 对 state_edge_lab 无影响（二者独立）。Phase 1 的 CME volume 数据源开发
+> 可与 backtest_runner 修复并行，但 Phase 0 gate 严格要求 backtest_runner exit 0
+> 才算通过。
+
+---
+
+## Phase 1 完成（2026-05-04）
+
+> 执行人：subagent-driven flow，branch `feature/mining-feature-pool-expansion`
+> 17 commits（含 Phase 0 的 2 个）+ 33 个新单测全 green，0 回归。
+
+### Phase 0 阻塞修复
+
+`src/backtesting/engine/runner.py:444` `raise ValueError` → warning log + 空 BacktestResult 早退路径（commit `008e75c`）。冒烟：`backtest_runner --tf H1 --start 2026-01-01 --end 2026-04-15` 现在 exit 0（原 exit 1），artifact `artifacts/phase0_baseline_h1.json` 写入，0 trades。`tests/backtesting/test_engine.py` 新增回归测试 `test_engine_returns_empty_result_when_no_strategies_match_tf`，11/11 通过。
+
+### Phase 1 交付清单（Tasks 1.0–1.6）
+
+| Task | 模块 | 测试数 |
+|------|------|------|
+| 1.0  | `src/research/external/protocol.py`（`ExternalDataSource` Protocol + `_REGISTRY`） | 5 |
+| 1.1  | `pyproject.toml` 增加 `yfinance>=0.2.40` + mypy ignore | — |
+| 1.2  | `src/persistence/schema/daily_external_ohlc.py`（Timescale hypertable） | 3 |
+| 1.3  | `src/research/external/yfinance_client.py`（`YFinanceClient` + 自动注册） | 7 |
+| 1.4  | `src/research/external/backfill.py`（通用 source-agnostic CLI + per-symbol commit） | 8 |
+| 1.4.5| `src/research/features/external_data_lookup.py`（共享日线 lookup helper，lazy writer） | 6 |
+| 1.5  | `src/research/features/cme_volume/provider.py`（`CMEVolumeFeatureProvider`，4 features） | 4 |
+| 1.6  | `FeatureProviderConfig.cme_volume_enabled` + `FeatureHub` 注册 + `config/research.ini` | — |
+
+抽象层落地（plan §"Extensibility Design Principles" 4 项全部实现）：
+1. `ExternalDataSource` Protocol + `register_source()` registry
+2. 通用 `backfill --source <name> --symbols <csv>` CLI
+3. `make_daily_field_lookup(symbol, field)` 工厂（写一次，所有 daily-OHLCV provider 共用）
+4. FeatureProvider 注册元数据驱动（`_PROVIDER_FACTORIES` + `<name>_enabled` 配置）
+
+### Task 1.7 — Mining 运行结果
+
+执行命令：
+```bash
+python -m src.ops.cli.mining_runner --environment live --tf H1 \
+  --start 2025-04-01 --end 2026-04-15 \
+  --providers temporal,microstructure,cross_tf,regime_transition,session_event,intrabar,candle_patterns,cme_volume \
+  --child-tf M5 --no-auto-backfill \
+  --json-output data/research/phase1_mining_h1_with_cme.json
+```
+
+| 指标 | with_cme（8 providers） | baseline（7 providers） |
+|------|----------------------|-------------------------|
+| `total_features` | 102 | 98 |
+| `providers` 含 `cme_volume` | ✅（feature_count=4，elapsed=0.85s） | ❌（已正确排除） |
+| `mined_rules_count` | 3 | 3 |
+| `top_findings_count` | 15 | 15 |
+| `predictive_power_count` | 4 | 4 |
+| `threshold_sweeps_count` | 140 | 140 |
+
+**结构验证（infra）**：✅ 完全通过——cme_volume Provider 注册成功、4 列特征注入 DataMatrix、mining 流水线无 crash、`--providers` flag 正确过滤（修了 `mining_runner.py:88-96` 的 `_ALL_PROVIDERS` 白名单遗漏 `cme_volume`，commit `<phase1_audit>`）。
+
+**信号验证（alpha test）**：⏸️ **PENDING — 数据未入库**。`daily_external_ohlc` 表中 GC=F 行数 = 0；本地 IP 当天被 Yahoo Finance 限流（`YFRateLimitError: Too Many Requests`），`backfill --source yfinance --symbols GC=F` 多次尝试均返回 `{'GC=F': 0}`。`CMEVolumeFeatureProvider.compute()` 因 lookup 全返 None 输出全 None 列 → mining IC/FDR 跳过 → 0 cme_volume 规则被发现。with_cme 与 baseline 的 mined_rules / findings / threshold_sweeps 计数完全一致即由此而来。
+
+**Verdict**: PROCEED to Phase 2（cross-asset DXY/10Y/SPX），但**先解决数据缺口**——优先级：
+
+1. **必做**：Yahoo 限流恢复后（典型 24h）重跑 `backfill --source yfinance --symbols GC=F --start 2023-01-01`；验证表行数 ≥ 700 后重跑 with_cme mining 才可下"CME 是否提供 alpha"的判断。
+2. **若 Yahoo 持续限流**：实现 Phase 2 的 `StooqClient`（用 `pandas_datareader` 抓 stooq.com 同源数据）作为 fallback——这恰好也是 plan §"Extensibility Design Principles" §1 抽象设计的目标场景，registry 切 `--source stooq` 即可，无需改 backfill / lookup / provider 任何代码。
+3. **平行推进**：Phase 2 cross-asset Provider（DXY/10Y/SPX）的实现完全不依赖 GC=F 数据可用，可与限流恢复并行。Phase 1 的 4 个抽象层在 Phase 2 复用，预计仅添加 `CrossAssetFeatureProvider`（≈100 行）+ 4 行 hub 注册 + 1 行 `_ALL_PROVIDERS` 白名单。
+
+### 已记录的技术债
+
+- `make_daily_field_lookup` 当前硬编码 `_default_writer_factory = lambda: TimescaleWriter(load_db_settings("live"))`。demo/backtest 多环境调用需扩展签名引入 `environment` 参数。低优先级，单环境使用范围内可接受。
+- `_ALL_PROVIDERS` 白名单与 `FeatureProviderConfig.<name>_enabled` 字段是手工同步的（添加新 provider 必须两处都改）。Task 1.6 的隐藏耦合教训——下一个 provider（cross_asset）也要记得同步。

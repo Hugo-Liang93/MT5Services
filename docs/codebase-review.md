@@ -8850,3 +8850,64 @@ demo runtime 重启后跟踪：
 
 如果 demo 继续显示频繁浮盈侧 signal_exit（噪声触发），再做 A（提高
 confirmation_bars）。
+
+---
+
+## 2026-05-04 — Phase 1：外部数据源扩展点（Protocol + Registry）+ CMEVolumeFeatureProvider
+
+### 触发
+
+`docs/superpowers/plans/2026-05-03-mining-feature-pool-expansion.md` Phase 1：在挖掘特征池中引入"非 broker 真实日线数据"以打破"无信息优势"瓶颈。第一个具体消费者是 CME GC 期货日线成交量（XAUUSD spot 的机构端代理）。
+
+### 新增职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `src/research/external/protocol.py` | 任何外部日线 OHLCV 源 | 无（pure Protocol + 模块级 `_REGISTRY` 字典） | `ExternalDataSource` runtime-checkable Protocol + `register_source / get_source` 工厂查找 | 不持有连接、不做 retry、不做 rate-limit |
+| `src/research/external/yfinance_client.py` | symbol + date range | yfinance 包内部状态 | `List[DailyBar]`（NaN volume → 0.0） | 不做持久化、不做并发 fetch、不做 rate-limit guard |
+| `src/research/external/backfill.py` | `--source <registered_name> --symbols <csv>` | `daily_external_ohlc` 表 | per-symbol 行计数；per-symbol 错误隔离（fetch 失败 → 跳过该 symbol） | 不做 atomicity 保证（单 symbol 用 `connection()` autocommit；多行 INSERT 在某一行失败时已写入的部分会留存——靠 `ON CONFLICT (symbol, date) DO UPDATE` 幂等性兜底） |
+| `src/research/features/external_data_lookup.py` | `(symbol, field)` | per-call closure cache | `(date) -> Optional[float]`，writer lazy-built on first lookup | 不暴露 raw connection、不暴露 SQL、字段名不在 `SUPPORTED_FIELDS` 时 raise |
+| `src/research/features/cme_volume/provider.py` | `daily_volume_lookup: Callable` | 无（per-call cache 来自 lookup 闭包） | 4 features：`cme_volume_zscore_20d` (WHEN) / `cme_volume_change_5d` (WHY) / `cme_volume_ratio` (WHY) / `cme_volume_pct_rank` (WHEN) | 不读 broker tick_volume、不查 DB（通过 lookup 抽象解耦） |
+| `src/persistence/schema/daily_external_ohlc.py` | `daily_external_ohlc` Timescale hypertable | DB | `(symbol, date)` 复合 PK + idempotent UPSERT INSERT_SQL | 不加 OHLCV CHECK 约束（外部符号值域跨资产差异大；docstring 明确） |
+
+### 4 个抽象层（plan §"Extensibility Design Principles" 全部实现）
+
+1. **`ExternalDataSource` Protocol + registry**：`register_source(name, factory)` / `get_source(name)`。新增数据源仅需实现 Protocol + 在模块 import 时注册一行。
+2. **通用 backfill CLI**：`python -m src.research.external.backfill --source <name> --symbols <csv>` 对所有已注册数据源工作。Phase 2 cross-asset 直接复用，无需新 CLI。
+3. **共享 daily field lookup helper**：`make_daily_field_lookup(symbol, field)` 工厂——所有 daily-OHLCV provider 复用；writer 延迟到首次 lookup。
+4. **FeatureProvider 注册元数据驱动**：新增 provider 仅需 (a) 写 Provider 类 (b) 在 `_PROVIDER_FACTORIES` 加一行 (c) 在 `FeatureProviderConfig` 加 `<name>_enabled: bool = False` (d) 在 `mining_runner._ALL_PROVIDERS` 加 `<name>`。
+
+### 同期附带修复
+
+- `src/backtesting/engine/runner.py:444` 空策略集 `raise ValueError` → warning log + 空 `BacktestResult` 早退（解 Phase 0 verdict 阻塞，`backtest_runner --tf H1` 现在 exit 0）。
+- `src/research/core/config.py: FeatureProviderConfig.is_enabled()` 未知 provider 名 fail-fast（原默认返回 True 会让漏配置字段静默启用）。
+- `src/ops/cli/mining_runner.py:_ALL_PROVIDERS` 白名单加入 `cme_volume`，否则 `--providers` 过滤无法关闭它。
+- `make_daily_field_lookup` 内部 writer 由"factory 调用立即构建"改为"首次 lookup 时延迟构建"——避免 FeatureHub 构建期空跑就开 1-20 连接池。
+
+### 本次改动如何减少边界泄漏
+
+- `CMEVolumeFeatureProvider` 仅依赖 `Callable[[date], Optional[float]]`，不直接知道有 DB / 有 yfinance / 有 daily_external_ohlc 表。任何 `make_daily_field_lookup` 兼容的实现（含纯内存测试 fixture）都能注入。
+- backfill CLI 不知道任何具体源，仅通过 `_REGISTRY` dispatch。Phase 2 加 FRED / Polygon / Stooq → registry 注册一行，CLI 零改。
+- `FeatureProviderConfig.is_enabled()` 的 fail-fast 守住"新 provider 漏加配置"的隐式启用风险——这是 Task 1.6 的代价教训（原本 `getattr(self, attr, True)` 会让 unknown name 静默 enabled）。
+
+### 未决兼容项 / 技术债（带移除条件）
+
+| 项 | 原因 | 移除条件 |
+|---|---|---|
+| `_ALL_PROVIDERS` 与 `FeatureProviderConfig.<name>_enabled` 三处手工同步 | mining_runner CLI 把白名单写死在 `_ALL_PROVIDERS`；自动从 dataclass 反射会更安全 | 加一个测试断言这两个集合相等，或重构为 reflection-based。下一个新 provider（cross_asset） |
+| `_default_writer_factory` 硬编码 `load_db_settings("live")` | 当前 research 系统单环境运行 | 当 backtest/demo 多环境调用 mining 时（Phase 2 之后）改 `make_daily_field_lookup(symbol, *, field, environment)` |
+| `backfill_symbols` 内 `conn.commit()/rollback()` 与 `connection()` autocommit=True 语义混淆 | `connection()` 每条 SQL auto-commit；手工 commit 是 no-op，rollback 不能回滚已 autocommit 行。当前实际影响低（每 symbol 1 行/call + ON CONFLICT 幂等），但合约误导 | Phase 2 前重构为 `db_writer.transaction()` per-symbol 或简化为依赖 ON CONFLICT 幂等性（移除手工 commit/rollback） |
+| `cme_volume_enabled = False` 默认 + `research.ini cme_volume = true` | "ship enabled by default" 但 `daily_external_ohlc` 表为空时 provider 输出全 None 列 | GC=F backfill 完成后切到正常状态；当前 mining IC 分析器跳过全 None 列，无 harm 但需在 `research.ini` 注释标注 |
+
+### 验证
+
+- 33 个新单测全 green（Task 1.0–1.6）。
+- 全 research 套件 726 passed / 6 skipped / 0 regression。
+- `backtest_runner --tf H1` 端到端：exit 0 + artifact 写入（修 Phase 0 阻塞）。
+- mining_runner with_cme（102 features，8 providers）vs baseline（98 features，7 providers）：mined_rules / findings / threshold_sweeps 计数完全一致——基础设施 OK，alpha 验证 PENDING（Yahoo 限流）。
+
+### 后续观察
+
+1. Yahoo 限流恢复（典型 24h）后跑 `backfill --source yfinance --symbols GC=F --start 2023-01-01`，验证 `daily_external_ohlc` 中 GC=F 行数 ≥ 700，再重跑 with_cme mining——此时 vs baseline 的差异才能用作"CME 是否提供 alpha"的判据。
+2. 若持续限流，Phase 2 顺手实现 `StooqClient`（pandas_datareader 抓 stooq.com），通过 registry 切 `--source stooq` 即可，零改 backfill / lookup / provider。
+3. Phase 2 cross-asset Provider（DXY/10Y/SPX）实现完全不依赖 GC=F 数据可用，可与限流恢复并行。预计 ~100 行 + 4 处注册（Provider 文件、`_PROVIDER_FACTORIES`、`FeatureProviderConfig.cross_asset_enabled`、`_ALL_PROVIDERS`）。

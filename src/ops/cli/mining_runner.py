@@ -93,6 +93,7 @@ def _run_single(
             "session_event",
             "intrabar",
             "candle_patterns",
+            "cme_volume",
         ]
         if providers == ["all"]:
             enabled = _ALL_PROVIDERS

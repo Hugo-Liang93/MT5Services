@@ -170,10 +170,17 @@ class TestFeatureProviderConfig:
         cfg = FeatureProviderConfig()
         assert cfg.is_enabled("intrabar") is True
 
-    def test_is_enabled_unknown_returns_true(self) -> None:
-        """未知 provider 名默认返回 True（不阻止加载）。"""
+    def test_is_enabled_unknown_raises(self) -> None:
+        """未知 provider 名 fail-fast——caller 漏给 FeatureProviderConfig 加
+        `<name>_enabled` 字段就在 _PROVIDER_FACTORIES 注册新 provider 时，
+        必须立即报错而非静默启用一个未经测试的 provider。"""
+        import pytest
+
         cfg = FeatureProviderConfig()
-        assert cfg.is_enabled("nonexistent_provider") is True
+        with pytest.raises(ValueError) as exc:
+            cfg.is_enabled("nonexistent_provider")
+        assert "nonexistent_provider_enabled" in str(exc.value)
+        assert "FeatureProviderConfig" in str(exc.value)
 
     def test_is_enabled_respects_disabled_flag(self) -> None:
         cfg = FeatureProviderConfig(cross_tf_enabled=False)

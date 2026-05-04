@@ -466,6 +466,54 @@ class TestBacktestEngine:
         assert result.metrics.total_trades == 1
         assert result.trades[0].position_size < config.position.min_volume
 
+    def test_engine_returns_empty_result_when_no_strategies_match_tf(self) -> None:
+        """当请求的策略全部被 scope 过滤器过滤掉后（例如所有策略仅支持 intrabar），
+        engine 不应抛 ValueError，而应构造成功并在 run() 返回空 BacktestResult。
+
+        复现场景：TF 白名单把策略全部过滤后 _target_strategies 为空，
+        随后 scope 过滤器对空列表求差集依然为空，触发原来的 ValueError。
+        此处用「strategy 声明 valid_scopes=intrabar-only」直接令 scope 过滤结果为空，
+        与白名单场景等价。
+        """
+        # 策略名必须与 signal_module.list_strategies() 一致，否则走 deployment 前的 unsupported 路径
+        config = self._make_config(strategies=["intrabar_only_strategy"])
+        data_loader = MagicMock()
+        data_loader.preload_warmup_bars.return_value = []
+        data_loader.load_all_bars.return_value = []
+
+        signal_module = MagicMock()
+        signal_module.list_strategies.return_value = ["intrabar_only_strategy"]
+        signal_module.strategy_requirements.return_value = ["rsi14"]
+        # 该策略仅声明 intrabar scope，confirmed scope 过滤后 _target_strategies 为空
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("intrabar_only_strategy", ("rsi14",), ("intrabar",), True),
+        )
+
+        pipeline = MagicMock()
+
+        # 构造阶段不应抛 ValueError
+        engine = BacktestEngine(
+            config=config,
+            data_loader=data_loader,
+            signal_module=signal_module,
+            indicator_pipeline=pipeline,
+        )
+
+        assert engine._has_no_eligible_strategies is True
+        assert engine._target_strategies == []
+
+        # run() 应返回空结果，不抛异常
+        result = engine.run()
+
+        assert result.run_id.startswith("bt_")
+        assert result.trades == []
+        assert result.equity_curve == []
+        assert result.metrics.total_trades == 0
+        # execution_plan 中无 active 策略
+        plan = result.strategy_capability_execution_plan
+        assert plan is not None
+        assert plan["active_strategy_count"] == 0
+
     def test_execution_feasibility_mode_rejects_sub_min_volume(self) -> None:
         config = self._make_config(
             warmup_bars=5,
