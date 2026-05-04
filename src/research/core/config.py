@@ -161,9 +161,21 @@ class FeatureProviderConfig:
     )
 
     def is_enabled(self, provider_name: str) -> bool:
-        """查询指定 Provider 是否启用。未知 provider 名默认返回 True。"""
+        """查询指定 Provider 是否启用。
+
+        未知 provider 名 fail-fast：caller 调 `is_enabled("foo")` 而
+        FeatureProviderConfig 没有 `foo_enabled` 字段时必须立即报错——
+        否则新 provider 漏加配置字段会"静默启用"并未经测试地参与挖掘。
+        """
         attr = f"{provider_name}_enabled"
-        return bool(getattr(self, attr, True))
+        if not hasattr(self, attr):
+            raise ValueError(
+                f"FeatureProviderConfig has no field '{attr}'. "
+                f"Add '{provider_name}_enabled: bool = False' to "
+                f"FeatureProviderConfig before registering '{provider_name}' "
+                f"in FeatureHub._PROVIDER_FACTORIES."
+            )
+        return bool(getattr(self, attr))
 
 
 @dataclass(frozen=True)

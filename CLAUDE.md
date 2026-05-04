@@ -545,7 +545,10 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | DataMatrix | `src/research/core/data_matrix.py` |
 | 挖掘分析器（预测力/阈值/规则） | `src/research/analyzers/` |
 | FeatureHub（特征编排入口） | `src/research/features/hub.py` |
-| Feature Providers（6 模块） | `src/research/features/{temporal,microstructure,cross_tf,regime_transition,session_event,intrabar}/` |
+| Feature Providers（8 模块） | `src/research/features/{temporal,microstructure,cross_tf,regime_transition,session_event,intrabar,candle_patterns,cme_volume}/` |
+| 外部数据源（Protocol + registry + yfinance + 通用 backfill CLI） | `src/research/external/{protocol,yfinance_client,backfill}.py` |
+| 共享日线 lookup helper（FeatureProvider 复用） | `src/research/features/external_data_lookup.py` |
+| 外部日线 OHLCV 表 schema | `src/persistence/schema/daily_external_ohlc.py` |
 | 特征候选 / 特征提升 | `src/research/features/candidates.py` / `promotion.py` |
 | 策略候选 | `src/research/strategies/candidates.py` |
 | 纯统计原语（ACF/block shuffle/效力分析） | `src/research/core/statistics.py` |
