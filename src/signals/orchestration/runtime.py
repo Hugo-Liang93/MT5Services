@@ -242,24 +242,10 @@ class SignalRuntime:
         self._tick_derived_processed: int = 0
         self._tick_derived_failed: int = 0
         self._tick_derived_last_snapshot_at: datetime | None = None
-        # T9 wiring: 缓存最近 tick feature snapshot 的 indicator-style 字典 per symbol，
-        # 让 confirmed 路径策略（如 PA）通过 ctx.indicators["tick_features"] 读取顺向压力。
-        # 无需 TickFeatureBus 引用——SignalRuntime 已是 enqueue_tick_feature_snapshot 入口。
-        self._latest_tick_features: dict[str, dict[str, float]] = {}
 
     @property
     def strategy_capabilities(self) -> dict[str, StrategyCapability]:
         return self.policy.strategy_capabilities
-
-    def latest_tick_features(self, symbol: str) -> dict[str, float] | None:
-        """T9 wiring: 公开端口暴露最近 tick feature snapshot 的 indicator-style 字典。
-
-        confirmed 评估路径在构造 SignalContext 前可调此方法注入 tick_features 到
-        ctx.indicators，让策略（如 PA）通过 _post_confidence_modifier hook 消费。
-        无最新 snapshot 时返回 None。
-        """
-        cached = self._latest_tick_features.get(str(symbol))
-        return dict(cached) if cached is not None else None
 
     @property
     def regime_detector(self) -> MarketRegimeDetector:
@@ -413,21 +399,12 @@ class SignalRuntime:
         self._queue_runner.enqueue(item)
 
     def enqueue_tick_feature_snapshot(self, snapshot: Any) -> None:
-        """Public port used by TickFeatureBus to feed tick-derived runtime events.
-
-        T9 wiring: 同时缓存 indicator-style 视图供 confirmed 路径策略（PA）读取。
-        即使没有 tick_derived 策略消费此 snapshot，confirmed 评估仍可享受 latest tick
-        feature 上下文用于 confidence 修正（PA._post_confidence_modifier）。
-        """
+        """Public port used by TickFeatureBus to feed tick-derived runtime events."""
         symbol = str(snapshot.symbol)
-        indicators = self._tick_feature_indicators(snapshot)
-        # 写入 cache（无锁——dict 单 key 赋值在 CPython GIL 下原子；读侧拷贝引用）
-        tick_features_view = indicators.get("tick_features")
-        if isinstance(tick_features_view, dict):
-            self._latest_tick_features[symbol] = dict(tick_features_view)
         target_timeframes = self._tick_derived_timeframes_for(symbol)
         if not target_timeframes:
             return
+        indicators = self._tick_feature_indicators(snapshot)
         metadata = {
             MK.SCOPE: "tick_derived",
             MK.SNAPSHOT_TIME: snapshot.generated_at,

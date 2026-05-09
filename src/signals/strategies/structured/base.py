@@ -286,14 +286,6 @@ class StructuredStrategyBase:
         """
         return 0.0
 
-    def _post_confidence_modifier(self, ctx: SignalContext, direction: str) -> float:
-        """T9 hook: 信号 confidence 的最终乘性修正（默认 noop 1.0）。
-
-        子类可 override 此方法，根据外部上下文（如 tick_features）降权。
-        返回乘数 ∈ [0, 1]——1.0 不改、<1 降权、=0 完全压制。
-        """
-        return 1.0
-
     def _detect_pattern(
         self, ctx: SignalContext, direction: str, when_reason: str
     ) -> "PatternType":
@@ -393,13 +385,6 @@ class StructuredStrategyBase:
             ("where", round(confidence - vol_s * self._VOL_BUDGET, 4)),
             ("vol", round(confidence, 4)),
         ]
-
-        # T9: 子类可选 hook — tick_features / 其他外部上下文修正 confidence。
-        # 默认 noop (1.0)。返回乘数 ∈ [0, 1]，<1 表示降权。
-        post_modifier = self._post_confidence_modifier(context, direction)
-        if post_modifier != 1.0:
-            confidence = max(0.0, min(confidence * post_modifier, 1.0))
-            trace.append(("post_modifier", round(confidence, 4)))
 
         # 信号等级：A(四层全有) / B(三层) / C(仅硬门控)
         grade = (
