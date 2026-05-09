@@ -52,7 +52,7 @@
 
 ### 后续行动
 
-1. PA grid 实跑（task b4fh632xu 后台进行中，36 组合 × 4 月数据）→ 找 promotable 组合
+1. PA grid 实跑 → 找 promotable 组合（**已完成，结果见下**）
 2. 若 grid 找不到 promotable → PA Why-When-Where 评分函数本身需要重设计（不是单参数搜索能解决）
 3. 若 grid 找到 → 写入 `signal.local.ini [strategy_params.M15]` + 启动 demo validation
 
@@ -61,6 +61,48 @@
 - pytest 446 passed (tests/backtesting + tests/ops 子集)
 - backtest_runner --help 显示 `--research-mode` 参数
 - PA grid 1 组合 smoke 跑通：97 trades / PF 0.39 / DD 27% (1 月数据，与 1y 趋势一致)
+
+### Grid 实测结果（2025-04-01 ~ 2025-05-01 M15，24 组合）
+
+参数空间：sl × tp × time_bars × adx_floor = [1.0, 2.0, 3.0] × [2.0, 3.0] × [12, 20] × [8.0, 15.0]
+
+**0 / 24 通过 promotion gate**（PF≥1.0 + DD<30% + trades≥30）。
+
+Top 5 by PF（**全部未达 gate**）：
+
+| sl | tp | tb | adx | trades | WR | PnL | PF | DD |
+|---|---|---|---|---|---|---|---|---|
+| 3.00 | 2.00 | 12 | 8.0 | 115 | 36.5% | -455 | **0.52** | 23.98% |
+| 3.00 | 2.00 | 12 | 15.0 | 115 | 36.5% | -455 | **0.52** | 23.98% |
+| 3.00 | 2.00 | 20 | 8.0 | 130 | 43.1% | -643 | 0.49 | 32.96% |
+| 3.00 | 2.00 | 20 | 15.0 | 130 | 43.1% | -643 | 0.49 | 32.96% |
+| 3.00 | 3.00 | 20 | 8.0 | 120 | 40.8% | -605 | 0.49 | 30.72% |
+
+**关键观察**：
+- adx_floor=8 与 adx_floor=15 结果完全相同（M15 ADX 几乎都 ≥15，floor 在此区间不区分）
+- 最高 PF = 0.52（sl=3.0/tp=2.0），仍远低于 1.0 门槛
+- 增大 SL（1.0→3.0）确实提升 PF 与 WR，但仍亏损
+- WR 范围 21-43%，但 W/L 比无法弥补低 WR
+
+### 结论：PA 不是参数搜索能救
+
+24 组合全部 PF<0.6 表明 PA 的 Why-When-Where 评分函数本身存在结构性问题：
+- Why 层（structure_type / trend_bars 兜底）信号粗糙
+- When 层（K 线形态触发宽松）+ Where 层（BB/Keltner 平均位置 0.25/0.75）
+- 组合产生大量低质量信号（1167 trades / 1y）
+
+**重设计方向**（PA-redesign 提案）：
+
+A. **缩 entry 频率**：当前 1167 trades / 1y = ~3.2/day，过密 → 收紧 When 层（要求多形态共振或更严格的 Where 位置）
+
+B. **改 evaluation 框架**：当前是 0.5 base + 各层加分，没有 vetting/否决机制 → 加 confidence_floor 在底层条件不满足时（如 Where < 0.3）直接 hold
+
+C. **替换 BARRIER 为 Chandelier**：当前固定 SL/TP，趋势行情中无法跟踪利润 → 试 Chandelier α=0.3-0.5
+
+D. **加入 tick_features 作为入场前 confirm**：T9 hook 已 wired，但当前默认阈值 buy_pressure>0.55 太宽 → 考虑 0.65+ 严格筛选
+
+下一步：先做 D（最低成本测试 hook 实效），看新增 tick_features filter 后 PF 是否能升到 0.7+。
+再不行做 C（更换出场模式）。最后才考虑 A/B（重设计核心评分）。
 
 ---
 
