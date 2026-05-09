@@ -646,8 +646,8 @@ class ApiResponse(BaseModel, Generic[T]):
         error_message: str,
         suggested_action: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
-    ) -> "ApiResponse[None]":
-        """创建错误响应
+    ) -> "ApiResponse[Any]":
+        """创建错误响应（返回类型 ``ApiResponse[Any]`` 兼容任意 endpoint 签名）。
 
         Args:
             error_code: 错误代码，AI可识别的标识

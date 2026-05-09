@@ -16,7 +16,11 @@ from src.signals.orchestration.runtime import SignalRuntime
 from src.signals.service import SignalModule
 
 from .common import build_strategy_detail
-from .view_models import ConfidencePipelineView, StrategySessionDetailView
+from .view_models import (
+    ConfidencePipelineView,
+    StrategyPipelineItem,
+    StrategySessionDetailView,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -277,7 +281,7 @@ def admin_confidence_pipeline(
             timeframe=timeframe,
             regime=regime_info,
             calibrator=calibrator.describe(),
-            strategies=strategies_pipeline,
+            strategies=[StrategyPipelineItem(**item) for item in strategies_pipeline],
         )
     )
 

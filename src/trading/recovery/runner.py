@@ -1,7 +1,16 @@
+"""Resident demo recovery runner orchestrator.
+
+N1: 模块结构（拆分自原 1928 行单文件）：
+- ``runner_settings.py`` — RecoveryRuntimeRunnerSettings dataclass
+- ``runner_helpers.py``  — 模块级工具函数（cycle id / decision payload / position
+  matching / 时间格式化），无状态。
+- ``runner.py`` (本文件) — DemoBoundedRecoveryRunner 主类与生命周期编排。
+"""
+
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
@@ -32,218 +41,44 @@ from .risk_budget import (
     RecoveryRiskBudgetSettings,
     recovery_row_is_dry_run_cycle,
 )
+from .runner_helpers import cleanup_result_metadata as _cleanup_result_metadata
+from .runner_helpers import (
+    close_result_position_absent as _close_result_position_absent,
+)
+from .runner_helpers import close_result_success as _close_result_success
+from .runner_helpers import cycle_close_status_reason as _cycle_close_status_reason
+from .runner_helpers import cycle_with_submitted_ticket as _cycle_with_submitted_ticket
+from .runner_helpers import datetime_after_or_equal as _datetime_after_or_equal
+from .runner_helpers import decision_counts_payload as _decision_counts_payload
+from .runner_helpers import decision_payload as _decision_payload
+from .runner_helpers import default_cycle_id as _default_cycle_id
+from .runner_helpers import default_source_signal_id as _default_source_signal_id
+from .runner_helpers import iso_or_none as _iso
+from .runner_helpers import matching_recovery_positions as _matching_recovery_positions
+from .runner_helpers import parse_datetime as _parse_datetime
+from .runner_helpers import policy_decision_payload as _policy_decision_payload
+from .runner_helpers import position_absent_message as _position_absent_message
+from .runner_helpers import (
+    position_identity_matches_cycle as _position_identity_matches_cycle,
+)
+from .runner_helpers import position_match_payload as _position_match_payload
+from .runner_helpers import position_ticket as _position_ticket
+from .runner_helpers import submitted_tickets as _submitted_tickets
+from .runner_helpers import ticket_from_nested_payload as _ticket_from_nested_payload
+from .runner_helpers import unique_positive_ints as _unique_positive_ints
+from .runner_helpers import utc_now as _utc_now
+
+# Re-export for back-compat: 外部 `from src.trading.recovery.runner import
+# RecoveryRuntimeRunnerSettings` 仍可工作。
+from .runner_settings import RecoveryRuntimeRunnerSettings  # noqa: F401
 
 Clock = Callable[[], datetime]
 CycleIdFactory = Callable[[datetime], str]
 SourceSignalIdFactory = Callable[[str], str]
 
 
-@dataclass(frozen=True)
-class RecoveryRuntimeRunnerSettings:
-    enabled: bool = False
-    dry_run: bool = True
-    demo_only: bool = True
-    symbol: str = "XAUUSD"
-    direction: str = "buy"
-    strategy: str = "tick_recovery_probe"
-    timeframe: str = "TICK"
-    base_volume: float = 0.01
-    multiplier: float = 2.0
-    max_steps: int = 1
-    max_total_volume: float = 0.03
-    step_distance_points: float = 80.0
-    recovery_target_points: float = 5.0
-    point: float = 0.01
-    max_next_volume: float | None = 0.02
-    min_step_interval_ms: int = 0
-    max_step_adverse_move_points: float = 0.0
-    volume_step: float = 0.01
-    contract_size: float = 100.0
-    direction_mode: str = "fixed"
-    min_directional_move_points: float = 0.0
-    max_directional_move_points: float = 0.0
-    min_pressure_delta: float = 0.0
-    max_entry_spread_points: float | None = None
-    slippage_budget_points: float = 0.0
-    commission_points: float = 0.0
-    min_net_profit_points: float = 0.0
-    max_cycle_loss_points: float = 0.0
-    max_cycle_duration_seconds: float = 0.0
-    max_steps_exit_mode: str = "hold"
-    max_steps_hold_seconds: float = 0.0
-    entry_confirmation_snapshots: int = 1
-    entry_confirmation_max_gap_seconds: float = 3.0
-    order_kind: str = "market"
-    deviation: int = 20
-    magic: int = 0
-    comment_prefix: str = "recovery-runner"
-    protective_stop_points: float | None = 80.0
-    max_cycles_per_session: int = 1
-    max_cycles_per_day: int = 0
-    min_cycle_interval_seconds: float = 0.0
-    cooldown_after_cycle_close_seconds: float = 0.0
-    max_cycles_per_hour: int = 0
-    snapshot_stale_seconds: float = 5.0
-    blocked_dispatch_retry_seconds: float = 30.0
-    real_trade_calibration_guard_enabled: bool = True
-    real_trade_calibration_min_samples: int = 50
-    real_trade_calibration_max_target_shortfall_p90_points: float = 0.0
-    real_trade_calibration_min_net_margin_p50_points: float = 0.0
-    risk_profile: str = "recovery_budgeted"
-    max_daily_recovery_loss_amount: float = 0.0
-    max_rolling_recovery_loss_amount: float = 0.0
-    rolling_loss_window_minutes: int = 60
-    max_consecutive_loss_cycles: int = 0
-    loss_lockout_minutes: int = 0
-
-    def __post_init__(self) -> None:
-        if not str(self.symbol).strip():
-            raise ValueError("symbol is required")
-        direction = str(self.direction).strip().lower()
-        if direction not in {"buy", "sell"}:
-            raise ValueError("direction must be buy or sell")
-        object.__setattr__(self, "direction", direction)
-        direction_mode = str(self.direction_mode or "fixed").strip().lower()
-        if direction_mode not in {"fixed", "auto"}:
-            raise ValueError("direction_mode must be fixed or auto")
-        object.__setattr__(self, "direction_mode", direction_mode)
-        if self.max_cycles_per_session < 0:
-            raise ValueError("max_cycles_per_session must be >= 0")
-        if self.max_cycles_per_day < 0:
-            raise ValueError("max_cycles_per_day must be >= 0")
-        if self.min_cycle_interval_seconds < 0:
-            raise ValueError("min_cycle_interval_seconds must be >= 0")
-        if self.cooldown_after_cycle_close_seconds < 0:
-            raise ValueError("cooldown_after_cycle_close_seconds must be >= 0")
-        if self.max_cycles_per_hour < 0:
-            raise ValueError("max_cycles_per_hour must be >= 0")
-        if self.snapshot_stale_seconds <= 0:
-            raise ValueError("snapshot_stale_seconds must be > 0")
-        if self.blocked_dispatch_retry_seconds < 0:
-            raise ValueError("blocked_dispatch_retry_seconds must be >= 0")
-        if self.real_trade_calibration_min_samples < 0:
-            raise ValueError("real_trade_calibration_min_samples must be >= 0")
-        if self.real_trade_calibration_max_target_shortfall_p90_points < 0:
-            raise ValueError(
-                "real_trade_calibration_max_target_shortfall_p90_points must be >= 0"
-            )
-        if not str(self.risk_profile).strip():
-            raise ValueError("risk_profile is required")
-        object.__setattr__(self, "risk_profile", str(self.risk_profile).strip())
-        if self.max_daily_recovery_loss_amount < 0:
-            raise ValueError("max_daily_recovery_loss_amount must be >= 0")
-        if self.max_rolling_recovery_loss_amount < 0:
-            raise ValueError("max_rolling_recovery_loss_amount must be >= 0")
-        if self.rolling_loss_window_minutes <= 0:
-            raise ValueError("rolling_loss_window_minutes must be > 0")
-        if self.max_consecutive_loss_cycles < 0:
-            raise ValueError("max_consecutive_loss_cycles must be >= 0")
-        if self.loss_lockout_minutes < 0:
-            raise ValueError("loss_lockout_minutes must be >= 0")
-        if self.max_step_adverse_move_points < 0:
-            raise ValueError("max_step_adverse_move_points must be >= 0")
-        if self.min_directional_move_points < 0:
-            raise ValueError("min_directional_move_points must be >= 0")
-        if self.max_directional_move_points < 0:
-            raise ValueError("max_directional_move_points must be >= 0")
-        if self.min_pressure_delta < 0:
-            raise ValueError("min_pressure_delta must be >= 0")
-        if (
-            self.max_entry_spread_points is not None
-            and self.max_entry_spread_points <= 0
-        ):
-            raise ValueError("max_entry_spread_points must be None or > 0")
-        if self.slippage_budget_points < 0:
-            raise ValueError("slippage_budget_points must be >= 0")
-        if self.commission_points < 0:
-            raise ValueError("commission_points must be >= 0")
-        if self.min_net_profit_points < 0:
-            raise ValueError("min_net_profit_points must be >= 0")
-        if self.max_cycle_loss_points < 0:
-            raise ValueError("max_cycle_loss_points must be >= 0")
-        if self.max_cycle_duration_seconds < 0:
-            raise ValueError("max_cycle_duration_seconds must be >= 0")
-        if self.max_steps_hold_seconds < 0:
-            raise ValueError("max_steps_hold_seconds must be >= 0")
-        if self.entry_confirmation_snapshots < 0:
-            raise ValueError("entry_confirmation_snapshots must be >= 0")
-        if self.entry_confirmation_max_gap_seconds < 0:
-            raise ValueError("entry_confirmation_max_gap_seconds must be >= 0")
-        max_steps_exit_mode = str(self.max_steps_exit_mode or "hold").strip().lower()
-        if max_steps_exit_mode not in {"hold", "close_cycle"}:
-            raise ValueError("max_steps_exit_mode must be hold or close_cycle")
-        object.__setattr__(self, "max_steps_exit_mode", max_steps_exit_mode)
-        self.to_recovery_policy()
-
-    def to_recovery_policy(self) -> RecoveryPolicy:
-        return RecoveryPolicy(
-            enabled=bool(self.enabled),
-            base_volume=float(self.base_volume),
-            multiplier=float(self.multiplier),
-            max_steps=int(self.max_steps),
-            max_total_volume=float(self.max_total_volume),
-            max_next_volume=(
-                None if self.max_next_volume is None else float(self.max_next_volume)
-            ),
-            step_distance_points=float(self.step_distance_points),
-            max_step_adverse_move_points=float(self.max_step_adverse_move_points),
-            recovery_target_points=float(self.recovery_target_points),
-            point=float(self.point),
-            min_step_interval_ms=int(self.min_step_interval_ms),
-            volume_step=float(self.volume_step),
-            contract_size=float(self.contract_size),
-            direction_mode=str(self.direction_mode),
-            min_directional_move_points=float(self.min_directional_move_points),
-            max_directional_move_points=float(self.max_directional_move_points),
-            min_pressure_delta=float(self.min_pressure_delta),
-            max_entry_spread_points=(
-                None
-                if self.max_entry_spread_points is None
-                else float(self.max_entry_spread_points)
-            ),
-            slippage_budget_points=float(self.slippage_budget_points),
-            commission_points=float(self.commission_points),
-            min_net_profit_points=float(self.min_net_profit_points),
-            max_cycle_loss_points=float(self.max_cycle_loss_points),
-            max_cycle_duration_seconds=float(self.max_cycle_duration_seconds),
-            max_steps_exit_mode=str(self.max_steps_exit_mode),
-            max_steps_hold_seconds=float(self.max_steps_hold_seconds),
-        )
-
-    def to_canary_policy(self) -> RecoveryExecutionCanaryPolicy:
-        return RecoveryExecutionCanaryPolicy(
-            enabled=bool(self.enabled),
-            dry_run=bool(self.dry_run),
-            order_kind=str(self.order_kind or "market"),
-            deviation=int(self.deviation),
-            magic=int(self.magic),
-            comment_prefix=str(self.comment_prefix or "recovery-runner"),
-            protective_stop_points=self.protective_stop_points,
-        )
-
-    def to_calibration_guard_settings(self) -> RecoveryCostCalibrationGuardSettings:
-        return RecoveryCostCalibrationGuardSettings(
-            enabled=bool(self.real_trade_calibration_guard_enabled),
-            min_samples=int(self.real_trade_calibration_min_samples),
-            max_target_shortfall_p90_points=float(
-                self.real_trade_calibration_max_target_shortfall_p90_points
-            ),
-            min_net_margin_p50_points=float(
-                self.real_trade_calibration_min_net_margin_p50_points
-            ),
-        )
-
-    def to_risk_budget_settings(self) -> RecoveryRiskBudgetSettings:
-        return RecoveryRiskBudgetSettings(
-            risk_profile=str(self.risk_profile),
-            max_daily_recovery_loss_amount=float(self.max_daily_recovery_loss_amount),
-            max_rolling_recovery_loss_amount=float(
-                self.max_rolling_recovery_loss_amount
-            ),
-            rolling_loss_window_minutes=int(self.rolling_loss_window_minutes),
-            max_consecutive_loss_cycles=int(self.max_consecutive_loss_cycles),
-            loss_lockout_minutes=int(self.loss_lockout_minutes),
-        )
+# RecoveryRuntimeRunnerSettings 已抽到 runner_settings.py（N1 拆分）。
+# 以下原 dataclass 内容已删除。
 
 
 class DemoBoundedRecoveryRunner:
@@ -1595,334 +1430,3 @@ class DemoBoundedRecoveryRunner:
             "max_gap_seconds": float(self._settings.entry_confirmation_max_gap_seconds),
             **self._entry_confirmer.status(),
         }
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _default_cycle_id(now: datetime) -> str:
-    millis = int(now.timestamp() * 1000)
-    return f"demo-recovery-runner-{millis}"
-
-
-def _default_source_signal_id(cycle_id: str) -> str:
-    return f"{cycle_id}-signal"
-
-
-def _cycle_close_status_reason(reason: str | None, *, dry_run: bool) -> str:
-    suffix = "dry_run" if dry_run else "submitted"
-    reason_key = str(reason or "").strip().lower()
-    mapping = {
-        "net_recovery_target_reached": "resident_recovery_target_reached",
-        "cycle_loss_limit_reached": "resident_recovery_cycle_loss_limit",
-        "max_cycle_duration_reached": "resident_recovery_max_cycle_duration",
-        "max_steps_exit_reached": "resident_recovery_max_steps_exit",
-        "max_steps_hold_time_reached": "resident_recovery_max_steps_hold_time",
-    }
-    prefix = mapping.get(reason_key, "resident_recovery_cycle_closed")
-    return f"{prefix}_{suffix}"
-
-
-def _decision_counts_payload(counter: Counter[str]) -> dict[str, int]:
-    keys = ("open_initial", "open_step", "close_cycle", "hold", "block", "ignored")
-    payload = {key: int(counter.get(key, 0)) for key in keys}
-    for key, value in counter.items():
-        payload.setdefault(str(key), int(value))
-    return payload
-
-
-def _decision_payload(decision: Any) -> dict[str, Any]:
-    return {
-        "action": getattr(decision, "action", None),
-        "reason": getattr(decision, "reason", None),
-        "step_index": getattr(decision, "step_index", None),
-        "volume": getattr(decision, "volume", None),
-        "entry_price": getattr(decision, "entry_price", None),
-        "exit_price": getattr(decision, "exit_price", None),
-        "metadata": dict(getattr(decision, "metadata", {}) or {}),
-    }
-
-
-def _policy_decision_payload(decision: Any) -> dict[str, Any]:
-    payload = {
-        "reason": getattr(decision, "reason", None),
-        "metadata": dict(getattr(decision, "metadata", {}) or {}),
-    }
-    if hasattr(decision, "direction"):
-        payload["direction"] = getattr(decision, "direction")
-    if hasattr(decision, "allowed"):
-        payload["allowed"] = bool(getattr(decision, "allowed"))
-    return payload
-
-
-def _cycle_with_submitted_ticket(
-    cycle: RecoveryCycleState,
-    *,
-    scope: str,
-    step_index: int,
-    execution_result: dict[str, Any],
-) -> RecoveryCycleState:
-    ticket = _ticket_from_nested_payload(execution_result)
-    if ticket is None:
-        return cycle
-    metadata = dict(cycle.metadata or {})
-    items = [
-        dict(item)
-        for item in list(metadata.get("submitted_tickets") or [])
-        if isinstance(item, dict)
-    ]
-    normalized = {
-        "scope": str(scope),
-        "step_index": int(step_index),
-        "ticket": int(ticket),
-    }
-    existing = {
-        (str(item.get("scope")), int(item.get("ticket") or 0)) for item in items
-    }
-    if (normalized["scope"], normalized["ticket"]) not in existing:
-        items.append(normalized)
-    metadata["submitted_tickets"] = items
-    return replace(cycle, metadata=metadata)
-
-
-def _submitted_tickets(cycle: RecoveryCycleState) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    seen: set[int] = set()
-    for item in list((cycle.metadata or {}).get("submitted_tickets") or []):
-        if not isinstance(item, dict):
-            continue
-        try:
-            ticket = int(item.get("ticket"))
-        except (TypeError, ValueError):
-            continue
-        if ticket <= 0 or ticket in seen:
-            continue
-        seen.add(ticket)
-        items.append(
-            {
-                "scope": str(item.get("scope") or f"ticket_{ticket}"),
-                "step_index": int(item.get("step_index") or 0),
-                "ticket": ticket,
-            }
-        )
-    return items
-
-
-def _ticket_from_nested_payload(payload: Any) -> int | None:
-    if not isinstance(payload, dict):
-        return None
-    for key in ("ticket", "position", "order", "order_id", "deal", "deal_id"):
-        try:
-            ticket = int(payload.get(key))
-        except (TypeError, ValueError):
-            continue
-        if ticket > 0:
-            return ticket
-    for key in ("result", "response", "response_payload"):
-        ticket = _ticket_from_nested_payload(payload.get(key))
-        if ticket is not None:
-            return ticket
-    return None
-
-
-def _close_result_success(result: Any) -> bool:
-    if not isinstance(result, dict):
-        return False
-    if result.get("success") is True:
-        return True
-    status = str(result.get("status") or result.get("retcode") or "").strip().lower()
-    if status in {"ok", "closed", "success", "done", "completed", "10009"}:
-        if "accepted" not in result or bool(result.get("accepted")):
-            return True
-    effective_state = result.get("effective_state")
-    if isinstance(effective_state, dict):
-        nested = effective_state.get("result")
-        if isinstance(nested, dict) and nested.get("success") is True:
-            return True
-    nested_result = result.get("result")
-    if isinstance(nested_result, dict) and nested_result.get("success") is True:
-        return True
-    return False
-
-
-def _close_result_position_absent(result: Any) -> bool:
-    if not isinstance(result, Mapping):
-        return False
-    text_fields = []
-    for key in ("message", "error_message", "reason", "error_code", "status"):
-        value = result.get(key)
-        if value is not None:
-            text_fields.append(str(value))
-    details = result.get("details")
-    if isinstance(details, Mapping):
-        for value in details.values():
-            if value is not None:
-                text_fields.append(str(value))
-    effective_state = result.get("effective_state")
-    if isinstance(effective_state, Mapping):
-        for value in effective_state.values():
-            if value is not None:
-                text_fields.append(str(value))
-    return _position_absent_message(" ".join(text_fields))
-
-
-def _position_absent_message(message: str) -> bool:
-    normalized = str(message or "").strip().lower().replace("_", " ")
-    if not normalized:
-        return False
-    return "position" in normalized and (
-        "not found" in normalized
-        or "already closed" in normalized
-        or "missing" in normalized
-    )
-
-
-def _cleanup_result_metadata(close_result: Mapping[str, Any]) -> dict[str, Any]:
-    results = [
-        dict(item)
-        for item in list(close_result.get("results") or [])
-        if isinstance(item, Mapping)
-    ]
-    tickets_by_status: dict[str, list[int]] = {
-        "closed": [],
-        "already_closed": [],
-        "failed": [],
-    }
-    for item in results:
-        status = str(item.get("status") or "unknown")
-        try:
-            ticket = int(item.get("ticket"))
-        except (TypeError, ValueError):
-            continue
-        if ticket <= 0:
-            continue
-        tickets_by_status.setdefault(status, []).append(ticket)
-    return {
-        "status": close_result.get("status"),
-        "reason": close_result.get("reason"),
-        "tickets": _unique_positive_ints(close_result.get("tickets")),
-        "submitted_tickets": _unique_positive_ints(
-            close_result.get("submitted_tickets")
-        ),
-        "closed_tickets": tickets_by_status.get("closed", []),
-        "already_closed_tickets": tickets_by_status.get("already_closed", []),
-        "failed_tickets": tickets_by_status.get("failed", []),
-    }
-
-
-def _matching_recovery_positions(
-    cycle: RecoveryCycleState,
-    positions: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    submitted = {int(item["ticket"]) for item in _submitted_tickets(cycle)}
-    matches: list[dict[str, Any]] = []
-    for position in positions:
-        account_key = str(position.get("account_key") or "").strip()
-        if account_key and account_key != cycle.account_key:
-            continue
-        ticket = _position_ticket(position)
-        if ticket is not None and ticket in submitted:
-            matches.append(position)
-            continue
-        if _position_identity_matches_cycle(cycle, position):
-            matches.append(position)
-    return matches
-
-
-def _position_identity_matches_cycle(
-    cycle: RecoveryCycleState,
-    position: Mapping[str, Any],
-) -> bool:
-    cycle_id = str(cycle.cycle_id or "").strip()
-    source_signal_id = str(cycle.source_signal_id or "").strip()
-    metadata = position.get("metadata")
-    if isinstance(metadata, Mapping):
-        metadata_cycle_id = str(metadata.get("recovery_cycle_id") or "").strip()
-        metadata_source_signal_id = str(metadata.get("source_signal_id") or "").strip()
-        if cycle_id and metadata_cycle_id == cycle_id:
-            return True
-        if source_signal_id and metadata_source_signal_id == source_signal_id:
-            return True
-
-    identity_fields = (
-        "signal_id",
-        "source_signal_id",
-        "trace_id",
-        "request_id",
-        "action_id",
-        "comment",
-    )
-    for key in identity_fields:
-        value = str(position.get(key) or "").strip()
-        if not value:
-            continue
-        if source_signal_id and value == source_signal_id:
-            return True
-        if cycle_id and cycle_id in value:
-            return True
-    return False
-
-
-def _position_match_payload(position: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "ticket": _position_ticket(position),
-        "signal_id": str(position.get("signal_id") or ""),
-        "comment": str(position.get("comment") or ""),
-        "symbol": str(position.get("symbol") or ""),
-        "strategy": str(position.get("strategy") or ""),
-        "timeframe": str(position.get("timeframe") or ""),
-    }
-
-
-def _unique_positive_ints(values: Any) -> list[int]:
-    items: list[int] = []
-    seen: set[int] = set()
-    for value in list(values or []):
-        try:
-            item = int(value)
-        except (TypeError, ValueError):
-            continue
-        if item <= 0 or item in seen:
-            continue
-        seen.add(item)
-        items.append(item)
-    return items
-
-
-def _position_ticket(position: Mapping[str, Any]) -> int | None:
-    for key in ("ticket", "position_ticket", "position", "order_ticket"):
-        try:
-            ticket = int(position.get(key))
-        except (TypeError, ValueError):
-            continue
-        if ticket > 0:
-            return ticket
-    return None
-
-
-def _parse_datetime(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
-
-
-def _datetime_after_or_equal(left: datetime, right: datetime) -> bool:
-    left_aware = left if left.tzinfo is not None else left.replace(tzinfo=timezone.utc)
-    right_aware = (
-        right if right.tzinfo is not None else right.replace(tzinfo=timezone.utc)
-    )
-    return left_aware >= right_aware
-
-
-def _iso(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    return value.isoformat()
