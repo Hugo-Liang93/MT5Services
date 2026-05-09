@@ -152,7 +152,9 @@ class TradeCommandAuditRepository:
         reservation_id = uuid4().hex
         expires_at = at_time + timedelta(minutes=5)
         with self._writer.connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [resolved_account_key])
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))", [resolved_account_key]
+            )
             cur.execute(
                 "UPDATE trade_frequency_reservations "
                 "SET status = 'expired', finalized_at = NOW() "
@@ -228,11 +230,11 @@ class TradeCommandAuditRepository:
             "SELECT "
             "(SELECT COUNT(*)::bigint FROM trade_command_audits "
             " WHERE account_key = %s "
-              " AND recorded_at >= %s "
-              " AND command_type = 'execute_trade' "
-              " AND status = 'success' "
-              f"{_REAL_TRADE_AUDIT_PREDICATE}) + "
-              "(SELECT COUNT(*)::bigint FROM trade_frequency_reservations "
+            " AND recorded_at >= %s "
+            " AND command_type = 'execute_trade' "
+            " AND status = 'success' "
+            f"{_REAL_TRADE_AUDIT_PREDICATE}) + "
+            "(SELECT COUNT(*)::bigint FROM trade_frequency_reservations "
             " WHERE account_key = %s "
             " AND reserved_at >= %s "
             " AND expires_at > NOW() "

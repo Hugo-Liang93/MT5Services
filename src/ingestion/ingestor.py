@@ -103,7 +103,9 @@ class BackgroundIngestor:
         # §0aa P2：旧实现 stop() 关 _fetch_executor 后 start() 不重建 →
         # 进程内 restart / 热恢复路径上的采集器变成不可重启状态。
         # 检测已关 executor 并重建（_shutdown 标记反映状态）。
-        if self._fetch_executor is None or getattr(self._fetch_executor, "_shutdown", False):
+        if self._fetch_executor is None or getattr(
+            self._fetch_executor, "_shutdown", False
+        ):
             self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=self._mt5_call_workers(),
                 thread_name_prefix="mt5-market-call",
@@ -393,7 +395,7 @@ class BackgroundIngestor:
                             timeframe=t,
                             start=st,
                             limit=self.settings.ohlc_backfill_limit,
-                        )
+                        ),
                     )
                 else:
                     # 初次拉取仅用于填充内存缓存，按缓存/默认窗口大小即可。
@@ -406,7 +408,7 @@ class BackgroundIngestor:
                         f"ohlc:{symbol}:{tf}",
                         lambda s=symbol, t=tf, lim=warmup_limit: self.client.get_ohlc(
                             s, t, lim
-                        )
+                        ),
                     )
             except MT5MarketError as exc:
                 self._record_lane_error("ohlc", symbol, tf, exc)
@@ -601,9 +603,7 @@ class BackgroundIngestor:
         """返回各队列长度、上限以及缓冲大小，便于监控。"""
         stats = self.storage.stats()
         threads = stats.setdefault("threads", {})
-        threads["ingest_alive"] = (
-            self._thread.is_alive() if self._thread else False
-        )
+        threads["ingest_alive"] = self._thread.is_alive() if self._thread else False
         threads["backfill_alive"] = (
             self._backfill_thread.is_alive() if self._backfill_thread else False
         )
@@ -662,9 +662,7 @@ class BackgroundIngestor:
         warning unless a strategy/runtime contract explicitly requires it.
         """
         normalized = {
-            self._normalize_lane_requirement(lane)
-            for lane in lanes
-            if lane is not None
+            self._normalize_lane_requirement(lane) for lane in lanes if lane is not None
         }
         with self._lane_lock:
             self._required_market_data_lanes = normalized
@@ -745,7 +743,11 @@ class BackgroundIngestor:
         now_utc = (
             now.astimezone(timezone.utc)
             if now is not None and now.tzinfo is not None
-            else (now.replace(tzinfo=timezone.utc) if now is not None else datetime.now(timezone.utc))
+            else (
+                now.replace(tzinfo=timezone.utc)
+                if now is not None
+                else datetime.now(timezone.utc)
+            )
         )
         now_monotonic = time.monotonic()
         circuit_open = self._mt5_circuit_is_open()
@@ -792,16 +794,12 @@ class BackgroundIngestor:
                 )
                 market_age = max(0.0, (now_utc - market_dt).total_seconds())
             fetch_stale = age is not None and age > threshold
-            market_stale = (
-                market_age is not None and market_age > market_threshold
-            )
+            market_stale = market_age is not None and market_age > market_threshold
             stale = bool(fetch_stale or market_stale)
             stale_reason = (
                 "market_time_stale"
                 if market_stale
-                else "fetch_stale"
-                if fetch_stale
-                else None
+                else "fetch_stale" if fetch_stale else None
             )
             severity = "critical" if required or kind != "tick" else "warning"
             status = "healthy"
@@ -855,7 +853,9 @@ class BackgroundIngestor:
             if backoff_active:
                 active_backoff_count += 1
             symbol_health[symbol] = {
-                "consecutive_error_count": int(self._symbol_error_counts.get(symbol, 0)),
+                "consecutive_error_count": int(
+                    self._symbol_error_counts.get(symbol, 0)
+                ),
                 "backoff_active": backoff_active,
                 "backoff_remaining_seconds": round(backoff_remaining, 3),
                 "backoff_round": int(self._symbol_backoff_count.get(symbol, 0)),

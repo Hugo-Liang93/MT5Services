@@ -134,7 +134,10 @@ class HTFStateCache:
 
     def on_signal_event(self, event: Any) -> None:
         """SignalRuntime 信号监听器：缓存 source_strategies 的 confirmed 信号方向。"""
-        if self._source_strategies is not None and event.strategy not in self._source_strategies:
+        if (
+            self._source_strategies is not None
+            and event.strategy not in self._source_strategies
+        ):
             return
         signal_state = str(event.metadata.get(MK.SIGNAL_STATE, ""))
         if not signal_state.startswith("confirmed_"):

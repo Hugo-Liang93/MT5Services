@@ -24,7 +24,9 @@ def load_indicator_settings() -> IndicatorSettings:
     from src.config.indicator_config import ConfigLoader
 
     path = resolve_config_path("indicators.json")
-    config = ConfigLoader.load(path) if path else ConfigLoader.load("config/indicators.json")
+    config = (
+        ConfigLoader.load(path) if path else ConfigLoader.load("config/indicators.json")
+    )
     return IndicatorSettings(
         poll_seconds=float(config.pipeline.poll_interval),
         reload_interval=float(config.reload_interval),

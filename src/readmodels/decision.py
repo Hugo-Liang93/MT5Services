@@ -99,7 +99,9 @@ def _build_evidence(context: Mapping[str, Any], stance: str) -> list[dict[str, s
         },
         {
             "title": "风险保护",
-            "value": f"{guard_count} 个保护窗口生效" if guard_count else "当前无保护阻断",
+            "value": (
+                f"{guard_count} 个保护窗口生效" if guard_count else "当前无保护阻断"
+            ),
             "tone": "danger" if guard_count else "positive",
         },
         {
@@ -109,7 +111,9 @@ def _build_evidence(context: Mapping[str, Any], stance: str) -> list[dict[str, s
                 if open_count
                 else "当前无持仓暴露"
             ),
-            "tone": "warning" if open_pnl < 0 else ("positive" if open_count else "neutral"),
+            "tone": (
+                "warning" if open_pnl < 0 else ("positive" if open_count else "neutral")
+            ),
         },
         {
             "title": "队列压力",
@@ -118,7 +122,11 @@ def _build_evidence(context: Mapping[str, Any], stance: str) -> list[dict[str, s
                 if _safe_int(operations.get("queuePressureCount"))
                 else "当前无队列压力"
             ),
-            "tone": "warning" if _safe_int(operations.get("queuePressureCount")) else "positive",
+            "tone": (
+                "warning"
+                if _safe_int(operations.get("queuePressureCount"))
+                else "positive"
+            ),
         },
     ]
 
@@ -129,7 +137,10 @@ def _build_conflicts(context: Mapping[str, Any], stance: str) -> list[str]:
     operations = _as_mapping(context.get("operations"))
 
     conflicts: list[str] = []
-    if _safe_int(signals.get("buyCount")) > 0 and _safe_int(signals.get("sellCount")) > 0:
+    if (
+        _safe_int(signals.get("buyCount")) > 0
+        and _safe_int(signals.get("sellCount")) > 0
+    ):
         conflicts.append("当前多空信号并存，策略共识不足。")
     if _safe_int(risks.get("highImpactWindowCount")) > 0:
         conflicts.append("高影响事件窗口临近，方向判断容易被宏观事件打断。")
@@ -177,7 +188,9 @@ def _build_invalidations(context: Mapping[str, Any], stance: str) -> list[str]:
     return invalidations[:4]
 
 
-def _resolve_recommended_action(context: Mapping[str, Any], stance: str) -> tuple[str, str]:
+def _resolve_recommended_action(
+    context: Mapping[str, Any], stance: str
+) -> tuple[str, str]:
     risks = _as_mapping(context.get("risks"))
     operations = _as_mapping(context.get("operations"))
     focus = _as_mapping(context.get("focus"))
@@ -187,12 +200,21 @@ def _resolve_recommended_action(context: Mapping[str, Any], stance: str) -> tupl
     if _safe_int(operations.get("queuePressureCount")) > 0:
         return "先恢复链路稳定", "优先查看采集区与分析区，确认实时数据队列压力。"
     if stance == "观望":
-        return "继续观察并等待共识", "优先查看策略区与投票主席，等待正式信号形成一致结论。"
+        return (
+            "继续观察并等待共识",
+            "优先查看策略区与投票主席，等待正式信号形成一致结论。",
+        )
     if stance == "偏多":
-        return "准备小仓位试单", "先复核风控官与交易员，确认点差和账户约束后再推进执行。"
+        return (
+            "准备小仓位试单",
+            "先复核风控官与交易员，确认点差和账户约束后再推进执行。",
+        )
     focus_roles = list(focus.get("focusRoles") or [])
     if focus_roles:
-        return "准备空头执行检查", f"先回看{focus_roles[0]}相关事实层，再决定是否推进执行。"
+        return (
+            "准备空头执行检查",
+            f"先回看{focus_roles[0]}相关事实层，再决定是否推进执行。",
+        )
     return "准备空头执行检查", "先复核风控官与交易员，再决定是否推进执行。"
 
 

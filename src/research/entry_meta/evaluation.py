@@ -87,8 +87,7 @@ def build_blocked_trade_attribution(
         if key is not None:
             trade_index.setdefault(key, deque()).append(trade)
     events = (
-        filter_result.get("execution_summary", {}).get("blocked_entry_events", [])
-        or []
+        filter_result.get("execution_summary", {}).get("blocked_entry_events", []) or []
     )
     matched_pnl = 0.0
     matched_wins = 0

@@ -2,6 +2,7 @@
 
 MicrostructureFeatureProvider 单元测试。
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,10 +10,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.research.features.protocol import FeatureRole
-from src.research.features.microstructure import MicrostructureFeatureProvider
 from src.research.core.config import MicrostructureProviderConfig
-
+from src.research.features.microstructure import MicrostructureFeatureProvider
+from src.research.features.protocol import FeatureRole
 
 # ---------------------------------------------------------------------------
 # Mock DataMatrix helpers
@@ -367,9 +367,7 @@ class TestRangePosition:
         """窗口不足时返回 None"""
         w = 5
         closes = [1.0] * 3
-        m = _make_matrix(
-            opens=closes, highs=closes, lows=closes, closes=closes
-        )
+        m = _make_matrix(opens=closes, highs=closes, lows=closes, closes=closes)
         p = MicrostructureFeatureProvider()
         result = p.compute(m)
         col = result[("microstructure", f"range_position_{w}")]
@@ -424,7 +422,9 @@ class TestOutputShape:
         highs = [float(i) + 0.5 for i in range(1, n + 1)]
         lows = [float(i) - 0.5 for i in range(1, n + 1)]
         volumes = [1000.0 + i * 10 for i in range(n)]
-        m = _make_matrix(opens=opens, highs=highs, lows=lows, closes=closes, volumes=volumes)
+        m = _make_matrix(
+            opens=opens, highs=highs, lows=lows, closes=closes, volumes=volumes
+        )
         p = MicrostructureFeatureProvider()
         result = p.compute(m)
         for key, col in result.items():
@@ -433,9 +433,7 @@ class TestOutputShape:
     def test_all_keys_have_microstructure_group(self) -> None:
         n = 5
         closes = [1.0, 2.0, 3.0, 2.0, 1.0]
-        m = _make_matrix(
-            opens=closes, highs=closes, lows=closes, closes=closes
-        )
+        m = _make_matrix(opens=closes, highs=closes, lows=closes, closes=closes)
         p = MicrostructureFeatureProvider()
         result = p.compute(m)
         for group, _field in result:
@@ -469,6 +467,8 @@ class TestOutputShape:
 
     def test_config_lookback_respected(self) -> None:
         """自定义 lookback=3 → 窗口特征名包含 _3 后缀。"""
-        p = MicrostructureFeatureProvider(config=MicrostructureProviderConfig(lookback=3))
+        p = MicrostructureFeatureProvider(
+            config=MicrostructureProviderConfig(lookback=3)
+        )
         rm = p.role_mapping()
         assert any("_3" in k for k in rm)

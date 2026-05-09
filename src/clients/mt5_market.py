@@ -112,18 +112,24 @@ class MT5MarketClient(MT5BaseClient):
         self.connect()
         info = mt5.symbol_info(symbol)
         if info is None:
-            raise MT5MarketError(f"Failed to get symbol info for {symbol}: {mt5.last_error()}")
+            raise MT5MarketError(
+                f"Failed to get symbol info for {symbol}: {mt5.last_error()}"
+            )
         return SymbolInfo(
             symbol=info.name,
             description=self._get_field(info, "description", "") or "",
             digits=int(self._get_field(info, "digits", 0) or 0),
             point=float(self._get_field(info, "point", 0.0) or 0.0),
-            trade_contract_size=float(self._get_field(info, "trade_contract_size", 0.0) or 0.0),
+            trade_contract_size=float(
+                self._get_field(info, "trade_contract_size", 0.0) or 0.0
+            ),
             volume_min=float(self._get_field(info, "volume_min", 0.0) or 0.0),
             volume_max=float(self._get_field(info, "volume_max", 0.0) or 0.0),
             volume_step=float(self._get_field(info, "volume_step", 0.0) or 0.0),
             margin_initial=float(self._get_field(info, "margin_initial", 0.0) or 0.0),
-            margin_maintenance=float(self._get_field(info, "margin_maintenance", 0.0) or 0.0),
+            margin_maintenance=float(
+                self._get_field(info, "margin_maintenance", 0.0) or 0.0
+            ),
             tick_value=float(self._get_field(info, "trade_tick_value", 0.0) or 0.0),
             tick_size=float(self._get_field(info, "trade_tick_size", 0.0) or 0.0),
             stops_level=self._int_field(info, "trade_stops_level", 0),
@@ -150,7 +156,9 @@ class MT5MarketClient(MT5BaseClient):
         )
 
     @MT5BaseClient.measured("get_ticks")
-    def get_ticks(self, symbol: str, limit: int, start: Optional[datetime] = None) -> List[Tick]:
+    def get_ticks(
+        self, symbol: str, limit: int, start: Optional[datetime] = None
+    ) -> List[Tick]:
         """支持从指定时间开始拉取，便于增量采集。"""
         self.connect()
         try:
@@ -158,10 +166,14 @@ class MT5MarketClient(MT5BaseClient):
         except AttributeError:
             configured_lookback = 20
         lookback_seconds = int(configured_lookback or 20)
-        start = start or (datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds))
+        start = start or (
+            datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
+        )
         ticks = mt5.copy_ticks_from(symbol, start, limit, mt5.COPY_TICKS_ALL)
         if ticks is None:
-            raise MT5MarketError(f"Failed to get ticks for {symbol}: {mt5.last_error()}")
+            raise MT5MarketError(
+                f"Failed to get ticks for {symbol}: {mt5.last_error()}"
+            )
         return [
             Tick(
                 symbol=symbol,
@@ -173,8 +185,8 @@ class MT5MarketClient(MT5BaseClient):
                 time_msc=self._tick_time_msc(tick),
                 flags=self._extract_flags(tick),
             )
-                for tick in ticks
-            ]
+            for tick in ticks
+        ]
 
     @MT5BaseClient.measured("get_ohlc")
     def get_ohlc(self, symbol: str, timeframe: str, limit: int) -> List[OHLC]:
@@ -194,12 +206,14 @@ class MT5MarketClient(MT5BaseClient):
                 low=self._get_field(rate, "low"),
                 close=self._get_field(rate, "close"),
                 volume=self._get_field(rate, "tick_volume", 0.0),
-                )
-                for rate in rates
-            ]
+            )
+            for rate in rates
+        ]
 
     @MT5BaseClient.measured("get_ohlc_from")
-    def get_ohlc_from(self, symbol: str, timeframe: str, start: datetime, limit: int) -> List[OHLC]:
+    def get_ohlc_from(
+        self, symbol: str, timeframe: str, start: datetime, limit: int
+    ) -> List[OHLC]:
         """从指定时间开始获取最多 limit 条 K 线，便于补全历史。"""
         self.connect()
         tf = self._timeframe_to_mt5(timeframe)
@@ -210,7 +224,9 @@ class MT5MarketClient(MT5BaseClient):
         )
         rates = mt5.copy_rates_range(symbol, tf, request_start, request_end)
         if rates is None:
-            raise MT5MarketError(f"Failed to get OHLC from {start} for {symbol}: {mt5.last_error()}")
+            raise MT5MarketError(
+                f"Failed to get OHLC from {start} for {symbol}: {mt5.last_error()}"
+            )
         return [
             OHLC(
                 symbol=symbol,

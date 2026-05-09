@@ -69,9 +69,7 @@ def test_return_gain_can_accept_when_drawdown_worsens_within_limit() -> None:
         min_trades=10,
     )
 
-    decision = report.to_dict()["threshold_report"]["threshold_results"][0][
-        "decision"
-    ]
+    decision = report.to_dict()["threshold_report"]["threshold_results"][0]["decision"]
     assert report.status == "accepted"
     assert decision["status"] == "accepted"
     assert decision["reason"] == "incremental_gain"
@@ -264,6 +262,5 @@ def test_duplicate_match_keys_consume_distinct_baseline_trades_once() -> None:
     assert attribution["unmatched_events"] == 1
     assert attribution["matched_pnl"] == 7.0
     assert [
-        event["matched_trade"]["pnl"]
-        for event in attribution["attributed_events"]
+        event["matched_trade"]["pnl"] for event in attribution["attributed_events"]
     ] == [10.0, -3.0]

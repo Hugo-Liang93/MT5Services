@@ -198,7 +198,9 @@ class TradingService:
         comment: str = "",
         volume: Optional[float] = None,
     ) -> bool:
-        return self.client.close_position(ticket, deviation=deviation, comment=comment, volume=volume)
+        return self.client.close_position(
+            ticket, deviation=deviation, comment=comment, volume=volume
+        )
 
     def close_all(
         self,
@@ -216,11 +218,17 @@ class TradingService:
             comment=comment,
         )
 
-    def cancel_orders(self, symbol: Optional[str] = None, magic: Optional[int] = None) -> dict:
+    def cancel_orders(
+        self, symbol: Optional[str] = None, magic: Optional[int] = None
+    ) -> dict:
         return self.client.cancel_orders(symbol=symbol, magic=magic)
 
-    def estimate_margin(self, symbol: str, volume: float, side: str, price: Optional[float] = None) -> float:
-        return self.client.estimate_margin(symbol=symbol, volume=volume, side=side, price=price)
+    def estimate_margin(
+        self, symbol: str, volume: float, side: str, price: Optional[float] = None
+    ) -> float:
+        return self.client.estimate_margin(
+            symbol=symbol, volume=volume, side=side, price=price
+        )
 
     def modify_orders(
         self,
@@ -239,7 +247,9 @@ class TradingService:
         sl: Optional[float] = None,
         tp: Optional[float] = None,
     ) -> dict:
-        return self.client.modify_positions(ticket=ticket, symbol=symbol, magic=magic, sl=sl, tp=tp)
+        return self.client.modify_positions(
+            ticket=ticket, symbol=symbol, magic=magic, sl=sl, tp=tp
+        )
 
     def _side_to_order_type(self, side: str, order_kind: str = "market") -> int:
         return self.client.side_and_kind_to_order_type(side, order_kind=order_kind)
@@ -294,7 +304,9 @@ class TradingService:
         # 先估算保证金，注入 metadata 供 MarginAvailabilityRule 使用
         margin_estimate: Optional[float] = None
         try:
-            margin_estimate = self.estimate_margin(symbol=symbol, volume=volume, side=side, price=price)
+            margin_estimate = self.estimate_margin(
+                symbol=symbol, volume=volume, side=side, price=price
+            )
         except Exception:
             margin_estimate = None
         enriched_metadata = dict(metadata or {})
@@ -328,7 +340,9 @@ class TradingService:
             magic=magic,
             metadata=metadata,
         )
-        if self._is_gold_symbol(symbol) and bool(precheck_snapshot.get("event_blocked")):
+        if self._is_gold_symbol(symbol) and bool(
+            precheck_snapshot.get("event_blocked")
+        ):
             blocked_snapshot = self._coerce_trade_guard_block(
                 precheck_snapshot,
                 reason=REASON_XAUUSD_TRADE_GUARD_BLOCKED,
@@ -367,7 +381,9 @@ class TradingService:
                 risk_assessment,
                 committed=False,
             )
-            raise MT5TradingClientError(str(precheck_snapshot.get("reason") or "Trade precheck failed"))
+            raise MT5TradingClientError(
+                str(precheck_snapshot.get("reason") or "Trade precheck failed")
+            )
 
         last_error: Optional[Exception] = None
         max_attempts = max(int(retry_attempts), 1)
@@ -474,7 +490,13 @@ class TradingService:
         checks: list[dict[str, Any]] = []
         warnings: list[str] = []
         if volume is not None and volume <= 0:
-            checks.append({"name": "volume_positive", "passed": False, "message": "volume must be > 0"})
+            checks.append(
+                {
+                    "name": "volume_positive",
+                    "passed": False,
+                    "message": "volume must be > 0",
+                }
+            )
             return build_blocked_trade_precheck_result(
                 symbol=symbol,
                 request_id=request_id,
@@ -525,7 +547,9 @@ class TradingService:
                     tp=tp,
                 )
             except Exception as exc:
-                checks.append({"name": "trade_parameters", "passed": False, "message": str(exc)})
+                checks.append(
+                    {"name": "trade_parameters", "passed": False, "message": str(exc)}
+                )
                 return build_blocked_trade_precheck_result(
                     symbol=symbol,
                     request_id=request_id,
@@ -545,7 +569,10 @@ class TradingService:
         if volume is not None and side:
             try:
                 margin_estimate = self.estimate_margin(
-                    symbol=symbol, volume=volume, side=side, price=price,
+                    symbol=symbol,
+                    volume=volume,
+                    side=side,
+                    price=price,
                 )
             except Exception:
                 margin_estimate = None
@@ -594,7 +621,9 @@ class TradingService:
         comment: str = "",
         volume: Optional[float] = None,
     ) -> dict:
-        success = self.close(ticket=ticket, deviation=deviation, comment=comment, volume=volume)
+        success = self.close(
+            ticket=ticket, deviation=deviation, comment=comment, volume=volume
+        )
         self._invalidate_account_cache()
         return {"ticket": ticket, "success": success, "volume": volume}
 
@@ -636,7 +665,9 @@ class TradingService:
             orders = [o for o in orders if o.magic == magic]
         return orders
 
-    def execute_trade_batch(self, trades: list[dict], stop_on_error: bool = False) -> dict:
+    def execute_trade_batch(
+        self, trades: list[dict], stop_on_error: bool = False
+    ) -> dict:
         results = []
         success_count = 0
         failure_count = 0
@@ -646,7 +677,14 @@ class TradingService:
                 results.append({"index": index, "success": True, "result": result})
                 success_count += 1
             except Exception as exc:
-                results.append({"index": index, "success": False, "error": str(exc), "trade": dict(trade)})
+                results.append(
+                    {
+                        "index": index,
+                        "success": False,
+                        "error": str(exc),
+                        "trade": dict(trade),
+                    }
+                )
                 failure_count += 1
                 if stop_on_error:
                     break

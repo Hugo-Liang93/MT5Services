@@ -78,7 +78,10 @@ def test_execution_intent_publisher_requires_explicit_binding_in_single_account_
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
+        write_with_idempotency_fn=lambda items: (
+            rows.extend(item["row"] for item in items)
+            or [item["intent_key"] for item in items]
+        ),
         runtime_identity=_runtime_identity(),
         account_bindings={},
         strategy_deployments={
@@ -111,7 +114,10 @@ def test_execution_intent_publisher_routes_explicit_single_account_binding(monke
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
+        write_with_idempotency_fn=lambda items: (
+            rows.extend(item["row"] for item in items)
+            or [item["intent_key"] for item in items]
+        ),
         runtime_identity=_runtime_identity(),
         account_bindings={"main": ["trend_alpha"]},
         strategy_deployments={
@@ -159,7 +165,10 @@ def test_execution_intent_publisher_routes_bound_strategy_in_multi_account_mode(
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
+        write_with_idempotency_fn=lambda items: (
+            rows.extend(item["row"] for item in items)
+            or [item["intent_key"] for item in items]
+        ),
         runtime_identity=_runtime_identity(live_topology_mode="multi_account"),
         account_bindings={"exec_b": ["trend_alpha"]},
         strategy_deployments={
@@ -194,7 +203,10 @@ def test_execution_intent_publisher_routes_intrabar_armed_signal(monkeypatch):
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
+        write_with_idempotency_fn=lambda items: (
+            rows.extend(item["row"] for item in items)
+            or [item["intent_key"] for item in items]
+        ),
         runtime_identity=_runtime_identity(live_topology_mode="multi_account"),
         account_bindings={"exec_b": ["trend_alpha"]},
         strategy_deployments={
@@ -282,7 +294,10 @@ def test_execution_intent_publisher_skips_non_actionable_intrabar_signal(monkeyp
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
+        write_with_idempotency_fn=lambda items: (
+            rows.extend(item["row"] for item in items)
+            or [item["intent_key"] for item in items]
+        ),
         runtime_identity=_runtime_identity(live_topology_mode="multi_account"),
         account_bindings={"exec_b": ["trend_alpha"]},
         strategy_deployments={
@@ -321,7 +336,10 @@ def test_execution_intent_publisher_skips_non_live_deployments(monkeypatch):
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
+        write_with_idempotency_fn=lambda items: (
+            rows.extend(item["row"] for item in items)
+            or [item["intent_key"] for item in items]
+        ),
         runtime_identity=_runtime_identity(),
         account_bindings={"main": ["trend_alpha"]},
         strategy_deployments={
@@ -712,7 +730,7 @@ def test_execution_intent_publisher_emits_intent_published_with_trace_context(
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_with_idempotency_fn=lambda items: [item['intent_key'] for item in items],
+        write_with_idempotency_fn=lambda items: [item["intent_key"] for item in items],
         runtime_identity=_runtime_identity(),
         account_bindings={"main": ["trend_alpha"]},
         strategy_deployments={
@@ -1033,7 +1051,9 @@ def test_transport_canary_emits_published_claimed_and_execution_events(monkeypat
 # ── §0dd P1 回归：demo_validation 策略在 demo 环境必须能产生 execution intent ──
 
 
-def test_publisher_routes_demo_validation_strategy_when_environment_is_demo(monkeypatch):
+def test_publisher_routes_demo_validation_strategy_when_environment_is_demo(
+    monkeypatch,
+):
     """P1 §0dd 回归：旧实现 publisher 硬性要求 deployment.allows_live_execution()
     → demo_validation 策略即使在 demo 环境装配 + auto_trade=true + 有 binding
     也不会产生 intent，demo 真实下单验证职责完全断链。
@@ -1054,7 +1074,10 @@ def test_publisher_routes_demo_validation_strategy_when_environment_is_demo(monk
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
+        write_with_idempotency_fn=lambda items: (
+            rows.extend(item["row"] for item in items)
+            or [item["intent_key"] for item in items]
+        ),
         runtime_identity=_runtime_identity(
             instance_name="demo-main",
             environment="demo",
@@ -1074,14 +1097,15 @@ def test_publisher_routes_demo_validation_strategy_when_environment_is_demo(monk
     publisher.on_signal_event(_event(strategy="structured_trendline_touch"))
 
     assert len(rows) == 1, (
-        f"demo 环境装配的 demo_validation 策略必须能产生 intent；"
-        f"got rows={rows!r}"
+        f"demo 环境装配的 demo_validation 策略必须能产生 intent；" f"got rows={rows!r}"
     )
     assert rows[0][5] == "demo_main"  # account_alias
     assert rows[0][6] == "structured_trendline_touch"  # strategy
 
 
-def test_publisher_still_blocks_demo_validation_strategy_in_live_environment(monkeypatch):
+def test_publisher_still_blocks_demo_validation_strategy_in_live_environment(
+    monkeypatch,
+):
     """对称契约：live 环境仍按 allows_live_execution 过滤，demo_validation
     不能在 live 误下单（防止配置错装漂移成实盘风险）。
     """
@@ -1100,7 +1124,10 @@ def test_publisher_still_blocks_demo_validation_strategy_in_live_environment(mon
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
+        write_with_idempotency_fn=lambda items: (
+            rows.extend(item["row"] for item in items)
+            or [item["intent_key"] for item in items]
+        ),
         runtime_identity=_runtime_identity(environment="live"),
         account_bindings={"main": ["trend_alpha"]},
         strategy_deployments={
@@ -1302,9 +1329,9 @@ def test_consumer_survives_transient_pipeline_emit_exception() -> None:
     )
     # 调 _worker_iteration 单轮：emit 抛异常但 process_event 仍执行
     consumer._worker_iteration()
-    assert len(processed) == 1, (
-        "pipeline bus 故障不应阻断 process_event 调用——业务执行不依赖观测旁路"
-    )
+    assert (
+        len(processed) == 1
+    ), "pipeline bus 故障不应阻断 process_event 调用——业务执行不依赖观测旁路"
     assert consumer._total_processed == 1
 
 
@@ -1319,6 +1346,6 @@ def test_consumer_top_level_loop_isolates_unexpected_exceptions() -> None:
         "ExecutionIntentConsumer._worker 必须含 try/except 顶层异常隔离 "
         "(§0di P1 + §0cc 同模式)"
     )
-    assert "self._worker_iteration()" in src, (
-        "_worker 必须委托 _worker_iteration 让顶层 try/except 包住业务逻辑"
-    )
+    assert (
+        "self._worker_iteration()" in src
+    ), "_worker 必须委托 _worker_iteration 让顶层 try/except 包住业务逻辑"

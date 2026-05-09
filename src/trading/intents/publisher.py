@@ -63,7 +63,10 @@ class ExecutionIntentPublisher:
         self._auto_trade_enabled = bool(auto_trade_enabled)
 
     def on_signal_event(self, event: SignalEvent) -> None:
-        if not self._auto_trade_enabled or self._runtime_identity.instance_role != "main":
+        if (
+            not self._auto_trade_enabled
+            or self._runtime_identity.instance_role != "main"
+        ):
             return
         if not self._is_actionable_signal_event(event):
             return
@@ -209,14 +212,12 @@ class ExecutionIntentPublisher:
     ) -> None:
         if self._pipeline_event_bus is None:
             return
-        trace_id = (
-            str(
-                (event.metadata or {}).get(MK.SIGNAL_TRACE_ID)
-                or (event.metadata or {}).get("trace_id")
-                or event.signal_id
-                or intent_id
-            ).strip()
-        )
+        trace_id = str(
+            (event.metadata or {}).get(MK.SIGNAL_TRACE_ID)
+            or (event.metadata or {}).get("trace_id")
+            or event.signal_id
+            or intent_id
+        ).strip()
         self._pipeline_event_bus.emit(
             PipelineEvent(
                 type="intent_published",

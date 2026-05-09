@@ -42,7 +42,7 @@ class TradeExecutionReplayService:
             self._successful_trade_cache[normalized] = dict(result)
             if len(self._successful_trade_cache) > self._memory_cache_limit:
                 keys = list(self._successful_trade_cache.keys())
-                for key in keys[:-self._prune_to_size]:
+                for key in keys[: -self._prune_to_size]:
                     self._successful_trade_cache.pop(key, None)
 
     def find_successful_trade_result(self, request_id: str) -> Optional[dict[str, Any]]:
@@ -141,7 +141,7 @@ class TradeOperatorActionReplayService:
             self._recorded_action_cache[cache_key] = entry
             if len(self._recorded_action_cache) > self._memory_cache_limit:
                 keys = list(self._recorded_action_cache.keys())
-                for key in keys[:-self._prune_to_size]:
+                for key in keys[: -self._prune_to_size]:
                     self._recorded_action_cache.pop(key, None)
 
     def find_recorded_action(
@@ -177,7 +177,9 @@ class TradeOperatorActionReplayService:
         )
         if recorded is None:
             return None
-        if not isinstance(recorded.get("response_payload"), dict) or not recorded.get("response_payload"):
+        if not isinstance(recorded.get("response_payload"), dict) or not recorded.get(
+            "response_payload"
+        ):
             return None
         replay_entry = {
             "request_fingerprint": self._request_fingerprint(

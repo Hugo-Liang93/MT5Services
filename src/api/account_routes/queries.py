@@ -105,7 +105,9 @@ def account_positions(
             suggested_action=AIErrorAction.CHECK_ACCOUNT_STATUS,
             details={
                 "exception_type": type(exc).__name__,
-                **get_account_error_details(operation="account_positions", symbol=symbol),
+                **get_account_error_details(
+                    operation="account_positions", symbol=symbol
+                ),
             },
         )
     except Exception as exc:
@@ -115,7 +117,9 @@ def account_positions(
             suggested_action=AIErrorAction.CONTACT_SUPPORT,
             details={
                 "exception_type": type(exc).__name__,
-                **get_account_error_details(operation="account_positions", symbol=symbol),
+                **get_account_error_details(
+                    operation="account_positions", symbol=symbol
+                ),
             },
         )
 

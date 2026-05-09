@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import pytest
 import runpy
 import sys
 import types
 from types import SimpleNamespace
+
+import pytest
 
 from src.entrypoint.web import APP_TARGET, launch, resolve_runtime_target
 
@@ -61,7 +62,9 @@ def test_launch_fails_fast_when_mt5_session_gate_fails(monkeypatch):
 
     monkeypatch.setattr(
         "src.entrypoint.web.ensure_mt5_session_gate_or_raise",
-        lambda instance_name=None: (_ for _ in ()).throw(RuntimeError("interactive_login_required")),
+        lambda instance_name=None: (_ for _ in ()).throw(
+            RuntimeError("interactive_login_required")
+        ),
     )
 
     with pytest.raises(RuntimeError, match="interactive_login_required"):

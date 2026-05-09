@@ -189,9 +189,7 @@ class TestResolveHTFIndicators:
     def test_no_higher_tf_configured(self):
         """当前已是最高配置 TF → 无 HTF 可用 → 返回空。"""
         runtime, _, _ = _make_runtime()
-        result = runtime._resolve_htf_indicators(
-            "XAUUSD", "H1", {"H1": ("adx14",)}
-        )
+        result = runtime._resolve_htf_indicators("XAUUSD", "H1", {"H1": ("adx14",)})
         assert result == {}
 
     def test_indicator_not_available(self):
@@ -245,9 +243,7 @@ class TestHTFInjectionInEvaluation:
             active_sessions=[],
         )
         # trend_htf 应该收到 HTF 数据
-        htf_calls = [
-            c for c in service.evaluate_calls if c["strategy"] == "trend_htf"
-        ]
+        htf_calls = [c for c in service.evaluate_calls if c["strategy"] == "trend_htf"]
         assert len(htf_calls) == 1
         htf_indicators = htf_calls[0].get("htf_indicators", {})
         assert "H1" in htf_indicators
@@ -285,9 +281,7 @@ class TestHTFGlobalSwitch:
         source = DummySnapshotSource(
             indicator_data={("XAUUSD", "H1", "adx14"): {"adx": 30.0}}
         )
-        runtime, service, _ = _make_runtime(
-            source=source, htf_indicators_enabled=False
-        )
+        runtime, service, _ = _make_runtime(source=source, htf_indicators_enabled=False)
         indicators = {"ema50": {"ema": 2640.0}}
         from src.signals.evaluation.regime import RegimeType
 
@@ -302,12 +296,9 @@ class TestHTFGlobalSwitch:
             bar_time=datetime.now(timezone.utc),
             active_sessions=[],
         )
-        htf_calls = [
-            c for c in service.evaluate_calls if c["strategy"] == "trend_htf"
-        ]
+        htf_calls = [c for c in service.evaluate_calls if c["strategy"] == "trend_htf"]
         assert len(htf_calls) == 1
         assert htf_calls[0].get("htf_indicators", {}) == {}
-
 
 
 class TestHTFINIConfig:
@@ -355,7 +346,6 @@ class TestHTFINIConfig:
         spec = runtime._strategy_htf_config.get("trend_htf", {})
         assert "M15" in spec
         assert "H1" in spec
-
 
 
 class TestConfiguredTimeframes:

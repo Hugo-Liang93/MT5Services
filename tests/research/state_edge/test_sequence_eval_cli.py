@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 
 def test_state_edge_sequence_eval_cli_help() -> None:
@@ -57,9 +57,13 @@ def test_evaluate_tf_emits_incremental_progress(monkeypatch) -> None:
         artifact_path = kwargs.get("artifact_path")
         mode = kwargs.get("mode")
         if artifact_path is None:
-            return {"metrics": {"pf": 1.0, "expectancy": 1.0, "max_dd": 5.0, "trades": 40}}
+            return {
+                "metrics": {"pf": 1.0, "expectancy": 1.0, "max_dd": 5.0, "trades": 40}
+            }
         if mode == "shadow":
-            return {"metrics": {"pf": 1.0, "expectancy": 1.0, "max_dd": 5.0, "trades": 40}}
+            return {
+                "metrics": {"pf": 1.0, "expectancy": 1.0, "max_dd": 5.0, "trades": 40}
+            }
         return {
             "threshold": threshold,
             "metrics": {

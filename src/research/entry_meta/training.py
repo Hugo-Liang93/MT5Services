@@ -6,17 +6,17 @@ from uuid import uuid4
 
 import numpy as np
 
+from src.research.core.backends import resolve_backend
 from src.research.entry_meta.artifacts import EntryMetaArtifact, EntryMetaPrediction
 from src.research.entry_meta.dataset import EntryMetaDataset
-from src.research.entry_meta.features import EntryMetaFeatureBuilder, EntryMetaFeatureMatrix
+from src.research.entry_meta.features import (
+    EntryMetaFeatureBuilder,
+    EntryMetaFeatureMatrix,
+)
 from src.research.entry_meta.quality import evaluate_entry_meta_quality
 from src.research.entry_meta.scoring import EntryMetaScorer
-from src.research.core.backends import resolve_backend
 
-
-_GPU_PHASE1_NOTE = (
-    "phase1 validates CUDA readiness, while this tabular estimator remains CPU-bound by design"
-)
+_GPU_PHASE1_NOTE = "phase1 validates CUDA readiness, while this tabular estimator remains CPU-bound by design"
 
 
 @dataclass(frozen=True)
@@ -114,7 +114,9 @@ def train_entry_meta_bundle(
         feature_manifest=dict(features.manifest),
         status=str(quality["status"]),
     )
-    return EntryMetaTrainingBundle(artifact=artifact, features=features, dataset=dataset)
+    return EntryMetaTrainingBundle(
+        artifact=artifact, features=features, dataset=dataset
+    )
 
 
 def _validate_training_contract(
@@ -132,7 +134,9 @@ def _validate_training_contract(
         "rows": int(features.rows.shape[0]) if features.rows.ndim >= 1 else 0,
     }
     if len(set(length_fields.values())) != 1:
-        details = ", ".join(f"{name}={length}" for name, length in length_fields.items())
+        details = ", ".join(
+            f"{name}={length}" for name, length in length_fields.items()
+        )
         raise ValueError(
             "entry meta training contract length mismatch across "
             f"dataset.trades, labels, sample_weights, features.bar_times, rows: {details}"
@@ -168,7 +172,9 @@ def _validate_runtime_safe_features(features: EntryMetaFeatureMatrix) -> None:
 def _validate_index_contract(name: str, indices: list[int], n_samples: int) -> None:
     for index in indices:
         if not isinstance(index, int) or isinstance(index, bool):
-            raise ValueError(f"entry meta training contract {name} must contain int indices")
+            raise ValueError(
+                f"entry meta training contract {name} must contain int indices"
+            )
         if index < 0 or index >= n_samples:
             raise ValueError(
                 f"entry meta training contract {name} index {index} out of range [0, {n_samples})"
@@ -184,7 +190,9 @@ def _validate_probabilities(probabilities: np.ndarray, n_samples: int) -> None:
     if not np.all(np.isfinite(probabilities)):
         raise ValueError("entry meta training probabilities must be finite")
     if not np.all((probabilities >= 0.0) & (probabilities <= 1.0)):
-        raise ValueError("entry meta training probabilities values must be in range [0, 1]")
+        raise ValueError(
+            "entry meta training probabilities values must be in range [0, 1]"
+        )
     row_sums = probabilities.sum(axis=1)
     if not np.allclose(row_sums, 1.0, atol=1e-8):
         raise ValueError("entry meta training probabilities row sums must sum to 1.0")
@@ -197,7 +205,9 @@ def _fit_predict_probabilities(
     sample_weights: np.ndarray,
     train_indices: np.ndarray,
 ) -> tuple[np.ndarray, dict[str, Any], str]:
-    train_labels = labels[train_indices] if len(train_indices) else np.asarray([], dtype=int)
+    train_labels = (
+        labels[train_indices] if len(train_indices) else np.asarray([], dtype=int)
+    )
     has_train_rows = len(train_indices) > 0
     has_feature_columns = rows.shape[1] > 0
     has_both_classes = set(int(label) for label in train_labels.tolist()) == {0, 1}
@@ -233,7 +243,9 @@ def _fit_predict_probabilities(
         sample_weight=sample_weights[train_indices],
     )
     raw_probabilities = estimator.predict_proba(scaled_rows)
-    probabilities = _align_probabilities(raw_probabilities, estimator.classes_, len(labels))
+    probabilities = _align_probabilities(
+        raw_probabilities, estimator.classes_, len(labels)
+    )
     return (
         probabilities,
         {
@@ -277,7 +289,9 @@ def _safe_normalization_scale(values: np.ndarray) -> np.ndarray:
     return np.where(np.isfinite(scale) & (scale != 0.0), scale, 1.0)
 
 
-def _constant_prior_probabilities(labels: np.ndarray, train_indices: np.ndarray) -> np.ndarray:
+def _constant_prior_probabilities(
+    labels: np.ndarray, train_indices: np.ndarray
+) -> np.ndarray:
     if len(labels) == 0:
         return np.empty((0, 2), dtype=float)
     if len(train_indices) == 0:

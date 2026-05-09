@@ -54,7 +54,10 @@ def test_exposure_closeout_service_reports_remaining_orders_when_cancel_fails() 
     class StickyOrderTrading(DummyExposureTrading):
         def cancel_orders_by_tickets(self, tickets):
             self.cancel_calls.append(list(tickets))
-            return {"canceled": [], "failed": [{"ticket": tickets[0], "error": "market_closed"}]}
+            return {
+                "canceled": [],
+                "failed": [{"ticket": tickets[0], "error": "market_closed"}],
+            }
 
     trading = StickyOrderTrading(orders=[SimpleNamespace(ticket=301)])
     service = ExposureCloseoutService(trading)
@@ -79,12 +82,16 @@ def test_manual_closeout_controller_switches_runtime_mode_after_success() -> Non
         ),
     )
 
-    status = controller.execute(reason="manual_risk_off", comment="manual_exposure_closeout")
+    status = controller.execute(
+        reason="manual_risk_off", comment="manual_exposure_closeout"
+    )
 
     assert status["status"] == "completed"
     assert status["runtime_mode_transition"]["applied"] is True
     assert status["runtime_mode_transition"]["target_mode"] == "ingest_only"
-    assert status["runtime_mode_transition"]["snapshot"]["current_mode"] == "ingest_only"
+    assert (
+        status["runtime_mode_transition"]["snapshot"]["current_mode"] == "ingest_only"
+    )
     assert calls == [("ingest_only", "closeout:manual_risk_off")]
 
 

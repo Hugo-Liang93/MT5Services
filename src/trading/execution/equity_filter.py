@@ -67,7 +67,11 @@ class EquityCurveFilter:
                 "current_equity": None,
                 "equity_ma": None,
             }
-        ma = sum(history) / len(history) if len(history) >= self.config.min_samples else None
+        ma = (
+            sum(history) / len(history)
+            if len(history) >= self.config.min_samples
+            else None
+        )
         return {
             "enabled": self.config.enabled,
             "paused": self._paused,

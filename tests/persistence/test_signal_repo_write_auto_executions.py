@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.persistence.repositories.signal_repo import SignalEventRepository
-
 
 # ── §0w P3 回归：write_auto_executions 不能改 ISO 偏移标签（应做时区换算） ──
 
@@ -72,9 +71,9 @@ def test_write_auto_executions_preserves_naive_input_as_utc() -> None:
     )
 
     executed_at = writer.batches[0][0]
-    assert executed_at == datetime(2026, 4, 26, 8, 0, 0, tzinfo=timezone.utc), (
-        f"naive 默认按 UTC 解释；got {executed_at.isoformat()!r}"
-    )
+    assert executed_at == datetime(
+        2026, 4, 26, 8, 0, 0, tzinfo=timezone.utc
+    ), f"naive 默认按 UTC 解释；got {executed_at.isoformat()!r}"
 
 
 def test_write_auto_executions_preserves_already_utc_input() -> None:

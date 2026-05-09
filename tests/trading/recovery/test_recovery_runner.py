@@ -124,6 +124,61 @@ class DummyPositionNotFoundClosePort(DummyTradingPort):
         return super().dispatch_operation(operation, payload)
 
 
+class DummyMarginNotEnoughPort(DummyTradingPort):
+    """T4 chaos: 模拟 broker 端 margin not enough 错误（开仓/补仓失败）。"""
+
+    def dispatch_operation(self, operation, payload=None):
+        self.dispatch_calls.append((operation, dict(payload or {})))
+        if operation == "trade":
+            return {
+                "status": "failed",
+                "accepted": False,
+                "message": "Margin not enough",
+                "error_message": "Not enough money",
+                "details": {"reject_code": "TRADE_RETCODE_NO_MONEY"},
+                "request_id": (payload or {}).get("request_id"),
+            }
+        return super().dispatch_operation(operation, payload)
+
+
+class DummyIntermittentTradePort(DummyTradingPort):
+    """T4 chaos: 模拟 broker 间歇性错误 — 第 N 次调用返回失败。"""
+
+    def __init__(self, *, fail_indices: tuple[int, ...] = ()):
+        super().__init__()
+        self._fail_indices = set(fail_indices)
+        self._call_idx = -1
+
+    def dispatch_operation(self, operation, payload=None):
+        self._call_idx += 1
+        self.dispatch_calls.append((operation, dict(payload or {})))
+        if operation == "trade" and self._call_idx in self._fail_indices:
+            return {
+                "status": "failed",
+                "accepted": False,
+                "message": "Requote",
+                "error_message": "TRADE_RETCODE_REQUOTE",
+                "details": {"reject_code": "TRADE_RETCODE_REQUOTE"},
+                "request_id": (payload or {}).get("request_id"),
+            }
+        # 否则走父类正常逻辑
+        # 注意 super().dispatch_operation 会再 append 一次，避免双重记录我们手动跳过
+        if operation == "close":
+            return {
+                "status": "closed",
+                "ticket": (payload or {}).get("ticket"),
+                "price": 100.10,
+            }
+        ticket = self.next_ticket
+        self.next_ticket += 1
+        return {
+            "status": "ok",
+            "request_id": (payload or {}).get("request_id"),
+            "dry_run": bool((payload or {}).get("dry_run")),
+            "ticket": ticket,
+        }
+
+
 class DummyPositionSnapshotProvider:
     def __init__(self, *, positions=None, last_reconcile_at=None):
         self.positions = list(positions or [])
@@ -147,7 +202,7 @@ def _settings(**overrides) -> RecoveryRuntimeRunnerSettings:
         "demo_only": True,
         "symbol": "XAUUSD",
         "direction": "buy",
-        "strategy": "tick_martingale_probe",
+        "strategy": "tick_recovery_probe",
         "timeframe": "TICK",
         "base_volume": 0.01,
         "multiplier": 2.0,
@@ -225,7 +280,7 @@ def _cycle_state(**overrides) -> RecoveryCycleState:
         "started_at": _now(),
         "updated_at": _now(),
         "last_step_at": _now(),
-        "strategy": "tick_martingale_probe",
+        "strategy": "tick_recovery_probe",
         "timeframe": "TICK",
         "source_signal_id": "sig-open",
     }
@@ -358,9 +413,9 @@ def test_runner_waits_for_entry_signal_confirmation_before_initial_dispatch():
 
     assert first["action"] == "hold"
     assert first["reason"] == "entry_confirmation_pending"
-    assert first["execution"]["entry_confirmation"]["metadata"][
-        "confirmation_count"
-    ] == 1
+    assert (
+        first["execution"]["entry_confirmation"]["metadata"]["confirmation_count"] == 1
+    )
     assert second["action"] == "open_initial"
     assert second["reason"] == "initial_dispatched"
     assert len(trading.dispatch_calls) == 1
@@ -399,9 +454,9 @@ def test_runner_resets_entry_signal_confirmation_when_gap_expires():
 
     assert first["reason"] == "entry_confirmation_pending"
     assert second["reason"] == "entry_confirmation_pending"
-    assert second["execution"]["entry_confirmation"]["metadata"][
-        "confirmation_count"
-    ] == 1
+    assert (
+        second["execution"]["entry_confirmation"]["metadata"]["confirmation_count"] == 1
+    )
     assert trading.dispatch_calls == []
     assert store.open_cycle is None
 
@@ -428,10 +483,7 @@ def test_runner_auto_direction_holds_when_tick_features_are_not_actionable():
     assert status["decision_counts"]["hold"] == 1
     analytics = status["decision_analytics"]
     assert analytics["reason_counts"]["direction_signal_too_weak"] == 1
-    assert (
-        analytics["direction_policy_reason_counts"]["direction_signal_too_weak"]
-        == 1
-    )
+    assert analytics["direction_policy_reason_counts"]["direction_signal_too_weak"] == 1
 
 
 def test_runner_cost_gate_holds_initial_when_spread_is_too_wide():
@@ -520,7 +572,9 @@ def test_runner_blocks_real_initial_until_calibration_samples_are_ready():
     assert second["action"] == "open_initial"
     assert second["status"] == "submitted"
     assert len(trading.dispatch_calls) == 1
-    assert store.records[-1][1]["status_reason"] == "resident_recovery_initial_submitted"
+    assert (
+        store.records[-1][1]["status_reason"] == "resident_recovery_initial_submitted"
+    )
     status = runner.status()
     assert status["calibration_guard"]["reason"] == "calibration_guard_passed"
     assert (
@@ -538,7 +592,7 @@ def test_runner_holds_initial_when_daily_cycle_cap_is_reached():
             "cycle_id": "cycle-earlier",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_submitted",
             "metadata": {"initial_result": {"dry_run": False}},
             "started_at": _now().isoformat(),
@@ -587,7 +641,7 @@ def test_runner_holds_initial_when_daily_recovery_loss_budget_is_reached():
             "cycle_id": "loss-cycle",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status": "closed",
             "status_reason": "resident_recovery_cycle_loss_limit_submitted",
             "metadata": {"initial_result": {"dry_run": False}},
@@ -626,7 +680,7 @@ def test_runner_risk_budget_ignores_other_account_losses():
             "cycle_id": "other-account-loss-cycle",
             "account_key": "demo:broker:other",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_cycle_loss_limit_submitted",
             "realized_pnl": -8.0,
             "closed_at": _now().isoformat(),
@@ -657,7 +711,7 @@ def test_runner_holds_initial_when_rolling_recovery_loss_budget_is_reached():
             "cycle_id": "recent-loss-cycle",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status": "closed",
             "status_reason": "resident_recovery_cycle_loss_limit_dry_run",
             "metadata": {"initial_result": {"dry_run": True}},
@@ -693,7 +747,7 @@ def test_runner_daily_cycle_cap_counts_unique_cycle_ids():
             "cycle_id": "cycle-earlier",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_step_submitted",
             "metadata": {"initial_result": {"dry_run": False}},
             "started_at": _now().isoformat(),
@@ -702,7 +756,7 @@ def test_runner_daily_cycle_cap_counts_unique_cycle_ids():
             "cycle_id": "cycle-earlier",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_submitted",
             "metadata": {"initial_result": {"dry_run": False}},
             "started_at": _now().isoformat(),
@@ -711,7 +765,7 @@ def test_runner_daily_cycle_cap_counts_unique_cycle_ids():
             "cycle_id": "cycle-dry-run-earlier",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_dry_run",
             "metadata": {"initial_result": {"dry_run": True}},
             "started_at": _now().isoformat(),
@@ -719,7 +773,7 @@ def test_runner_daily_cycle_cap_counts_unique_cycle_ids():
         {
             "cycle_id": "demo-recovery-canary-earlier",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "canary_recovery_cycle_cleanup_closed",
             "started_at": _now().isoformat(),
         },
@@ -748,7 +802,7 @@ def test_runner_daily_cycle_cap_ignores_other_account_cycles():
             "cycle_id": "other-cycle-a",
             "account_key": "demo:broker:other",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_submitted",
             "metadata": {"initial_result": {"dry_run": False}},
             "started_at": _now().isoformat(),
@@ -757,7 +811,7 @@ def test_runner_daily_cycle_cap_ignores_other_account_cycles():
             "cycle_id": "other-cycle-b",
             "account_key": "demo:broker:other",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_submitted",
             "metadata": {"initial_result": {"dry_run": False}},
             "started_at": _now().isoformat(),
@@ -787,7 +841,7 @@ def test_runner_holds_initial_during_min_cycle_interval():
             "cycle_id": "recent-cycle",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_dry_run",
             "metadata": {"initial_result": {"dry_run": True}},
             "started_at": (_now() - timedelta(seconds=60)).isoformat(),
@@ -809,9 +863,10 @@ def test_runner_holds_initial_during_min_cycle_interval():
     status = runner.status()
     assert status["decision_counts"]["hold"] == 1
     assert status["pacing"]["remaining_seconds"] == 60.0
-    assert status["pacing"]["next_cycle_not_before"] == (
-        _now() + timedelta(seconds=60)
-    ).isoformat()
+    assert (
+        status["pacing"]["next_cycle_not_before"]
+        == (_now() + timedelta(seconds=60)).isoformat()
+    )
 
 
 def test_runner_holds_initial_during_close_cooldown():
@@ -821,7 +876,7 @@ def test_runner_holds_initial_during_close_cooldown():
             "cycle_id": "closed-cycle",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_dry_run",
             "metadata": {"initial_result": {"dry_run": True}},
             "started_at": (_now() - timedelta(minutes=5)).isoformat(),
@@ -843,9 +898,10 @@ def test_runner_holds_initial_during_close_cooldown():
     status = runner.status()
     assert status["decision_counts"]["hold"] == 1
     assert status["pacing"]["remaining_seconds"] == 60.0
-    assert status["pacing"]["latest_closed_at"] == (
-        _now() - timedelta(seconds=30)
-    ).isoformat()
+    assert (
+        status["pacing"]["latest_closed_at"]
+        == (_now() - timedelta(seconds=30)).isoformat()
+    )
 
 
 def test_runner_close_cooldown_ignores_other_account_cycle():
@@ -855,7 +911,7 @@ def test_runner_close_cooldown_ignores_other_account_cycle():
             "cycle_id": "other-closed-cycle",
             "account_key": "demo:broker:other",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_dry_run",
             "metadata": {"initial_result": {"dry_run": True}},
             "started_at": (_now() - timedelta(minutes=5)).isoformat(),
@@ -884,7 +940,7 @@ def test_runner_holds_initial_when_hourly_cycle_cap_is_reached():
             "cycle_id": "cycle-a",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_dry_run",
             "metadata": {"initial_result": {"dry_run": True}},
             "started_at": (_now() - timedelta(minutes=45)).isoformat(),
@@ -893,7 +949,7 @@ def test_runner_holds_initial_when_hourly_cycle_cap_is_reached():
             "cycle_id": "cycle-b",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_dry_run",
             "metadata": {"initial_result": {"dry_run": True}},
             "started_at": (_now() - timedelta(minutes=15)).isoformat(),
@@ -902,7 +958,7 @@ def test_runner_holds_initial_when_hourly_cycle_cap_is_reached():
             "cycle_id": "cycle-old",
             "account_key": "demo:broker:1001",
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "status_reason": "resident_recovery_target_reached_dry_run",
             "metadata": {"initial_result": {"dry_run": True}},
             "started_at": (_now() - timedelta(hours=2)).isoformat(),
@@ -923,9 +979,10 @@ def test_runner_holds_initial_when_hourly_cycle_cap_is_reached():
     status = runner.status()
     assert status["decision_counts"]["hold"] == 1
     assert status["pacing"]["hourly_cycle_count"] == 2
-    assert status["pacing"]["next_cycle_not_before"] == (
-        _now() + timedelta(minutes=15)
-    ).isoformat()
+    assert (
+        status["pacing"]["next_cycle_not_before"]
+        == (_now() + timedelta(minutes=15)).isoformat()
+    )
 
 
 def test_runner_rejects_real_orders_outside_demo_account():
@@ -1034,9 +1091,7 @@ def test_runner_holds_recovery_step_when_spread_is_too_wide():
     assert status["decision_counts"]["hold"] == 1
     assert status["decision_counts"]["open_step"] == 0
     assert (
-        status["decision_analytics"]["cost_gate_reason_counts"][
-            "step_spread_too_wide"
-        ]
+        status["decision_analytics"]["cost_gate_reason_counts"]["step_spread_too_wide"]
         == 1
     )
     assert status["decision_analytics"]["cost_gate_allowed_counts"]["blocked"] == 1
@@ -1256,8 +1311,12 @@ def test_runner_closes_dry_run_cycle_when_target_is_reached():
     assert closed_cycle.status == "closed"
     assert kwargs["status_reason"] == "resident_recovery_target_reached_dry_run"
     assert kwargs["close_price"] == 100.06
-    assert closed_cycle.metadata["close_decision"]["metadata"]["net_profit_points"] == 6.0
-    assert closed_cycle.metadata["close_decision"]["metadata"]["target_net_points"] == 5.0
+    assert (
+        closed_cycle.metadata["close_decision"]["metadata"]["net_profit_points"] == 6.0
+    )
+    assert (
+        closed_cycle.metadata["close_decision"]["metadata"]["target_net_points"] == 5.0
+    )
     assert runner.status()["active_cycle_id"] is None
     status = runner.status()
     assert status["decision_counts"]["close_cycle"] == 1
@@ -1421,10 +1480,7 @@ def test_runner_holds_recovery_step_when_adverse_move_is_overextended():
     assert store.records == []
     assert trading.dispatch_calls == []
     assert result["decision"]["metadata"]["adverse_move_points"] == 150.0
-    assert (
-        result["decision"]["metadata"]["max_step_adverse_move_points"]
-        == 120.0
-    )
+    assert result["decision"]["metadata"]["max_step_adverse_move_points"] == 120.0
 
 
 def test_runner_closes_submitted_cycle_positions_when_target_is_reached():
@@ -1481,8 +1537,12 @@ def test_runner_closes_submitted_cycle_positions_when_target_is_reached():
     assert kwargs["status_reason"] == "resident_recovery_target_reached_submitted"
     assert kwargs["close_price"] == 100.06
     assert kwargs["realized_pnl"] is not None
-    assert closed_cycle.metadata["close_decision"]["metadata"]["net_profit_points"] == 6.0
-    assert closed_cycle.metadata["close_decision"]["metadata"]["target_net_points"] == 5.0
+    assert (
+        closed_cycle.metadata["close_decision"]["metadata"]["net_profit_points"] == 6.0
+    )
+    assert (
+        closed_cycle.metadata["close_decision"]["metadata"]["target_net_points"] == 5.0
+    )
     assert result["close_result"]["status"] == "closed"
     assert runner.status()["active_cycle_id"] is None
 
@@ -1508,7 +1568,7 @@ def test_runner_closes_submitted_cycle_by_live_position_ticket_on_netting_accoun
                 "ticket": 9001,
                 "account_key": "demo:broker:1001",
                 "symbol": "XAUUSD",
-                "strategy": "tick_martingale_probe",
+                "strategy": "tick_recovery_probe",
                 "timeframe": "TICK",
                 "signal_id": "recovery:cycle-open:step:1",
                 "comment": "recovery-runner:cycle-open:s1",
@@ -1529,9 +1589,10 @@ def test_runner_closes_submitted_cycle_by_live_position_ticket_on_netting_accoun
     assert result["status"] == "closed"
     assert [call[0] for call in trading.dispatch_calls] == ["close"]
     assert [call[1]["ticket"] for call in trading.dispatch_calls] == [9001]
-    assert trading.dispatch_calls[0][1]["request_context"][
-        "submitted_tickets"
-    ] == [7001, 7002]
+    assert trading.dispatch_calls[0][1]["request_context"]["submitted_tickets"] == [
+        7001,
+        7002,
+    ]
     assert result["close_result"]["position_snapshot"]["matching_position_tickets"] == [
         9001
     ]
@@ -1682,7 +1743,9 @@ def test_runner_closes_submitted_cycle_when_position_snapshot_confirms_no_exposu
     closed_cycle, kwargs = store.records[-1]
     assert closed_cycle.status == "closed"
     assert kwargs["status_reason"] == "resident_recovery_submitted_exposure_absent"
-    assert closed_cycle.metadata["exposure_absent_confirmation"]["submitted_tickets"] == [
+    assert closed_cycle.metadata["exposure_absent_confirmation"][
+        "submitted_tickets"
+    ] == [
         7001,
         7002,
     ]
@@ -1779,7 +1842,7 @@ def test_runner_keeps_submitted_cycle_open_when_matching_position_is_active():
             {
                 "ticket": 7001,
                 "symbol": "XAUUSD",
-                "strategy": "tick_martingale_probe",
+                "strategy": "tick_recovery_probe",
                 "timeframe": "TICK",
                 "signal_id": "sig-open",
             }
@@ -1835,3 +1898,147 @@ def test_runner_status_exposes_pending_submitted_ticket_before_snapshot_confirms
         "last_reconcile_at": None,
         "absent_confirmed": False,
     }
+
+
+# ── T4 chaos test: broker 端非异常失败的归一化处理 ──────────────────────────
+
+
+def test_runner_chaos_margin_not_enough_does_not_record_submitted_cycle():
+    """T4 chaos: broker 返回 status=failed (margin not enough)
+    必须归类为 trading_port_failure，cycle 不能被错误记为 submitted。
+    """
+    trading = DummyMarginNotEnoughPort()
+    runner, store, trading = _runner(
+        trading=trading,
+        settings=_settings(
+            dry_run=False,
+            blocked_dispatch_retry_seconds=30.0,
+            real_trade_calibration_guard_enabled=False,
+        ),
+    )
+
+    runner.start()
+    first = runner.on_tick_feature_snapshot(_snapshot(bid=100.0, ask=100.02))
+    second = runner.on_tick_feature_snapshot(_snapshot(bid=100.1, ask=100.12))
+
+    # 第一次：broker margin not enough → block + blocked + trading_port_failure
+    assert first["action"] == "block"
+    assert first["status"] == "blocked"
+    assert first["execution"]["category"] == "trading_port_failure"
+    assert "margin" in first["reason"].lower() or "money" in first["reason"].lower()
+    # 第二次：retry-throttle 应触发 hold（blocked_initial_retry_wait）
+    assert second["action"] == "hold"
+    # cycle 没被错误记为 submitted
+    assert store.records == []
+    status = runner.status()
+    assert status["active_cycle_id"] is None
+
+
+def test_runner_chaos_intermittent_requote_recovers_after_throttle():
+    """T4 chaos: 第一次 dispatch requote 失败 + retry 间隔过后成功
+    runner 必须正确归一为 trading_port_failure 然后恢复。
+    """
+    trading = DummyIntermittentTradePort(fail_indices=(0,))
+    runner, store, trading = _runner(
+        trading=trading,
+        settings=_settings(
+            dry_run=False,
+            # 重试节流缩短到 0 秒，让第二次立即可重试
+            blocked_dispatch_retry_seconds=0.0,
+            real_trade_calibration_guard_enabled=False,
+        ),
+    )
+
+    runner.start()
+    first = runner.on_tick_feature_snapshot(_snapshot(bid=100.0, ask=100.02))
+    second = runner.on_tick_feature_snapshot(_snapshot(bid=100.1, ask=100.12))
+
+    # 第一次失败：requote → trading_port_failure block
+    assert first["action"] == "block"
+    assert first["status"] == "blocked"
+    assert first["execution"]["category"] == "trading_port_failure"
+    # 第二次 retry 节流过后应允许重新尝试 → 成功开仓
+    assert second["action"] == "open_initial"
+    assert second["status"] in ("submitted", "dry_run")
+    # consecutive_errors 应被重置（成功后）
+    status = runner.status()
+    assert status["consecutive_errors"] == 0
+
+
+def test_runner_chaos_partial_cleanup_mixed_close_and_not_found():
+    """T4 chaos: cleanup 时 leg 1 关仓成功 + leg 2 not found
+    必须分别归类，cycle 仍正常 close。
+    """
+
+    class MixedCleanupPort(DummyTradingPort):
+        def dispatch_operation(self, operation, payload=None):
+            if operation == "close":
+                self.dispatch_calls.append((operation, dict(payload or {})))
+                ticket = (payload or {}).get("ticket")
+                if ticket == 7001:
+                    return {
+                        "status": "closed",
+                        "ticket": ticket,
+                        "price": 100.10,
+                    }
+                # 7002 → not found
+                return {
+                    "accepted": False,
+                    "status": "failed",
+                    "message": f"Position {ticket} not found",
+                    "error_message": f"Position {ticket} not found",
+                    "effective_state": {},
+                    "details": {"operation": "close_position"},
+                }
+            return super().dispatch_operation(operation, payload)
+
+    store = DummyStateStore(
+        open_cycle=_cycle_state(
+            total_volume=0.03,
+            step_count=1,
+            average_entry_price=100.0,
+            last_entry_price=99.02,
+            metadata={
+                "submitted_tickets": [
+                    {"scope": "initial", "step_index": 0, "ticket": 7001},
+                    {"scope": "step_1", "step_index": 1, "ticket": 7002},
+                ]
+            },
+        )
+    )
+    trading = MixedCleanupPort()
+    positions = DummyPositionSnapshotProvider(
+        positions=[
+            {
+                "ticket": 7001,
+                "account_key": "demo:broker:1001",
+                "symbol": "XAUUSD",
+                "signal_id": "recovery:cycle-open:initial",
+            },
+            {
+                "ticket": 7002,
+                "account_key": "demo:broker:1001",
+                "symbol": "XAUUSD",
+                "signal_id": "recovery:cycle-open:step:1",
+            },
+        ],
+        last_reconcile_at=_now().isoformat(),
+    )
+    runner, store, trading = _runner(
+        store=store,
+        trading=trading,
+        settings=_settings(dry_run=False),
+        position_snapshot_provider=positions,
+    )
+
+    runner.start()
+    result = runner.on_tick_feature_snapshot(_snapshot(bid=100.06, ask=100.08))
+
+    # cycle 正常 close
+    assert result["action"] == "close_cycle"
+    statuses = [item["status"] for item in result["close_result"]["results"]]
+    # leg 7001 实际关闭，leg 7002 already_closed
+    assert "closed" in statuses or "completed" in statuses
+    assert "already_closed" in statuses
+    closed_cycle, kwargs = store.records[-1]
+    assert closed_cycle.status == "closed"

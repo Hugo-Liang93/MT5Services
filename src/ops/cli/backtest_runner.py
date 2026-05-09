@@ -547,7 +547,6 @@ def _render_compare(results: List[dict]) -> str:
     return "\n".join(lines)
 
 
-
 def _parse_threshold_grid(raw: str) -> List[float]:
     values: List[float] = []
     for part in str(raw or "").split(","):
@@ -562,7 +561,9 @@ def _parse_threshold_grid(raw: str) -> List[float]:
 
 
 def _parse_state_edge_directions(raw: str) -> List[str]:
-    values = [part.strip().lower() for part in str(raw or "").split(",") if part.strip()]
+    values = [
+        part.strip().lower() for part in str(raw or "").split(",") if part.strip()
+    ]
     return values or ["buy", "sell"]
 
 
@@ -806,7 +807,9 @@ def main() -> None:
                 if not args.compare:
                     if args.template == "custom" and args.custom_template:
                         print(
-                            args.custom_template.format(**data["metrics"], tf=data["tf"])
+                            args.custom_template.format(
+                                **data["metrics"], tf=data["tf"]
+                            )
                         )
                     else:
                         print(render_fn(data))

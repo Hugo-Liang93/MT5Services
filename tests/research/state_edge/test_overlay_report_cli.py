@@ -83,7 +83,9 @@ def test_build_report_from_backtest_json_paths(tmp_path: Path) -> None:
     assert payload["overlay_report"]["filter_diagnostics"][0]["blocked_entries"] == 19
 
 
-def test_build_report_joins_blocked_events_to_raw_baseline_trades(tmp_path: Path) -> None:
+def test_build_report_joins_blocked_events_to_raw_baseline_trades(
+    tmp_path: Path,
+) -> None:
     from src.ops.cli.state_edge_overlay_report import build_report_from_paths
 
     baseline = tmp_path / "baseline.json"

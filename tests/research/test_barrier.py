@@ -61,8 +61,13 @@ def test_long_tp_hit():
     cfg = BarrierConfig(sl_atr=1.5, tp_atr=2.0, time_bars=20)
 
     result = compute_barrier_returns(
-        opens, highs, lows, closes, indicators,
-        configs=(cfg,), direction="long",
+        opens,
+        highs,
+        lows,
+        closes,
+        indicators,
+        configs=(cfg,),
+        direction="long",
     )
 
     outcomes = result[cfg.key()]
@@ -86,8 +91,13 @@ def test_long_sl_hit():
     cfg = BarrierConfig(sl_atr=1.0, tp_atr=3.0, time_bars=20)
 
     result = compute_barrier_returns(
-        opens, highs, lows, closes, indicators,
-        configs=(cfg,), direction="long",
+        opens,
+        highs,
+        lows,
+        closes,
+        indicators,
+        configs=(cfg,),
+        direction="long",
     )
 
     outcome = result[cfg.key()][0]
@@ -107,8 +117,13 @@ def test_long_time_barrier_exit():
     cfg = BarrierConfig(sl_atr=1.0, tp_atr=1.0, time_bars=3)
 
     result = compute_barrier_returns(
-        opens, highs, lows, closes, indicators,
-        configs=(cfg,), direction="long",
+        opens,
+        highs,
+        lows,
+        closes,
+        indicators,
+        configs=(cfg,),
+        direction="long",
     )
 
     outcome = result[cfg.key()][0]
@@ -129,8 +144,13 @@ def test_short_tp_hit_mirrors_long_sl():
     cfg = BarrierConfig(sl_atr=2.0, tp_atr=2.0, time_bars=20)
 
     result = compute_barrier_returns(
-        opens, highs, lows, closes, indicators,
-        configs=(cfg,), direction="short",
+        opens,
+        highs,
+        lows,
+        closes,
+        indicators,
+        configs=(cfg,),
+        direction="short",
     )
 
     outcome = result[cfg.key()][0]
@@ -149,8 +169,13 @@ def test_round_trip_cost_deducted():
     cfg = BarrierConfig(sl_atr=1.5, tp_atr=2.0, time_bars=20)
 
     result = compute_barrier_returns(
-        opens, highs, lows, closes, indicators,
-        configs=(cfg,), direction="long",
+        opens,
+        highs,
+        lows,
+        closes,
+        indicators,
+        configs=(cfg,),
+        direction="long",
         round_trip_cost_pct=0.5,  # 0.5% 成本
     )
 
@@ -169,8 +194,13 @@ def test_missing_atr_yields_none():
     cfg = BarrierConfig(sl_atr=1.5, tp_atr=2.0, time_bars=20)
 
     result = compute_barrier_returns(
-        opens, highs, lows, closes, indicators,
-        configs=(cfg,), direction="long",
+        opens,
+        highs,
+        lows,
+        closes,
+        indicators,
+        configs=(cfg,),
+        direction="long",
     )
 
     outcomes = result[cfg.key()]
@@ -188,8 +218,13 @@ def test_insufficient_tail_returns_none():
     cfg = BarrierConfig(sl_atr=1.5, tp_atr=2.0, time_bars=5)
 
     result = compute_barrier_returns(
-        opens, highs, lows, closes, indicators,
-        configs=(cfg,), direction="long",
+        opens,
+        highs,
+        lows,
+        closes,
+        indicators,
+        configs=(cfg,),
+        direction="long",
     )
 
     # i=0 入场 bar 是 opens[1]，之后没有 bar → None
@@ -200,7 +235,11 @@ def test_invalid_direction_raises():
     opens = [100.0, 100.0]
     with pytest.raises(ValueError):
         compute_barrier_returns(
-            opens, opens, opens, opens, [_atr_snap(1.0)] * 2,
+            opens,
+            opens,
+            opens,
+            opens,
+            [_atr_snap(1.0)] * 2,
             direction="sideways",
         )
 

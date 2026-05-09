@@ -41,9 +41,29 @@ class _FakePool:
 
 
 def test_validator_accepts_valid_market_rows() -> None:
-    valid_tick = ("EURUSD", 1.12345, 1.1234, 1.1235, 1.12345, 1000.0, _now_iso(), _now_msc(), 6)
+    valid_tick = (
+        "EURUSD",
+        1.12345,
+        1.1234,
+        1.1235,
+        1.12345,
+        1000.0,
+        _now_iso(),
+        _now_msc(),
+        6,
+    )
     valid_quote = ("EURUSD", 1.1234, 1.1235, 1.12345, 1000.0, _now_iso())
-    valid_ohlc = ("EURUSD", "M1", 1.1234, 1.1240, 1.1230, 1.1238, 1000.0, _now_iso(), {})
+    valid_ohlc = (
+        "EURUSD",
+        "M1",
+        1.1234,
+        1.1240,
+        1.1230,
+        1.1238,
+        1000.0,
+        _now_iso(),
+        {},
+    )
     valid_intrabar = (
         "EURUSD",
         "M1",
@@ -87,7 +107,9 @@ def test_validator_rejects_invalid_market_rows() -> None:
         _now_msc(),
         6,
     )
-    quote_valid, quote_msg = DataValidator.validate_quote("EURUSD", 1.1236, 1.1235, 1.12345, 1000.0, _now_iso())
+    quote_valid, quote_msg = DataValidator.validate_quote(
+        "EURUSD", 1.1236, 1.1235, 1.12345, 1000.0, _now_iso()
+    )
     ohlc_valid, ohlc_msg = DataValidator.validate_ohlc(
         "EURUSD",
         "M1",
@@ -156,7 +178,9 @@ def test_filtering_keeps_only_valid_rows() -> None:
     ]
 
 
-def test_timescale_writer_initializes_connection_pool_from_settings(monkeypatch) -> None:
+def test_timescale_writer_initializes_connection_pool_from_settings(
+    monkeypatch,
+) -> None:
     created: dict[str, _FakePool] = {}
 
     def _fake_pool_factory(min_conn: int, max_conn: int, **kwargs) -> _FakePool:

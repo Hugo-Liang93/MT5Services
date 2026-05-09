@@ -16,8 +16,7 @@ def _artifact_result(
 ) -> dict:
     return {
         "status": "trained",
-        "label_summary": label_summary
-        or {"long": 80, "short": 90, "no_trade": 30},
+        "label_summary": label_summary or {"long": 80, "short": 90, "no_trade": 30},
         "metrics": {
             "oos_samples": oos_samples,
             "top_probability_buckets": {

@@ -1,6 +1,7 @@
 """Tests for PositionManager hardening: flash-disconnect guard, partial close,
 live PnL, lock safety, and new-format comment restoration.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -79,7 +80,11 @@ def test_reconcile_skips_symbols_with_failed_queries() -> None:
     manager.add_close_callback(lambda pos, price: closed.append(pos.ticket))
 
     manager.track_position(
-        ticket=100, signal_id="sig-1", symbol="XAUUSD", action="buy", params=_params(),
+        ticket=100,
+        signal_id="sig-1",
+        symbol="XAUUSD",
+        action="buy",
+        params=_params(),
     )
 
     manager._reconcile_with_mt5()
@@ -98,7 +103,11 @@ def test_reconcile_removes_closed_positions_for_healthy_symbols() -> None:
     manager.add_close_callback(lambda pos, price: closed.append(pos.ticket))
 
     manager.track_position(
-        ticket=200, signal_id="sig-2", symbol="XAUUSD", action="sell", params=_params(),
+        ticket=200,
+        signal_id="sig-2",
+        symbol="XAUUSD",
+        action="sell",
+        params=_params(),
     )
 
     manager._reconcile_with_mt5()
@@ -114,13 +123,19 @@ def test_reconcile_detects_partial_close() -> None:
     """When MT5 reports a smaller volume than tracked, the tracked position
     should be updated to match."""
     raw_pos = SimpleNamespace(
-        ticket=300, symbol="XAUUSD", volume=0.05, price_current=3010.0,
+        ticket=300,
+        symbol="XAUUSD",
+        volume=0.05,
+        price_current=3010.0,
     )
     trading = FailingTradingModule(positions=[raw_pos])
     manager = _manager(trading)
 
     manager.track_position(
-        ticket=300, signal_id="sig-3", symbol="XAUUSD", action="buy",
+        ticket=300,
+        signal_id="sig-3",
+        symbol="XAUUSD",
+        action="buy",
         params=_params(position_size=0.10),
     )
     assert manager.active_positions()[0]["volume"] == 0.10
@@ -135,13 +150,19 @@ def test_reconcile_detects_partial_close() -> None:
 
 def test_active_positions_includes_unrealized_pnl() -> None:
     raw_pos = SimpleNamespace(
-        ticket=400, symbol="XAUUSD", volume=0.10, price_current=3015.0,
+        ticket=400,
+        symbol="XAUUSD",
+        volume=0.10,
+        price_current=3015.0,
     )
     trading = FailingTradingModule(positions=[raw_pos])
     manager = _manager(trading)
 
     manager.track_position(
-        ticket=400, signal_id="sig-4", symbol="XAUUSD", action="buy",
+        ticket=400,
+        signal_id="sig-4",
+        symbol="XAUUSD",
+        action="buy",
         params=_params(entry_price=3000.0),
     )
 
@@ -154,13 +175,19 @@ def test_active_positions_includes_unrealized_pnl() -> None:
 
 def test_active_positions_unrealized_pnl_sell() -> None:
     raw_pos = SimpleNamespace(
-        ticket=401, symbol="XAUUSD", volume=0.10, price_current=2990.0,
+        ticket=401,
+        symbol="XAUUSD",
+        volume=0.10,
+        price_current=2990.0,
     )
     trading = FailingTradingModule(positions=[raw_pos])
     manager = _manager(trading)
 
     manager.track_position(
-        ticket=401, signal_id="sig-5", symbol="XAUUSD", action="sell",
+        ticket=401,
+        signal_id="sig-5",
+        symbol="XAUUSD",
+        action="sell",
         params=_params(entry_price=3000.0),
     )
 
@@ -180,10 +207,16 @@ def test_close_source_set_on_reconcile_removal() -> None:
     trading = FailingTradingModule(positions=[])
     manager = _manager(trading)
     received_source = []
-    manager.add_close_callback(lambda pos, price: received_source.append(pos.close_source))
+    manager.add_close_callback(
+        lambda pos, price: received_source.append(pos.close_source)
+    )
 
     manager.track_position(
-        ticket=500, signal_id="sig-6", symbol="XAUUSD", action="buy", params=_params(),
+        ticket=500,
+        signal_id="sig-6",
+        symbol="XAUUSD",
+        action="buy",
+        params=_params(),
     )
 
     manager._reconcile_with_mt5()
@@ -198,8 +231,12 @@ def test_sync_restores_positions_with_timeframe_comment_prefix() -> None:
     """The new comment format '{tf}:{strategy}:{direction}' should be
     recognized as restorable."""
     raw_pos = SimpleNamespace(
-        ticket=600, symbol="XAUUSD", volume=0.1, price_open=3000.0,
-        sl=2990.0, tp=3020.0,
+        ticket=600,
+        symbol="XAUUSD",
+        volume=0.1,
+        price_open=3000.0,
+        sl=2990.0,
+        tp=3020.0,
         time=datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc),
         type=0,
         comment="M15:trend_vote:buy",
@@ -217,8 +254,12 @@ def test_sync_restores_positions_with_timeframe_comment_prefix() -> None:
 
 def test_sync_still_skips_unknown_comments() -> None:
     raw_pos = SimpleNamespace(
-        ticket=601, symbol="XAUUSD", volume=0.1, price_open=3000.0,
-        sl=2990.0, tp=3020.0,
+        ticket=601,
+        symbol="XAUUSD",
+        volume=0.1,
+        price_open=3000.0,
+        sl=2990.0,
+        tp=3020.0,
         time=datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc),
         type=0,
         comment="manual_trade_by_user",

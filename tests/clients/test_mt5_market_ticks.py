@@ -57,7 +57,9 @@ def test_get_ticks_preserves_tradeable_tick_fields(monkeypatch) -> None:
     assert ticks[0].price == 1.23458
 
 
-def test_get_ticks_reads_numpy_record_flags_field_before_object_attribute(monkeypatch) -> None:
+def test_get_ticks_reads_numpy_record_flags_field_before_object_attribute(
+    monkeypatch,
+) -> None:
     dtype = np.dtype(
         [
             ("time", "i8"),

@@ -69,7 +69,9 @@ def compute_params(
         max_volume=executor.config.max_volume,
         contract_size=contract_size,
         timeframe_risk_overrides=executor.config.timeframe_risk_multipliers or None,
-        regime=str(event.metadata.get(MK.REGIME) or event.metadata.get(MK.REGIME_HARD) or ""),
+        regime=str(
+            event.metadata.get(MK.REGIME) or event.metadata.get(MK.REGIME_HARD) or ""
+        ),
         regime_sizing=executor.config.regime_sizing,
         digits=digits,
         volume_step=volume_step,

@@ -1,9 +1,9 @@
-from typing import Dict, Any, Iterable, List
+from typing import Any, Dict, Iterable, List
 
 import numpy as np
 
+from ..cache.incremental import IncrementalIndicator, IndicatorState
 from .base import get_closes, get_closes_array, get_int
-from ..cache.incremental import IndicatorState, IncrementalIndicator
 
 
 def _ema_sequence(values: List[float], period: int) -> float:
@@ -43,12 +43,16 @@ class EmaIncremental(IncrementalIndicator):
 
     def __init__(self, name: str, params: Dict[str, Any]) -> None:
         super().__init__(name, params)
-        self.min_data_points = get_int(params, "period", default=20, aliases=("window",))
+        self.min_data_points = get_int(
+            params, "period", default=20, aliases=("window",)
+        )
 
     def _compute_full(self, bars: list) -> Dict[str, float]:
         return ema(bars, self.params)
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
         period = get_int(self.params, "period", default=20, aliases=("window",))
         k = 2.0 / (period + 1)
         prev_ema = float(state.value)
@@ -67,7 +71,9 @@ class SmaIncremental(IncrementalIndicator):
 
     def __init__(self, name: str, params: Dict[str, Any]) -> None:
         super().__init__(name, params)
-        self.min_data_points = get_int(params, "period", default=20, aliases=("window",))
+        self.min_data_points = get_int(
+            params, "period", default=20, aliases=("window",)
+        )
 
     def _compute_full(self, bars: list) -> Dict[str, float]:
         return sma(bars, self.params)
@@ -81,7 +87,9 @@ class SmaIncremental(IncrementalIndicator):
             and "last_closes" in state.intermediate_results
         )
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
         period = get_int(self.params, "period", default=20, aliases=("window",))
         running_sum = float(state.intermediate_results["running_sum"])  # type: ignore[index]
         last_closes = list(state.intermediate_results["last_closes"])  # type: ignore[index]

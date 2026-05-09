@@ -36,7 +36,9 @@ class TickReplayDataLoader:
 
     def _row_to_tick(self, row: tuple[Any, ...]) -> Tick:
         if len(row) < 9:
-            raise ValueError("tick replay rows must use the full persisted tick contract")
+            raise ValueError(
+                "tick replay rows must use the full persisted tick contract"
+            )
         symbol, _price, bid, ask, last, volume, time_value, time_msc, flags = row[:9]
         parsed_msc = self._optional_int(time_msc)
         return Tick(

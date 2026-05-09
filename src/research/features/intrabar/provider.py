@@ -18,11 +18,16 @@ IntrabarProvider — 子 TF 内 bar 结构特征集。
 _batch_intrabar_momentum_shift / _batch_child_volume_front_weight /
 _batch_child_bar_count_ratio（lines 765-900）。
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.research.features.protocol import FeatureProvider, FeatureRole, ProviderDataRequirement
+from src.research.features.protocol import (
+    FeatureProvider,
+    FeatureRole,
+    ProviderDataRequirement,
+)
 
 _GROUP = "intrabar"
 
@@ -90,17 +95,17 @@ class IntrabarProvider:
         result: Dict[Tuple[str, str], List[Optional[float]]] = {}
 
         result[(_GROUP, "child_bar_consensus")] = _batch_child_bar_consensus(matrix, n)
-        result[(_GROUP, "child_range_acceleration")] = (
-            _batch_child_range_acceleration(matrix, n)
+        result[(_GROUP, "child_range_acceleration")] = _batch_child_range_acceleration(
+            matrix, n
         )
-        result[(_GROUP, "intrabar_momentum_shift")] = (
-            _batch_intrabar_momentum_shift(matrix, n)
+        result[(_GROUP, "intrabar_momentum_shift")] = _batch_intrabar_momentum_shift(
+            matrix, n
         )
         result[(_GROUP, "child_volume_front_weight")] = (
             _batch_child_volume_front_weight(matrix, n)
         )
-        result[(_GROUP, "child_bar_count_ratio")] = (
-            _batch_child_bar_count_ratio(matrix, n)
+        result[(_GROUP, "child_bar_count_ratio")] = _batch_child_bar_count_ratio(
+            matrix, n
         )
 
         return result

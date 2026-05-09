@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import logging
 import os
 import sqlite3
 import threading
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -141,7 +141,9 @@ class LocalEventStore:
                 """
             )
             self._ensure_column(cursor, "ohlc_events", "outcome", "TEXT")
-            self._ensure_column(cursor, "event_stats", "skipped_events", "INTEGER DEFAULT 0")
+            self._ensure_column(
+                cursor, "event_stats", "skipped_events", "INTEGER DEFAULT 0"
+            )
             conn.commit()
         logger.info("LocalEventStore initialized with database: %s", self.db_path)
 
@@ -235,8 +237,7 @@ class LocalEventStore:
 
         unique_events: list[tuple[str, str, datetime]] = list(
             dict.fromkeys(
-                (symbol, timeframe, bar_time)
-                for symbol, timeframe, bar_time in events
+                (symbol, timeframe, bar_time) for symbol, timeframe, bar_time in events
             )
         )
 
@@ -404,7 +405,9 @@ class LocalEventStore:
             conn.commit()
         if updated:
             if retry_count == 1:
-                logger.warning("Marked event %s as failed and queued for retry", event_id)
+                logger.warning(
+                    "Marked event %s as failed and queued for retry", event_id
+                )
             elif retry_count < 3:
                 logger.debug(
                     "Retryable event failure persisted for event %s (retry_count=%s)",
@@ -436,7 +439,9 @@ class LocalEventStore:
             conn.commit()
         if deleted_count > 0:
             logger.info(
-                "Cleaned up %s old events (older than %s days)", deleted_count, days_to_keep
+                "Cleaned up %s old events (older than %s days)",
+                deleted_count,
+                days_to_keep,
             )
 
     def get_stats(self) -> Dict[str, Any]:
@@ -541,7 +546,13 @@ class LocalEventStore:
                 LIMIT 10
                 """
             )
-            for symbol, timeframe, bar_time, error_msg, retry_count in cursor.fetchall():
+            for (
+                symbol,
+                timeframe,
+                bar_time,
+                error_msg,
+                retry_count,
+            ) in cursor.fetchall():
                 stats["recent_errors"].append(
                     {
                         "symbol": symbol,
@@ -564,7 +575,13 @@ class LocalEventStore:
                 LIMIT 10
                 """
             )
-            for symbol, timeframe, bar_time, error_msg, retry_count in cursor.fetchall():
+            for (
+                symbol,
+                timeframe,
+                bar_time,
+                error_msg,
+                retry_count,
+            ) in cursor.fetchall():
                 stats["recent_retryable_errors"].append(
                     {
                         "symbol": symbol,
@@ -647,9 +664,7 @@ class NullEventStore:
         self._next_id += 1
         return eid
 
-    def publish_events_batch(
-        self, events: List[tuple[str, str, datetime]]
-    ) -> int:
+    def publish_events_batch(self, events: List[tuple[str, str, datetime]]) -> int:
         n = len(events)
         self._next_id += n
         return n
@@ -660,7 +675,9 @@ class NullEventStore:
     def claim_next_event(self) -> Optional[ClaimedEvent]:
         return None
 
-    def mark_event_completed_by_id(self, event_id: int, outcome: str = "completed", detail: str = "") -> bool:
+    def mark_event_completed_by_id(
+        self, event_id: int, outcome: str = "completed", detail: str = ""
+    ) -> bool:
         return True
 
     def mark_event_skipped_by_id(self, event_id: int, reason: str) -> bool:
@@ -674,10 +691,20 @@ class NullEventStore:
 
     def get_stats(self) -> Dict[str, Any]:
         return {
-            "total": 0, "pending": 0, "processing": 0, "completed": 0,
-            "skipped": 0, "failed": 0, "retrying": 0, "total_retries": 0,
-            "outcome_counts": {}, "by_symbol": {}, "by_timeframe": {},
-            "recent_errors": [], "recent_retryable_errors": [], "recent_skips": [],
+            "total": 0,
+            "pending": 0,
+            "processing": 0,
+            "completed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "retrying": 0,
+            "total_retries": 0,
+            "outcome_counts": {},
+            "by_symbol": {},
+            "by_timeframe": {},
+            "recent_errors": [],
+            "recent_retryable_errors": [],
+            "recent_skips": [],
         }
 
     def reset_processing_events(self) -> int:

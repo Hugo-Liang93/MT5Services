@@ -10,6 +10,7 @@ enforce → 默默被打破。本 sentinel 强制：
 
 这把"豁免清单衰减"挡在合并前。
 """
+
 from __future__ import annotations
 
 import ast
@@ -58,7 +59,12 @@ def _container_is_empty(value: ast.AST) -> bool:
     """空容器（`set()` / `{}` / `[]` / set/dict/list literal with no elements）。"""
     if isinstance(value, ast.Call):
         # set() / dict() / list()
-        if isinstance(value.func, ast.Name) and value.func.id in {"set", "dict", "list", "frozenset"}:
+        if isinstance(value.func, ast.Name) and value.func.id in {
+            "set",
+            "dict",
+            "list",
+            "frozenset",
+        }:
             return len(value.args) == 0 and len(value.keywords) == 0
     if isinstance(value, (ast.Set, ast.List, ast.Tuple)):
         return len(value.elts) == 0
@@ -78,9 +84,16 @@ def _container_has_documented_entries(
     """
     if isinstance(value, ast.Dict):
         for k, v in zip(value.keys, value.values):
-            if not isinstance(v, ast.Constant) or not isinstance(v.value, str) or not v.value.strip():
+            if (
+                not isinstance(v, ast.Constant)
+                or not isinstance(v.value, str)
+                or not v.value.strip()
+            ):
                 key_repr = ast.unparse(k) if hasattr(ast, "unparse") else "<key>"
-                return False, f"dict entry {key_repr} 必须用非空字符串 value 说明豁免理由"
+                return (
+                    False,
+                    f"dict entry {key_repr} 必须用非空字符串 value 说明豁免理由",
+                )
         return True, ""
 
     if isinstance(value, (ast.Set, ast.List, ast.Tuple)):
@@ -91,7 +104,9 @@ def _container_has_documented_entries(
                 return False, f"无法定位行号 {elt_lineno}"
             same_line = source_lines[elt_lineno - 1]
             prev_line = source_lines[elt_lineno - 2] if elt_lineno >= 2 else ""
-            same_has_comment = "#" in same_line.split(',')[0] if False else "#" in same_line
+            same_has_comment = (
+                "#" in same_line.split(",")[0] if False else "#" in same_line
+            )
             prev_is_comment = prev_line.lstrip().startswith("#")
             if not (same_has_comment or prev_is_comment):
                 elt_repr = ast.unparse(elt) if hasattr(ast, "unparse") else "<elt>"
@@ -133,7 +148,7 @@ def test_exempt_container_entries_must_be_documented() -> None:
         source_lines = text.splitlines()
         for name, value, lineno in _collect_exempt_decls(tree, source_lines):
             if _container_is_empty(value):
-                continue   # 空容器无条目可文档
+                continue  # 空容器无条目可文档
             ok, reason = _container_has_documented_entries(value, source_lines)
             if not ok:
                 offenders.append(f"  {rel}:{lineno} {name}: {reason}")

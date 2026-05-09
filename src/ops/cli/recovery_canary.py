@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cycle-id", default=None)
     parser.add_argument("--source-signal-id", default=None)
-    parser.add_argument("--strategy", default="tick_martingale_probe")
+    parser.add_argument("--strategy", default="tick_recovery_probe")
     parser.add_argument("--timeframe", default="TICK")
     parser.add_argument("--base-volume", type=float, default=0.01)
     parser.add_argument("--multiplier", type=float, default=2.0)
@@ -147,11 +147,17 @@ def _validate_live_cycle_submit_request(
         errors.append("submit_recovery_order_requires_submit_initial_order")
     if bool(getattr(args, "keep_initial_open", False)):
         errors.append("submit_recovery_order_requires_auto_cleanup")
-    if int(getattr(args, "max_steps", recovery_policy.max_steps)) != 1 or recovery_policy.max_steps != 1:
+    if (
+        int(getattr(args, "max_steps", recovery_policy.max_steps)) != 1
+        or recovery_policy.max_steps != 1
+    ):
         errors.append("submit_recovery_order_requires_max_steps_1")
     if float(recovery_policy.base_volume) > 0.01:
         errors.append("submit_recovery_order_base_volume_above_0_01")
-    if recovery_policy.max_next_volume is not None and float(recovery_policy.max_next_volume) > 0.02:
+    if (
+        recovery_policy.max_next_volume is not None
+        and float(recovery_policy.max_next_volume) > 0.02
+    ):
         errors.append("submit_recovery_order_next_volume_above_0_02")
     if float(recovery_policy.max_total_volume) > 0.03:
         errors.append("submit_recovery_order_total_volume_above_0_03")
@@ -318,10 +324,15 @@ def _live_cycle_ok(result: dict[str, Any]) -> bool:
             if isinstance(result.get("recovery_cleanup"), dict)
             else {}
         )
-        if cleanup.get("status") != "closed" and recovery_cleanup.get("status") != "closed":
+        if (
+            cleanup.get("status") != "closed"
+            and recovery_cleanup.get("status") != "closed"
+        ):
             return False
     current_step = (
-        result.get("current_step") if isinstance(result.get("current_step"), dict) else {}
+        result.get("current_step")
+        if isinstance(result.get("current_step"), dict)
+        else {}
     )
     if initial.get("status") == "dry_run":
         finalization = (
@@ -383,7 +394,9 @@ def _build_runtime_ports(
     return trading_module, state_store
 
 
-def _blocked_payload(reason: str, *, details: dict[str, Any] | None = None) -> dict[str, Any]:
+def _blocked_payload(
+    reason: str, *, details: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return {"status": "blocked", "reason": reason, "details": dict(details or {})}
 
 
@@ -446,7 +459,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     gate_policy = _gate_policy_from_args(args)
     identity = get_runtime_identity()
-    cycle_id = str(args.cycle_id or f"demo-recovery-canary-{int(datetime.now(timezone.utc).timestamp() * 1000)}")
+    cycle_id = str(
+        args.cycle_id
+        or f"demo-recovery-canary-{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+    )
     source_signal_id = str(args.source_signal_id or f"{cycle_id}-signal")
 
     db = TimescaleWriter(load_db_settings("demo"), min_conn=1, max_conn=3)
@@ -478,7 +494,10 @@ def main(argv: list[str] | None = None) -> int:
                 strategy=args.strategy,
                 timeframe=args.timeframe,
             )
-            if initial.get("status") in {"submitted", "dry_run"} and initial.get("cycle") is not None:
+            if (
+                initial.get("status") in {"submitted", "dry_run"}
+                and initial.get("cycle") is not None
+            ):
                 current_step = evaluate_current_recovery_step(
                     cycle=initial["cycle"],
                     tick=_tick_from_quote(market.get_quote(symbol)),
@@ -516,7 +535,9 @@ def main(argv: list[str] | None = None) -> int:
                 "reason": "submit_recovery_order_not_requested",
             }
             if cleanup_required and bool(args.submit_recovery_order):
-                delay_seconds = max(0.0, min(float(args.initial_cleanup_delay_seconds), 60.0))
+                delay_seconds = max(
+                    0.0, min(float(args.initial_cleanup_delay_seconds), 60.0)
+                )
                 if delay_seconds > 0:
                     time.sleep(delay_seconds)
                 recovery_cleanup = close_recovery_canary_positions(
@@ -548,7 +569,9 @@ def main(argv: list[str] | None = None) -> int:
                         position_reader=trading_module,
                     )
             elif cleanup_required:
-                delay_seconds = max(0.0, min(float(args.initial_cleanup_delay_seconds), 60.0))
+                delay_seconds = max(
+                    0.0, min(float(args.initial_cleanup_delay_seconds), 60.0)
+                )
                 if delay_seconds > 0:
                     time.sleep(delay_seconds)
                 initial_cleanup = close_initial_recovery_cycle(
@@ -601,7 +624,9 @@ def main(argv: list[str] | None = None) -> int:
                 "status": (
                     initial.get("status")
                     if current_step.get("status") == "dry_run"
-                    else ("blocked" if initial.get("status") == "blocked" else "evaluated")
+                    else (
+                        "blocked" if initial.get("status") == "blocked" else "evaluated"
+                    )
                 ),
                 "mode": "live_cycle",
                 "cycle_id": cycle_id,
@@ -618,7 +643,9 @@ def main(argv: list[str] | None = None) -> int:
                 "critical_alerts": critical_alerts,
             }
         else:
-            ticks = market.get_ticks(symbol, int(args.tick_limit), start=_parse_start(args))
+            ticks = market.get_ticks(
+                symbol, int(args.tick_limit), start=_parse_start(args)
+            )
             result = execute_recovery_canary(
                 symbol=symbol,
                 direction=args.direction,

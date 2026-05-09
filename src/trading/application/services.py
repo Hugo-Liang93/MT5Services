@@ -20,7 +20,9 @@ class TradingCommandService:
     def active_account_alias(self) -> str:
         return self._module.active_account_alias
 
-    def dispatch_operation(self, operation: str, payload: Optional[dict[str, Any]] = None) -> Any:
+    def dispatch_operation(
+        self, operation: str, payload: Optional[dict[str, Any]] = None
+    ) -> Any:
         return self._module.dispatch_operation(operation, payload)
 
     def update_trade_control(
@@ -89,8 +91,12 @@ class TradingCommandService:
     def precheck_trade(self, **kwargs: Any) -> Any:
         return self._module.precheck_trade(**kwargs)
 
-    def execute_trade_batch(self, trades: list[dict], stop_on_error: bool = False) -> dict[str, Any]:
-        return self._module.execute_trade_batch(trades=trades, stop_on_error=stop_on_error)
+    def execute_trade_batch(
+        self, trades: list[dict], stop_on_error: bool = False
+    ) -> dict[str, Any]:
+        return self._module.execute_trade_batch(
+            trades=trades, stop_on_error=stop_on_error
+        )
 
     def close_position(self, **kwargs: Any) -> Any:
         return self._module.close_position(**kwargs)
@@ -173,7 +179,9 @@ class TradingQueryService:
     def trade_control_status(self) -> dict[str, Any]:
         return self._module.trade_control_status()
 
-    def daily_trade_summary(self, summary_date: Optional[date] = None) -> dict[str, Any]:
+    def daily_trade_summary(
+        self, summary_date: Optional[date] = None
+    ) -> dict[str, Any]:
         return self._module.daily_trade_summary(summary_date=summary_date)
 
     def entry_to_order_status(
@@ -205,10 +213,14 @@ class TradingQueryService:
     def orders(self, symbol: Optional[str] = None) -> Any:
         return self._module.orders(symbol)
 
-    def get_positions(self, symbol: Optional[str] = None, magic: Optional[int] = None) -> Any:
+    def get_positions(
+        self, symbol: Optional[str] = None, magic: Optional[int] = None
+    ) -> Any:
         return self._module.get_positions(symbol, magic)
 
-    def get_orders(self, symbol: Optional[str] = None, magic: Optional[int] = None) -> Any:
+    def get_orders(
+        self, symbol: Optional[str] = None, magic: Optional[int] = None
+    ) -> Any:
         return self._module.get_orders(symbol, magic)
 
     def get_position_close_details(

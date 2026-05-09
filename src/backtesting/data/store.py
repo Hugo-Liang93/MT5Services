@@ -7,7 +7,6 @@ from typing import Any, Dict, Optional
 
 from ..models import BacktestJob, BacktestJobStatus
 
-
 _MAX_CACHED_ENTRIES = 50
 
 
@@ -79,7 +78,9 @@ class BacktestRuntimeStore:
 
         pending_jobs = [job for job in jobs if job.status == BacktestJobStatus.PENDING]
         running_jobs = [job for job in jobs if job.status == BacktestJobStatus.RUNNING]
-        completed_jobs = [job for job in jobs if job.status == BacktestJobStatus.COMPLETED]
+        completed_jobs = [
+            job for job in jobs if job.status == BacktestJobStatus.COMPLETED
+        ]
         failed_jobs = [job for job in jobs if job.status == BacktestJobStatus.FAILED]
 
         latest_job = None

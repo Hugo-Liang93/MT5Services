@@ -8,7 +8,10 @@ from src.api.monitoring import health_ready
 
 
 def test_health_ready_raises_when_critical_component_is_degraded(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.monitoring_routes.health.get_startup_status", lambda: {"ready": True, "phase": "running"})
+    monkeypatch.setattr(
+        "src.api.monitoring_routes.health.get_startup_status",
+        lambda: {"ready": True, "phase": "running"},
+    )
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_runtime_read_model",
         lambda: type(
@@ -53,11 +56,16 @@ def test_health_ready_raises_when_critical_component_is_degraded(monkeypatch) ->
         assert exc.detail["status"] == "not_ready"
         assert "ingestion" in exc.detail["failed_checks"]
     else:
-        raise AssertionError("expected readiness probe to fail on degraded storage writer")
+        raise AssertionError(
+            "expected readiness probe to fail on degraded storage writer"
+        )
 
 
 def test_health_ready_returns_ready_when_checks_pass(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.monitoring_routes.health.get_startup_status", lambda: {"ready": True, "phase": "running"})
+    monkeypatch.setattr(
+        "src.api.monitoring_routes.health.get_startup_status",
+        lambda: {"ready": True, "phase": "running"},
+    )
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_runtime_read_model",
         lambda: type(
@@ -106,8 +114,13 @@ def test_health_ready_returns_ready_when_checks_pass(monkeypatch) -> None:
     }
 
 
-def test_health_ready_rejects_main_when_market_data_health_is_critical(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.monitoring_routes.health.get_startup_status", lambda: {"ready": True, "phase": "running"})
+def test_health_ready_rejects_main_when_market_data_health_is_critical(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.api.monitoring_routes.health.get_startup_status",
+        lambda: {"ready": True, "phase": "running"},
+    )
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_runtime_read_model",
         lambda: type(
@@ -156,13 +169,20 @@ def test_health_ready_rejects_main_when_market_data_health_is_critical(monkeypat
     except HTTPException as exc:
         assert exc.status_code == 503
         assert "market_data_health" in exc.detail["failed_checks"]
-        assert exc.detail["details"]["market_data_health"]["mt5"]["circuit_open"] is True
+        assert (
+            exc.detail["details"]["market_data_health"]["mt5"]["circuit_open"] is True
+        )
     else:
-        raise AssertionError("expected readiness probe to fail on critical market data health")
+        raise AssertionError(
+            "expected readiness probe to fail on critical market data health"
+        )
 
 
 def test_health_ready_rejects_when_tick_feature_health_blocks(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.monitoring_routes.health.get_startup_status", lambda: {"ready": True, "phase": "running"})
+    monkeypatch.setattr(
+        "src.api.monitoring_routes.health.get_startup_status",
+        lambda: {"ready": True, "phase": "running"},
+    )
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_runtime_read_model",
         lambda: type(
@@ -212,13 +232,18 @@ def test_health_ready_rejects_when_tick_feature_health_blocks(monkeypatch) -> No
     except HTTPException as exc:
         assert exc.status_code == 503
         assert "tick_feature_health" in exc.detail["failed_checks"]
-        assert exc.detail["details"]["tick_feature_health"]["blocked_symbols"] == ["XAUUSD"]
+        assert exc.detail["details"]["tick_feature_health"]["blocked_symbols"] == [
+            "XAUUSD"
+        ]
     else:
         raise AssertionError("expected readiness probe to fail on tick feature health")
 
 
 def test_health_ready_rejects_when_recovery_runner_is_stalled(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.monitoring_routes.health.get_startup_status", lambda: {"ready": True, "phase": "running"})
+    monkeypatch.setattr(
+        "src.api.monitoring_routes.health.get_startup_status",
+        lambda: {"ready": True, "phase": "running"},
+    )
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_runtime_read_model",
         lambda: type(
@@ -273,7 +298,9 @@ def test_health_ready_rejects_when_recovery_runner_is_stalled(monkeypatch) -> No
             "tick_feature_snapshot_stale"
         ]
     else:
-        raise AssertionError("expected readiness probe to fail on stalled recovery runner")
+        raise AssertionError(
+            "expected readiness probe to fail on stalled recovery runner"
+        )
 
 
 def test_health_ready_returns_executor_ready_when_account_runtime_checks_pass(
@@ -313,11 +340,15 @@ def test_health_ready_returns_executor_ready_when_account_runtime_checks_pass(
     )
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_execution_intent_consumer",
-        lambda: type("ExecutionIntentConsumer", (), {"is_running": lambda self: True})(),
+        lambda: type(
+            "ExecutionIntentConsumer", (), {"is_running": lambda self: True}
+        )(),
     )
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_operator_command_consumer",
-        lambda: type("OperatorCommandConsumer", (), {"is_running": lambda self: True})(),
+        lambda: type(
+            "OperatorCommandConsumer", (), {"is_running": lambda self: True}
+        )(),
     )
 
     payload = asyncio.run(health_ready())
@@ -333,7 +364,9 @@ def test_health_ready_returns_executor_ready_when_account_runtime_checks_pass(
     }
 
 
-def test_health_ready_rejects_executor_when_intent_consumer_stopped(monkeypatch) -> None:
+def test_health_ready_rejects_executor_when_intent_consumer_stopped(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_startup_status",
         lambda: {"ready": True, "phase": "running"},
@@ -368,11 +401,15 @@ def test_health_ready_rejects_executor_when_intent_consumer_stopped(monkeypatch)
     )
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_execution_intent_consumer",
-        lambda: type("ExecutionIntentConsumer", (), {"is_running": lambda self: False})(),
+        lambda: type(
+            "ExecutionIntentConsumer", (), {"is_running": lambda self: False}
+        )(),
     )
     monkeypatch.setattr(
         "src.api.monitoring_routes.health.get_operator_command_consumer",
-        lambda: type("OperatorCommandConsumer", (), {"is_running": lambda self: True})(),
+        lambda: type(
+            "OperatorCommandConsumer", (), {"is_running": lambda self: True}
+        )(),
     )
 
     try:
@@ -381,7 +418,9 @@ def test_health_ready_rejects_executor_when_intent_consumer_stopped(monkeypatch)
         assert exc.status_code == 503
         assert "execution_intent_consumer" in exc.detail["failed_checks"]
     else:
-        raise AssertionError("expected readiness probe to fail when intent consumer is stopped")
+        raise AssertionError(
+            "expected readiness probe to fail when intent consumer is stopped"
+        )
 
 
 def test_health_ready_rejects_executor_when_consumer_is_stalled(monkeypatch) -> None:
@@ -452,6 +491,10 @@ def test_health_ready_rejects_executor_when_consumer_is_stalled(monkeypatch) -> 
     except HTTPException as exc:
         assert exc.status_code == 503
         assert "execution_intent_consumer" in exc.detail["failed_checks"]
-        assert exc.detail["details"]["execution_intent_consumer"]["stall_reasons"] == ["poll_stalled"]
+        assert exc.detail["details"]["execution_intent_consumer"]["stall_reasons"] == [
+            "poll_stalled"
+        ]
     else:
-        raise AssertionError("expected readiness probe to fail when consumer progress is stalled")
+        raise AssertionError(
+            "expected readiness probe to fail when consumer progress is stalled"
+        )

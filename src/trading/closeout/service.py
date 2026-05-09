@@ -74,13 +74,17 @@ class ExposureCloseoutService:
         if position_result.requested_tickets and position_result.error is None:
             try:
                 raw_result = self._trading.close_all_positions(comment=comment)
-                position_result = self._merge_position_result(position_result, raw_result)
+                position_result = self._merge_position_result(
+                    position_result, raw_result
+                )
             except Exception as exc:
                 position_result.error = str(exc)
 
         if order_result.requested_tickets and order_result.error is None:
             try:
-                raw_result = self._trading.cancel_orders_by_tickets(order_result.requested_tickets)
+                raw_result = self._trading.cancel_orders_by_tickets(
+                    order_result.requested_tickets
+                )
                 order_result = self._merge_order_result(order_result, raw_result)
             except Exception as exc:
                 order_result.error = str(exc)
@@ -160,7 +164,9 @@ class ExposureCloseoutService:
         raw_result: Any,
     ) -> CloseoutActionResult:
         if isinstance(raw_result, dict):
-            result.completed_tickets = self._extract_int_list(raw_result.get("canceled"))
+            result.completed_tickets = self._extract_int_list(
+                raw_result.get("canceled")
+            )
             result.failed = self._extract_failed(raw_result)
         return result
 
@@ -263,16 +269,24 @@ class ExposureCloseoutController:
             "last_reason": reason,
             "last_comment": comment,
             "last_requested_at": requested_at.isoformat(),
-            "last_completed_at": requested_at.isoformat() if result.get("completed") else None,
+            "last_completed_at": (
+                requested_at.isoformat() if result.get("completed") else None
+            ),
             "actor": (str(actor).strip() or None) if actor is not None else None,
-            "action_id": (str(action_id).strip() or None) if action_id is not None else None,
-            "audit_id": (str(audit_id).strip() or None) if audit_id is not None else None,
+            "action_id": (
+                (str(action_id).strip() or None) if action_id is not None else None
+            ),
+            "audit_id": (
+                (str(audit_id).strip() or None) if audit_id is not None else None
+            ),
             "idempotency_key": (
                 str(idempotency_key).strip() or None
                 if idempotency_key is not None
                 else None
             ),
-            "request_context": dict(request_context) if isinstance(request_context, dict) else {},
+            "request_context": (
+                dict(request_context) if isinstance(request_context, dict) else {}
+            ),
             "result": result,
             "runtime_mode_transition": runtime_mode_transition,
         }

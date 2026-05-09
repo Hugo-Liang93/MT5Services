@@ -8,14 +8,15 @@ if TYPE_CHECKING:
 
 
 class IndicatorSource(Protocol):
-    def get_indicator(self, symbol: str, timeframe: str, indicator_name: str) -> Dict[str, Any] | None:
-        ...
+    def get_indicator(
+        self, symbol: str, timeframe: str, indicator_name: str
+    ) -> Dict[str, Any] | None: ...
 
-    def get_all_indicators(self, symbol: str, timeframe: str) -> Dict[str, Dict[str, Any]]:
-        ...
+    def get_all_indicators(
+        self, symbol: str, timeframe: str
+    ) -> Dict[str, Dict[str, Any]]: ...
 
-    def list_indicators(self) -> List[Dict[str, Any]]:
-        ...
+    def list_indicators(self) -> List[Dict[str, Any]]: ...
 
     def get_recent_bars(
         self,
@@ -24,8 +25,7 @@ class IndicatorSource(Protocol):
         *,
         end_time: Optional[datetime] = None,
         limit: int = 5,
-    ) -> List[Any]:
-        ...
+    ) -> List[Any]: ...
 
 
 class UnifiedIndicatorSourceAdapter:
@@ -34,10 +34,14 @@ class UnifiedIndicatorSourceAdapter:
     def __init__(self, manager: "UnifiedIndicatorManager"):
         self._manager = manager
 
-    def get_indicator(self, symbol: str, timeframe: str, indicator_name: str) -> Dict[str, Any] | None:
+    def get_indicator(
+        self, symbol: str, timeframe: str, indicator_name: str
+    ) -> Dict[str, Any] | None:
         return self._manager.get_indicator(symbol, timeframe, indicator_name)
 
-    def get_all_indicators(self, symbol: str, timeframe: str) -> Dict[str, Dict[str, Any]]:
+    def get_all_indicators(
+        self, symbol: str, timeframe: str
+    ) -> Dict[str, Dict[str, Any]]:
         return self._manager.get_all_indicators(symbol, timeframe)
 
     def list_indicators(self) -> List[Dict[str, Any]]:

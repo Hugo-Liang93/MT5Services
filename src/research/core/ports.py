@@ -32,8 +32,7 @@ class BarLoaderPort(Protocol):
         timeframe: str,
         start_time: datetime,
         warmup_bars: int = 200,
-    ) -> List[OHLC]:
-        ...
+    ) -> List[OHLC]: ...
 
     def load_all_bars(
         self,
@@ -41,8 +40,7 @@ class BarLoaderPort(Protocol):
         timeframe: str,
         start_time: datetime,
         end_time: datetime,
-    ) -> List[OHLC]:
-        ...
+    ) -> List[OHLC]: ...
 
     def load_child_bars(
         self,
@@ -50,8 +48,7 @@ class BarLoaderPort(Protocol):
         child_tf: str,
         start_time: datetime,
         end_time: datetime,
-    ) -> List[OHLC]:
-        ...
+    ) -> List[OHLC]: ...
 
 
 @runtime_checkable
@@ -69,19 +66,18 @@ class IndicatorComputerPort(Protocol):
         bars: List[Any],
         indicators: Optional[List[str]] = None,
         scope: str = "confirmed",
-    ) -> Dict[str, Any]:
-        ...
+    ) -> Dict[str, Any]: ...
 
 
 @runtime_checkable
 class RegimeDetectorPort(Protocol):
     """从指标快照推断市场 Regime 的能力。"""
 
-    def detect(self, indicators: Dict[str, Dict[str, Any]]) -> RegimeType:
-        ...
+    def detect(self, indicators: Dict[str, Dict[str, Any]]) -> RegimeType: ...
 
-    def detect_soft(self, indicators: Dict[str, Dict[str, Any]]) -> SoftRegimeResult:
-        ...
+    def detect_soft(
+        self, indicators: Dict[str, Dict[str, Any]]
+    ) -> SoftRegimeResult: ...
 
 
 @dataclass(frozen=True)

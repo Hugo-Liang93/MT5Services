@@ -32,11 +32,14 @@ def resolve_logging_context(
         or (assignment.environment if assignment is not None else None)
         or get_current_environment()
     )
-    resolved_role = str(
-        role
-        or (assignment.role if assignment is not None else None)
-        or ("supervisor" if resolved_instance == "supervisor" else "main")
-    ).strip() or "main"
+    resolved_role = (
+        str(
+            role
+            or (assignment.role if assignment is not None else None)
+            or ("supervisor" if resolved_instance == "supervisor" else "main")
+        ).strip()
+        or "main"
+    )
     return {
         "instance": resolved_instance or "default",
         "environment": resolved_environment or "unknown",
@@ -47,8 +50,7 @@ def resolve_logging_context(
 def inject_logging_context(base_format: str | None) -> str:
     normalized = str(base_format or "").strip() or _DEFAULT_LOG_FORMAT
     if any(
-        token in normalized
-        for token in ("%(instance)", "%(environment)", "%(role)")
+        token in normalized for token in ("%(instance)", "%(environment)", "%(role)")
     ):
         return normalized
     return f"{_CONTEXT_PREFIX}{normalized}"

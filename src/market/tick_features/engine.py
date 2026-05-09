@@ -74,7 +74,11 @@ class TickFeatureEngine:
             return
 
         cutoff_msc = latest_msc - int(self._config.window_seconds * 1000)
-        while buffer and buffer[0].time_msc is not None and int(buffer[0].time_msc) < cutoff_msc:
+        while (
+            buffer
+            and buffer[0].time_msc is not None
+            and int(buffer[0].time_msc) < cutoff_msc
+        ):
             buffer.popleft()
 
         last_emit_msc = self._last_emit_msc.get(symbol)

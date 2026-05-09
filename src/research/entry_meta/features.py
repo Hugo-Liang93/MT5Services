@@ -8,7 +8,6 @@ import numpy as np
 
 from src.research.entry_meta.dataset import EntryMetaDataset, normalize_timestamp
 
-
 FORBIDDEN_TOKENS = [
     "forward",
     "future",
@@ -102,7 +101,9 @@ class EntryMetaFeatureBuilder:
         matrix_contract = _validate_matrix_contract(matrix)
         _validate_dataset_alignment(dataset, matrix_contract["n_bars"])
         visible_indicator_keys = self._visible_indicator_keys(matrix)
-        trade_features = [_validate_trade(trade, index) for index, trade in enumerate(dataset.trades)]
+        trade_features = [
+            _validate_trade(trade, index) for index, trade in enumerate(dataset.trades)
+        ]
         regime_names = [_semantic_name(item) for item in matrix_contract["regimes"]]
         session_names = [str(item) for item in matrix_contract["sessions"]]
         category_mappings = self._category_mappings(
@@ -203,7 +204,9 @@ class EntryMetaFeatureBuilder:
         ]
         indicator_series = matrix.indicator_series
         for key in visible_indicator_keys:
-            row.append(_to_float(_series_value(indicator_series.get(key, []), bar_index)))
+            row.append(
+                _to_float(_series_value(indicator_series.get(key, []), bar_index))
+            )
         row.append(
             _category_code(
                 category_mappings,
@@ -323,15 +326,15 @@ class EntryMetaFeatureRowBuilder:
             raise EntryMetaFeatureBuildError(f"unknown {category} category {key}")
         return float(mapping[key])
 
-    def _indicator_value(self, key: str, indicators: dict[str, dict[str, Any]]) -> float:
+    def _indicator_value(
+        self, key: str, indicators: dict[str, dict[str, Any]]
+    ) -> float:
         parts = key.split(".", 2)
         if len(parts) != 3:
             raise EntryMetaFeatureBuildError(f"unsupported indicator feature key {key}")
         _, indicator, field = parts
         if not isinstance(indicators, dict):
-            raise EntryMetaFeatureBuildError(
-                "context field indicators must be a dict"
-            )
+            raise EntryMetaFeatureBuildError("context field indicators must be a dict")
         payload = indicators.get(indicator)
         if not isinstance(payload, dict) or field not in payload:
             raise EntryMetaFeatureBuildError(f"missing indicator {indicator}.{field}")
@@ -415,7 +418,9 @@ def _required_finite_float(trade: dict[str, Any], field: str, index: int) -> flo
     try:
         value = float(trade[field])
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"sample {index} field {field} must be a finite float") from exc
+        raise ValueError(
+            f"sample {index} field {field} must be a finite float"
+        ) from exc
     if not math.isfinite(value):
         raise ValueError(f"sample {index} field {field} must be a finite float")
     return value
@@ -431,7 +436,9 @@ def _required_positive_float(trade: dict[str, Any], field: str, index: int) -> f
 def _required_direction(trade: dict[str, Any], index: int) -> str:
     direction = _required_non_empty_string(trade, "direction", index).lower()
     if direction not in {"buy", "sell"}:
-        raise ValueError("sample {index} field direction must be buy or sell".format(index=index))
+        raise ValueError(
+            "sample {index} field direction must be buy or sell".format(index=index)
+        )
     return direction
 
 

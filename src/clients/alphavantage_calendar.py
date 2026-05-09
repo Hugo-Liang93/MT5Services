@@ -16,8 +16,8 @@ from typing import Any, Dict, List, Optional
 
 from src.clients.economic_calendar import (
     EconomicCalendarEvent,
-    _BaseHttpClient,
     _as_text,
+    _BaseHttpClient,
 )
 
 logger = logging.getLogger(__name__)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 SESSION_BUCKET_ASIA = "asia"
 SESSION_BUCKET_EUROPE = "europe"
 SESSION_BUCKET_US = "us"

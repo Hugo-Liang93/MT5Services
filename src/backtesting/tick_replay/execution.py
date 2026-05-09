@@ -107,9 +107,11 @@ class BidAskTickExecutionModel:
         ordered = sorted(
             list(ticks),
             key=lambda tick: (
-                int(tick.time_msc)
-                if tick.time_msc is not None
-                else int(tick.time.timestamp() * 1000),
+                (
+                    int(tick.time_msc)
+                    if tick.time_msc is not None
+                    else int(tick.time.timestamp() * 1000)
+                ),
                 tick.time,
             ),
         )

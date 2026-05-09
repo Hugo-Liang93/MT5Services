@@ -40,8 +40,7 @@ def test_promoted_indicator_is_visible_in_config_and_research_inventory() -> Non
     config = ConfigLoader.load("config/indicators.json")
     indicators = {indicator.name for indicator in config.indicators}
     precedent_names = {
-        item["promoted_indicator_name"]
-        for item in PROMOTED_INDICATOR_PRECEDENTS
+        item["promoted_indicator_name"] for item in PROMOTED_INDICATOR_PRECEDENTS
     }
 
     assert "momentum_consensus14" in indicators

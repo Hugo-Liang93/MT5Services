@@ -10,10 +10,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from src.clients.base import MT5BaseClient, mt5
-from src.config import MT5Settings
+from src.clients.base import MT5BaseClient, MT5TradeError, mt5
 from src.clients.mt5_account import Position
-from src.clients.base import MT5TradeError
+from src.config import MT5Settings
 from src.trading.broker.comment_codec import MAX_MT5_COMMENT_LENGTH
 from src.trading.models import TradeExecutionDetails
 
@@ -66,14 +65,22 @@ class MT5TradingClient(MT5BaseClient):
         is_buy = order_type in self._buy_order_types()
         if sl is not None:
             if is_buy and sl >= request_price:
-                raise MT5TradingClientError("Stop loss must be below entry price for buy orders")
+                raise MT5TradingClientError(
+                    "Stop loss must be below entry price for buy orders"
+                )
             if not is_buy and sl <= request_price:
-                raise MT5TradingClientError("Stop loss must be above entry price for sell orders")
+                raise MT5TradingClientError(
+                    "Stop loss must be above entry price for sell orders"
+                )
         if tp is not None:
             if is_buy and tp <= request_price:
-                raise MT5TradingClientError("Take profit must be above entry price for buy orders")
+                raise MT5TradingClientError(
+                    "Take profit must be above entry price for buy orders"
+                )
             if not is_buy and tp >= request_price:
-                raise MT5TradingClientError("Take profit must be below entry price for sell orders")
+                raise MT5TradingClientError(
+                    "Take profit must be below entry price for sell orders"
+                )
 
     def side_and_kind_to_order_type(self, side: str, order_kind: str = "market") -> int:
         side_lower = side.lower()
@@ -84,11 +91,23 @@ class MT5TradingClient(MT5BaseClient):
         if order_kind_lower == "market":
             return mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
         if order_kind_lower == "limit":
-            return getattr(mt5, "ORDER_TYPE_BUY_LIMIT", mt5.ORDER_TYPE_BUY) if is_buy else getattr(mt5, "ORDER_TYPE_SELL_LIMIT", mt5.ORDER_TYPE_SELL)
+            return (
+                getattr(mt5, "ORDER_TYPE_BUY_LIMIT", mt5.ORDER_TYPE_BUY)
+                if is_buy
+                else getattr(mt5, "ORDER_TYPE_SELL_LIMIT", mt5.ORDER_TYPE_SELL)
+            )
         if order_kind_lower == "stop":
-            return getattr(mt5, "ORDER_TYPE_BUY_STOP", mt5.ORDER_TYPE_BUY) if is_buy else getattr(mt5, "ORDER_TYPE_SELL_STOP", mt5.ORDER_TYPE_SELL)
+            return (
+                getattr(mt5, "ORDER_TYPE_BUY_STOP", mt5.ORDER_TYPE_BUY)
+                if is_buy
+                else getattr(mt5, "ORDER_TYPE_SELL_STOP", mt5.ORDER_TYPE_SELL)
+            )
         if order_kind_lower == "stop_limit":
-            return getattr(mt5, "ORDER_TYPE_BUY_STOP_LIMIT", mt5.ORDER_TYPE_BUY) if is_buy else getattr(mt5, "ORDER_TYPE_SELL_STOP_LIMIT", mt5.ORDER_TYPE_SELL)
+            return (
+                getattr(mt5, "ORDER_TYPE_BUY_STOP_LIMIT", mt5.ORDER_TYPE_BUY)
+                if is_buy
+                else getattr(mt5, "ORDER_TYPE_SELL_STOP_LIMIT", mt5.ORDER_TYPE_SELL)
+            )
         raise MT5TradingClientError(f"Unsupported order kind: {order_kind}")
 
     @staticmethod
@@ -96,7 +115,9 @@ class MT5TradingClient(MT5BaseClient):
         comment = str(getattr(result, "comment", "") or "").strip().lower()
         return "unsupported filling mode" in comment
 
-    def _candidate_filling_modes(self, symbol: str, preferred: Optional[int] = None) -> list[int]:
+    def _candidate_filling_modes(
+        self, symbol: str, preferred: Optional[int] = None
+    ) -> list[int]:
         candidates: list[int] = []
         if preferred is not None:
             candidates.append(preferred)
@@ -106,7 +127,11 @@ class MT5TradingClient(MT5BaseClient):
         if symbol_mode is not None:
             candidates.append(int(symbol_mode))
 
-        for mode_name in ("ORDER_FILLING_RETURN", "ORDER_FILLING_IOC", "ORDER_FILLING_FOK"):
+        for mode_name in (
+            "ORDER_FILLING_RETURN",
+            "ORDER_FILLING_IOC",
+            "ORDER_FILLING_FOK",
+        ):
             mode = getattr(mt5, mode_name, None)
             if mode is not None:
                 candidates.append(int(mode))
@@ -152,10 +177,14 @@ class MT5TradingClient(MT5BaseClient):
             raise MT5TradingClientError("Pending orders require an explicit price")
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
-            raise MT5TradingClientError(f"Failed to get tick for {symbol}: {mt5.last_error()}")
+            raise MT5TradingClientError(
+                f"Failed to get tick for {symbol}: {mt5.last_error()}"
+            )
         request_price = price
         if request_price is None:
-            request_price = tick.ask if order_type in self._buy_order_types() else tick.bid
+            request_price = (
+                tick.ask if order_type in self._buy_order_types() else tick.bid
+            )
         self._validate_protection_levels(
             order_type=order_type,
             request_price=request_price,
@@ -173,18 +202,30 @@ class MT5TradingClient(MT5BaseClient):
             "deviation": deviation,
             "magic": magic,
             "comment": self._normalize_comment(comment, "trade"),
-            "type_filling": getattr(mt5, "ORDER_FILLING_RETURN", getattr(mt5, "ORDER_FILLING_IOC", getattr(mt5, "ORDER_FILLING_FOK", 0))),
+            "type_filling": getattr(
+                mt5,
+                "ORDER_FILLING_RETURN",
+                getattr(mt5, "ORDER_FILLING_IOC", getattr(mt5, "ORDER_FILLING_FOK", 0)),
+            ),
         }
         result = self._send_order_with_supported_fillings(request)
         success_codes = {mt5.TRADE_RETCODE_DONE}
         if is_pending:
-            success_codes.add(getattr(mt5, "TRADE_RETCODE_PLACED", mt5.TRADE_RETCODE_DONE))
+            success_codes.add(
+                getattr(mt5, "TRADE_RETCODE_PLACED", mt5.TRADE_RETCODE_DONE)
+            )
         if result is None or result.retcode not in success_codes:
-            raise MT5TradingClientError(f"Order send failed: {result and result.comment}")
+            raise MT5TradingClientError(
+                f"Order send failed: {result and result.comment}"
+            )
         ticket = int(getattr(result, "order", 0) or getattr(result, "deal", 0) or 0)
         raw_fill_price = getattr(result, "price", None)
         try:
-            fill_price = float(raw_fill_price) if raw_fill_price is not None else float(request_price)
+            fill_price = (
+                float(raw_fill_price)
+                if raw_fill_price is not None
+                else float(request_price)
+            )
         except (TypeError, ValueError):
             fill_price = float(request_price)
         return TradeExecutionDetails(
@@ -229,7 +270,9 @@ class MT5TradingClient(MT5BaseClient):
         )
         return int(details.ticket)
 
-    def cancel_orders(self, symbol: Optional[str] = None, magic: Optional[int] = None) -> dict:
+    def cancel_orders(
+        self, symbol: Optional[str] = None, magic: Optional[int] = None
+    ) -> dict:
         """
         批量撤销挂单，可按品种/魔术号过滤。
         """
@@ -248,7 +291,13 @@ class MT5TradingClient(MT5BaseClient):
             }
             result = mt5.order_send(req)
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                failed.append({"ticket": o.ticket, "symbol": o.symbol, "error": result and result.comment})
+                failed.append(
+                    {
+                        "ticket": o.ticket,
+                        "symbol": o.symbol,
+                        "error": result and result.comment,
+                    }
+                )
             else:
                 canceled.append(o.ticket)
         return {"canceled": canceled, "failed": failed}
@@ -261,7 +310,11 @@ class MT5TradingClient(MT5BaseClient):
         orders = mt5.orders_get()
         if orders is None:
             raise MT5TradingClientError(f"Failed to get orders: {mt5.last_error()}")
-        order_map = {int(order.ticket): order for order in orders if int(order.ticket) in requested}
+        order_map = {
+            int(order.ticket): order
+            for order in orders
+            if int(order.ticket) in requested
+        }
         canceled, failed = [], []
         for ticket in requested:
             order = order_map.get(ticket)
@@ -276,12 +329,20 @@ class MT5TradingClient(MT5BaseClient):
             }
             result = mt5.order_send(req)
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                failed.append({"ticket": order.ticket, "symbol": order.symbol, "error": result and result.comment})
+                failed.append(
+                    {
+                        "ticket": order.ticket,
+                        "symbol": order.symbol,
+                        "error": result and result.comment,
+                    }
+                )
             else:
                 canceled.append(order.ticket)
         return {"canceled": canceled, "failed": failed}
 
-    def estimate_margin(self, symbol: str, volume: float, side: str, price: Optional[float] = None) -> float:
+    def estimate_margin(
+        self, symbol: str, volume: float, side: str, price: Optional[float] = None
+    ) -> float:
         """
         预估开仓所需保证金，便于上层风控。
         """
@@ -314,11 +375,13 @@ class MT5TradingClient(MT5BaseClient):
 
         info = mt5.symbol_info(symbol)
         if info is None:
-            checks.append({
-                "name": "symbol_available",
-                "passed": False,
-                "message": f"Symbol {symbol} not found or not available",
-            })
+            checks.append(
+                {
+                    "name": "symbol_available",
+                    "passed": False,
+                    "message": f"Symbol {symbol} not found or not available",
+                }
+            )
             return checks
 
         # ── trade_mode 检查 ─────────────────────────────────────────────
@@ -327,29 +390,37 @@ class MT5TradingClient(MT5BaseClient):
         is_buy = str(side).lower() in ("buy", "long")
         # 0=DISABLED, 1=LONGONLY, 2=SHORTONLY, 3=CLOSEONLY, 4=FULL
         if trade_mode == 0:
-            checks.append({
-                "name": "trade_mode",
-                "passed": False,
-                "message": f"Trading disabled for {symbol} (trade_mode=DISABLED)",
-            })
+            checks.append(
+                {
+                    "name": "trade_mode",
+                    "passed": False,
+                    "message": f"Trading disabled for {symbol} (trade_mode=DISABLED)",
+                }
+            )
         elif trade_mode == 3:
-            checks.append({
-                "name": "trade_mode",
-                "passed": False,
-                "message": f"Only close operations allowed for {symbol} (trade_mode=CLOSEONLY)",
-            })
+            checks.append(
+                {
+                    "name": "trade_mode",
+                    "passed": False,
+                    "message": f"Only close operations allowed for {symbol} (trade_mode=CLOSEONLY)",
+                }
+            )
         elif trade_mode == 1 and not is_buy:
-            checks.append({
-                "name": "trade_mode",
-                "passed": False,
-                "message": f"Only buy operations allowed for {symbol} (trade_mode=LONGONLY)",
-            })
+            checks.append(
+                {
+                    "name": "trade_mode",
+                    "passed": False,
+                    "message": f"Only buy operations allowed for {symbol} (trade_mode=LONGONLY)",
+                }
+            )
         elif trade_mode == 2 and is_buy:
-            checks.append({
-                "name": "trade_mode",
-                "passed": False,
-                "message": f"Only sell operations allowed for {symbol} (trade_mode=SHORTONLY)",
-            })
+            checks.append(
+                {
+                    "name": "trade_mode",
+                    "passed": False,
+                    "message": f"Only sell operations allowed for {symbol} (trade_mode=SHORTONLY)",
+                }
+            )
         else:
             checks.append({"name": "trade_mode", "passed": True, "message": "ok"})
 
@@ -372,47 +443,57 @@ class MT5TradingClient(MT5BaseClient):
             if sl is not None:
                 sl_distance = abs(ref_price - sl)
                 if sl_distance < min_distance - point * 0.5:
-                    checks.append({
-                        "name": "stops_level_sl",
-                        "passed": False,
-                        "message": (
-                            f"SL too close: distance {sl_distance:.{info.digits}f} "
-                            f"< minimum {min_distance:.{info.digits}f} "
-                            f"({stops_level} points)"
-                        ),
-                    })
+                    checks.append(
+                        {
+                            "name": "stops_level_sl",
+                            "passed": False,
+                            "message": (
+                                f"SL too close: distance {sl_distance:.{info.digits}f} "
+                                f"< minimum {min_distance:.{info.digits}f} "
+                                f"({stops_level} points)"
+                            ),
+                        }
+                    )
                 else:
-                    checks.append({"name": "stops_level_sl", "passed": True, "message": "ok"})
+                    checks.append(
+                        {"name": "stops_level_sl", "passed": True, "message": "ok"}
+                    )
 
             if tp is not None:
                 tp_distance = abs(ref_price - tp)
                 if tp_distance < min_distance - point * 0.5:
-                    checks.append({
-                        "name": "stops_level_tp",
-                        "passed": False,
-                        "message": (
-                            f"TP too close: distance {tp_distance:.{info.digits}f} "
-                            f"< minimum {min_distance:.{info.digits}f} "
-                            f"({stops_level} points)"
-                        ),
-                    })
+                    checks.append(
+                        {
+                            "name": "stops_level_tp",
+                            "passed": False,
+                            "message": (
+                                f"TP too close: distance {tp_distance:.{info.digits}f} "
+                                f"< minimum {min_distance:.{info.digits}f} "
+                                f"({stops_level} points)"
+                            ),
+                        }
+                    )
                 else:
-                    checks.append({"name": "stops_level_tp", "passed": True, "message": "ok"})
+                    checks.append(
+                        {"name": "stops_level_tp", "passed": True, "message": "ok"}
+                    )
 
         # ── freeze_level 提示（仅 warning，不阻断）──────────────────────
         raw_freeze = getattr(info, "trade_freeze_level", None)
         freeze_level = int(raw_freeze) if raw_freeze is not None else 0
         if freeze_level > 0 and point > 0:
             freeze_distance = freeze_level * point
-            checks.append({
-                "name": "freeze_level",
-                "passed": True,
-                "message": (
-                    f"Freeze level = {freeze_level} points "
-                    f"({freeze_distance:.{info.digits}f}) — "
-                    f"orders within this distance of SL/TP cannot be modified"
-                ),
-            })
+            checks.append(
+                {
+                    "name": "freeze_level",
+                    "passed": True,
+                    "message": (
+                        f"Freeze level = {freeze_level} points "
+                        f"({freeze_distance:.{info.digits}f}) — "
+                        f"orders within this distance of SL/TP cannot be modified"
+                    ),
+                }
+            )
 
         return checks
 
@@ -437,8 +518,12 @@ class MT5TradingClient(MT5BaseClient):
                 raise MT5TradingClientError("Pending orders require an explicit price")
             tick = mt5.symbol_info_tick(symbol)
             if tick is None:
-                raise MT5TradingClientError(f"Failed to get tick for {symbol}: {mt5.last_error()}")
-            request_price = tick.ask if order_type in self._buy_order_types() else tick.bid
+                raise MT5TradingClientError(
+                    f"Failed to get tick for {symbol}: {mt5.last_error()}"
+                )
+            request_price = (
+                tick.ask if order_type in self._buy_order_types() else tick.bid
+            )
         self._validate_protection_levels(
             order_type=order_type,
             request_price=request_price,
@@ -484,7 +569,9 @@ class MT5TradingClient(MT5BaseClient):
             raise MT5TradingClientError(f"Position {ticket} not found")
         close_volume = float(volume if volume is not None else pos.volume)
         if close_volume <= 0 or close_volume > pos.volume:
-            raise MT5TradingClientError(f"Close volume {close_volume} invalid for position {ticket}")
+            raise MT5TradingClientError(
+                f"Close volume {close_volume} invalid for position {ticket}"
+            )
 
         last_error: Any = None
         for _attempt in range(3):
@@ -498,13 +585,23 @@ class MT5TradingClient(MT5BaseClient):
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": pos.symbol,
                 "volume": close_volume,
-                "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+                "type": (
+                    mt5.ORDER_TYPE_SELL
+                    if pos.type == mt5.ORDER_TYPE_BUY
+                    else mt5.ORDER_TYPE_BUY
+                ),
                 "position": pos.ticket,
                 "price": price,
                 "deviation": deviation,
                 "magic": pos.magic,
                 "comment": self._normalize_comment(comment, "close"),
-                "type_filling": getattr(mt5, "ORDER_FILLING_RETURN", getattr(mt5, "ORDER_FILLING_IOC", getattr(mt5, "ORDER_FILLING_FOK", 0))),
+                "type_filling": getattr(
+                    mt5,
+                    "ORDER_FILLING_RETURN",
+                    getattr(
+                        mt5, "ORDER_FILLING_IOC", getattr(mt5, "ORDER_FILLING_FOK", 0)
+                    ),
+                ),
             }
             result = self._send_order_with_supported_fillings(request)
             if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
@@ -557,9 +654,9 @@ class MT5TradingClient(MT5BaseClient):
             if side is None:
                 return True
             side_lower = side.lower()
-            return (side_lower in ("buy", "long") and pos.type == mt5.ORDER_TYPE_BUY) or (
-                side_lower in ("sell", "short") and pos.type == mt5.ORDER_TYPE_SELL
-            )
+            return (
+                side_lower in ("buy", "long") and pos.type == mt5.ORDER_TYPE_BUY
+            ) or (side_lower in ("sell", "short") and pos.type == mt5.ORDER_TYPE_SELL)
 
         def _match_magic(pos) -> bool:
             return True if magic is None else pos.magic == magic
@@ -574,20 +671,36 @@ class MT5TradingClient(MT5BaseClient):
                     "action": mt5.TRADE_ACTION_DEAL,
                     "symbol": pos.symbol,
                     "volume": pos.volume,
-                    "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+                    "type": (
+                        mt5.ORDER_TYPE_SELL
+                        if pos.type == mt5.ORDER_TYPE_BUY
+                        else mt5.ORDER_TYPE_BUY
+                    ),
                     "position": pos.ticket,
                     "price": price,
                     "deviation": deviation,
                     "magic": pos.magic,
                     "comment": self._normalize_comment(comment, "close_all"),
-                    "type_filling": getattr(mt5, "ORDER_FILLING_RETURN", getattr(mt5, "ORDER_FILLING_IOC", getattr(mt5, "ORDER_FILLING_FOK", 0))),
+                    "type_filling": getattr(
+                        mt5,
+                        "ORDER_FILLING_RETURN",
+                        getattr(
+                            mt5,
+                            "ORDER_FILLING_IOC",
+                            getattr(mt5, "ORDER_FILLING_FOK", 0),
+                        ),
+                    ),
                 }
                 result = self._send_order_with_supported_fillings(request)
                 if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                    raise MT5TradingClientError(f"Close failed: {result and result.comment}")
+                    raise MT5TradingClientError(
+                        f"Close failed: {result and result.comment}"
+                    )
                 closed.append(pos.ticket)
             except Exception as exc:
-                failed.append({"ticket": pos.ticket, "symbol": pos.symbol, "error": str(exc)})
+                failed.append(
+                    {"ticket": pos.ticket, "symbol": pos.symbol, "error": str(exc)}
+                )
         return {"closed": closed, "failed": failed}
 
     def _to_tz(self, dt: datetime) -> datetime:
@@ -619,7 +732,13 @@ class MT5TradingClient(MT5BaseClient):
             }
             result = mt5.order_send(req)
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                failed.append({"ticket": o.ticket, "symbol": o.symbol, "error": result and result.comment})
+                failed.append(
+                    {
+                        "ticket": o.ticket,
+                        "symbol": o.symbol,
+                        "error": result and result.comment,
+                    }
+                )
             else:
                 modified.append(o.ticket)
         return {"modified": modified, "failed": failed}
@@ -639,7 +758,9 @@ class MT5TradingClient(MT5BaseClient):
         if ticket is not None:
             positions = mt5.positions_get(ticket=int(ticket))
         else:
-            positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+            positions = (
+                mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+            )
         if positions is None:
             raise MT5TradingClientError(f"Failed to get positions: {mt5.last_error()}")
         targets = [
@@ -653,7 +774,13 @@ class MT5TradingClient(MT5BaseClient):
         if ticket is not None and not targets:
             return {
                 "modified": [],
-                "failed": [{"ticket": int(ticket), "symbol": symbol, "error": "position_not_found"}],
+                "failed": [
+                    {
+                        "ticket": int(ticket),
+                        "symbol": symbol,
+                        "error": "position_not_found",
+                    }
+                ],
             }
         for p in targets:
             req = {
@@ -667,14 +794,22 @@ class MT5TradingClient(MT5BaseClient):
             retcode = int(result.retcode) if result is not None else -1
             comment = str(getattr(result, "comment", "") or "")
             if result is None or retcode != mt5.TRADE_RETCODE_DONE:
-                failed.append({
-                    "ticket": p.ticket, "symbol": p.symbol,
-                    "error": comment, "retcode": retcode,
-                })
+                failed.append(
+                    {
+                        "ticket": p.ticket,
+                        "symbol": p.symbol,
+                        "error": comment,
+                        "retcode": retcode,
+                    }
+                )
             else:
-                modified.append({
-                    "ticket": p.ticket, "retcode": retcode, "comment": comment,
-                })
+                modified.append(
+                    {
+                        "ticket": p.ticket,
+                        "retcode": retcode,
+                        "comment": comment,
+                    }
+                )
         return {"modified": modified, "failed": failed}
 
     def get_position_close_details(
@@ -747,13 +882,19 @@ class MT5TradingClient(MT5BaseClient):
         """
         info = mt5.symbol_info(symbol)
         if info is None:
-            raise MT5TradingClientError(f"Symbol {symbol} not found: {mt5.last_error()}")
+            raise MT5TradingClientError(
+                f"Symbol {symbol} not found: {mt5.last_error()}"
+            )
         vol_min = info.volume_min or 0.0
         vol_max = info.volume_max or float("inf")
         step = info.volume_step or 0.0
         if volume < vol_min or volume > vol_max:
-            raise MT5TradingClientError(f"Volume {volume} out of range [{vol_min}, {vol_max}] for {symbol}")
+            raise MT5TradingClientError(
+                f"Volume {volume} out of range [{vol_min}, {vol_max}] for {symbol}"
+            )
         if step > 0:
             steps = round(volume / step)
             if not math.isclose(steps * step, volume, rel_tol=1e-9, abs_tol=1e-9):
-                raise MT5TradingClientError(f"Volume {volume} is not aligned to step {step} for {symbol}")
+                raise MT5TradingClientError(
+                    f"Volume {volume} is not aligned to step {step} for {symbol}"
+                )

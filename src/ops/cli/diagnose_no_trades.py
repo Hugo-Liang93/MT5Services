@@ -28,8 +28,8 @@ import logging
 
 logging.disable(logging.CRITICAL)
 
-from datetime import datetime, timezone, timedelta
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 
 def main() -> None:

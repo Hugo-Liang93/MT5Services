@@ -8,8 +8,8 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from src.config.models.runtime import RiskConfig
 from src.config import EconomicConfig
+from src.config.models.runtime import RiskConfig
 from src.risk.models import TradeIntent
 from src.risk.rules import (
     AccountSnapshotRule,
@@ -41,7 +41,9 @@ class FakeAccountInfo:
 
 
 class FakeAccountProvider:
-    def __init__(self, *, margin_free: Optional[float] = 5000.0, balance: float = 10000.0):
+    def __init__(
+        self, *, margin_free: Optional[float] = 5000.0, balance: float = 10000.0
+    ):
         self._margin_free = margin_free
         self._balance = balance
         self._info = FakeAccountInfo(
@@ -92,7 +94,9 @@ class FakeTradeFrequencyProvider:
         self.error = error
         self.calls: list[dict[str, Any]] = []
 
-    def count_trades_since(self, since: datetime, *, account_key: str | None = None) -> int:
+    def count_trades_since(
+        self, since: datetime, *, account_key: str | None = None
+    ) -> int:
         self.calls.append({"since": since, "account_key": account_key})
         if self.error is not None:
             raise self.error
@@ -184,6 +188,7 @@ class TestRiskDataAvailabilityPolicy:
 # ---------------------------------------------------------------------------
 # MarginAvailabilityRule
 # ---------------------------------------------------------------------------
+
 
 class TestMarginAvailabilityRule:
     rule = MarginAvailabilityRule()
@@ -282,7 +287,12 @@ class TestMarginAvailabilityRule:
         assert checks[0].verdict == "block"
 
     def test_skipped_when_no_account_provider(self):
-        intent = TradeIntent(symbol="XAUUSD", volume=0.1, side="buy", metadata={"estimated_margin": 100.0})
+        intent = TradeIntent(
+            symbol="XAUUSD",
+            volume=0.1,
+            side="buy",
+            metadata={"estimated_margin": 100.0},
+        )
         ctx = RuleContext(
             intent=intent,
             economic_settings=EconomicConfig(),
@@ -297,10 +307,13 @@ class TestMarginAvailabilityRule:
 # TradeFrequencyRule
 # ---------------------------------------------------------------------------
 
+
 class TestTradeFrequencyRule:
     @staticmethod
     def _anchor_now() -> datetime:
-        return datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+        return datetime.now(timezone.utc).replace(
+            hour=12, minute=0, second=0, microsecond=0
+        )
 
     def test_passes_when_no_limits(self):
         rule = TradeFrequencyRule()
@@ -384,12 +397,14 @@ class TestTradeFrequencyRule:
         now = datetime.now(timezone.utc)
         rule._trade_timestamps = [
             now - timedelta(hours=50),  # older than 48h → should be pruned
-            now - timedelta(hours=1),   # recent → should survive
+            now - timedelta(hours=1),  # recent → should survive
         ]
         assert len(rule._trade_timestamps) == 2
         # Recording a new trade triggers pruning of >48h entries
         rule.record_trade()
-        assert len(rule._trade_timestamps) == 2  # old one pruned, 2 remain (recent + new)
+        assert (
+            len(rule._trade_timestamps) == 2
+        )  # old one pruned, 2 remain (recent + new)
 
     def test_skipped_when_risk_disabled(self):
         rule = TradeFrequencyRule()

@@ -17,7 +17,6 @@ import pytest
 
 from src.ingestion.ingestor import BackgroundIngestor
 
-
 # ── Minimal IngestSettings stub ───────────────────────────────
 
 
@@ -177,9 +176,7 @@ class TestBackfillAsync:
     def test_backfill_async_exception_safe(self) -> None:
         """_backfill_async 异常时不传播，仍设置 done。"""
         ingestor = _make_ingestor()
-        with patch.object(
-            ingestor, "_backfill_ohlc", side_effect=Exception("boom")
-        ):
+        with patch.object(ingestor, "_backfill_ohlc", side_effect=Exception("boom")):
             # 不应抛异常
             ingestor._backfill_async()
         assert ingestor._backfill_done.is_set()

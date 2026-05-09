@@ -35,7 +35,7 @@ def _cycle(**overrides) -> RecoveryCycleState:
         "started_at": datetime(2026, 5, 6, 1, 2, 3, tzinfo=timezone.utc),
         "updated_at": datetime(2026, 5, 6, 1, 2, 5, tzinfo=timezone.utc),
         "last_step_at": datetime(2026, 5, 6, 1, 2, 4, tzinfo=timezone.utc),
-        "strategy": "tick_martingale_probe",
+        "strategy": "tick_recovery_probe",
         "timeframe": "TICK",
         "source_signal_id": "sig-1",
         "metadata": {"probe": True},
@@ -60,7 +60,7 @@ def test_trading_state_store_records_recovery_cycle_with_account_scope():
     assert row[1] == "demo:broker:1001"
     assert row[2] == "cycle-1"
     assert row[3] == "XAUUSD"
-    assert row[5] == "tick_martingale_probe"
+    assert row[5] == "tick_recovery_probe"
     assert row[6] == "TICK"
     assert row[7] == "sig-1"
     assert row[8] == "open"
@@ -91,7 +91,7 @@ def test_trading_state_store_loads_open_recovery_cycle_for_strategy_symbol():
             "cycle_id": "cycle-1",
             "symbol": "XAUUSD",
             "direction": "buy",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "timeframe": "TICK",
             "source_signal_id": "sig-1",
             "status": "open",
@@ -118,14 +118,14 @@ def test_trading_state_store_loads_open_recovery_cycle_for_strategy_symbol():
 
     cycle = store.load_open_recovery_cycle(
         symbol="XAUUSD",
-        strategy="tick_martingale_probe",
+        strategy="tick_recovery_probe",
     )
 
     assert db.fetch_kwargs == {
         "account_key": "demo:broker:1001",
         "statuses": ["open"],
         "symbol": "XAUUSD",
-        "strategy": "tick_martingale_probe",
+        "strategy": "tick_recovery_probe",
         "cycle_id": None,
         "source_signal_id": None,
         "limit": 1,
@@ -133,6 +133,6 @@ def test_trading_state_store_loads_open_recovery_cycle_for_strategy_symbol():
     assert cycle is not None
     assert cycle.cycle_id == "cycle-1"
     assert cycle.account_key == "demo:broker:1001"
-    assert cycle.strategy == "tick_martingale_probe"
+    assert cycle.strategy == "tick_recovery_probe"
     assert cycle.step_count == 2
     assert cycle.metadata == {"probe": True}

@@ -2,6 +2,7 @@
 (CME GC, DXY, ^TNX, ^GSPC). Composite PK (symbol, date). TimescaleDB hypertable
 on date column; symbol is text to keep schema generic for future symbols.
 """
+
 from src.persistence.schema.daily_external_ohlc import DDL, INSERT_SQL
 
 

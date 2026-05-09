@@ -6,7 +6,11 @@ from . import data
 from .component_factory import build_backtest_components
 from .data import CachedDataLoader
 from .engine import BacktestEngine, PortfolioTracker
-from .filtering import BacktestFilterConfig, BacktestFilterSimulator, BacktestFilterStats
+from .filtering import (
+    BacktestFilterConfig,
+    BacktestFilterSimulator,
+    BacktestFilterStats,
+)
 from .models import (
     BacktestConfig,
     BacktestMetrics,

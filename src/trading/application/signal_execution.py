@@ -92,9 +92,7 @@ class SignalTradeCommandService:
             account_balance=balance,
         )
         volume = (
-            volume_override
-            if volume_override is not None
-            else params.position_size
+            volume_override if volume_override is not None else params.position_size
         )
         trade_request = {
             "symbol": signal_row.get("symbol"),

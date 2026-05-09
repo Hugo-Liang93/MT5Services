@@ -24,7 +24,9 @@ def test_stop_joins_writer_before_force_flush() -> None:
     writer._stop = threading.Event()
     writer._thread = _FakeThread()
     writer._lock = threading.RLock()
-    writer._channels = {"ticks": {"pending": [], "queue": type("Q", (), {"empty": lambda self: True})()}}
+    writer._channels = {
+        "ticks": {"pending": [], "queue": type("Q", (), {"empty": lambda self: True})()}
+    }
 
     calls: list[str] = []
 
@@ -44,7 +46,9 @@ def test_stop_keeps_thread_reference_when_join_times_out() -> None:
     writer._stop = threading.Event()
     writer._thread = _FakeThread(alive_after_join=True)
     writer._lock = threading.RLock()
-    writer._channels = {"ticks": {"pending": [], "queue": type("Q", (), {"empty": lambda self: True})()}}
+    writer._channels = {
+        "ticks": {"pending": [], "queue": type("Q", (), {"empty": lambda self: True})()}
+    }
 
     calls: list[str] = []
 

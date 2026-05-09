@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from threading import Event
+from types import SimpleNamespace
 
 from src.clients.mt5_market import Quote, Tick
 from src.market.event_bus import QuoteEvent, TickBatchEvent, TickBatchEventBus
@@ -88,7 +88,9 @@ def test_extend_ticks_dispatches_immutable_tick_batch_event() -> None:
     service.add_tick_batch_listener(listener)
 
     try:
-        service.extend_ticks("EURUSD", [_tick(1_767_225_600_000), _tick(1_767_225_601_000)])
+        service.extend_ticks(
+            "EURUSD", [_tick(1_767_225_600_000), _tick(1_767_225_601_000)]
+        )
 
         assert delivered.wait(1.0)
         assert len(received) == 1

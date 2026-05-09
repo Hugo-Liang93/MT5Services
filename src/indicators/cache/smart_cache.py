@@ -4,11 +4,11 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from typing import Any, Optional, Dict
-import time
-import threading
 import logging
+import threading
+import time
+from collections import OrderedDict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -16,18 +16,18 @@ logger = logging.getLogger(__name__)
 class SmartCache:
     """
     智能缓存：LRU + TTL
-    
+
     特性：
     1. LRU淘汰：当缓存满时淘汰最久未使用的项
     2. TTL过期：每个缓存项有过期时间
     3. 线程安全：支持多线程并发访问
     4. 统计信息：记录命中率等性能指标
     """
-    
+
     def __init__(self, maxsize: int = 1000, ttl: int = 300):
         """
         初始化智能缓存
-        
+
         Args:
             maxsize: 最大缓存项数
             ttl: 缓存项过期时间（秒）
@@ -36,15 +36,15 @@ class SmartCache:
         self.maxsize = maxsize
         self.ttl = ttl  # 过期时间（秒）
         self.lock = threading.RLock()
-        
+
         # 统计信息
         self.hits = 0
         self.misses = 0
         self.evictions = 0
         self.expirations = 0
-        
+
         logger.info(f"SmartCache initialized: maxsize={maxsize}, ttl={ttl}s")
-    
+
     def get(self, key: str) -> Optional[Any]:
         """获取缓存值，不存在或已过期返回 None。"""
         with self.lock:
@@ -74,14 +74,14 @@ class SmartCache:
                 self.evictions += 1
 
             self.cache[key] = (value, time.time(), ttl)
-    
+
     def delete(self, key: str) -> bool:
         """
         删除缓存值
-        
+
         Args:
             key: 缓存键
-            
+
         Returns:
             是否成功删除
         """
@@ -91,47 +91,47 @@ class SmartCache:
                 logger.debug(f"Cache delete: {key}")
                 return True
             return False
-    
+
     def clear(self) -> int:
         """清空缓存"""
         with self.lock:
             cache_size = len(self.cache)
             self.cache.clear()
-            
+
             # 重置统计信息
             self.hits = 0
             self.misses = 0
             self.evictions = 0
             self.expirations = 0
-            
+
             logger.info(f"Cache cleared: {cache_size} items removed")
             return cache_size
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """
         获取缓存统计信息
-        
+
         Returns:
             包含统计信息的字典
         """
         with self.lock:
             total_requests = self.hits + self.misses
             hit_rate = (self.hits / total_requests * 100) if total_requests > 0 else 0
-            
+
             # 计算平均年龄
             current_time = time.time()
             total_age = 0
             valid_items = 0
-            
+
             for _, timestamp, item_ttl in self.cache.values():
                 age = current_time - timestamp
                 effective_ttl = item_ttl if item_ttl is not None else self.ttl
                 if age <= effective_ttl:
                     total_age += age
                     valid_items += 1
-            
+
             avg_age = total_age / valid_items if valid_items > 0 else 0
-            
+
             return {
                 "size": len(self.cache),
                 "maxsize": self.maxsize,
@@ -142,19 +142,19 @@ class SmartCache:
                 "hit_rate": f"{hit_rate:.2f}%",
                 "ttl": self.ttl,
                 "avg_age": f"{avg_age:.2f}s",
-                "total_requests": total_requests
+                "total_requests": total_requests,
             }
-    
+
     def get_keys(self) -> list[str]:
         """
         获取所有缓存键
-        
+
         Returns:
             缓存键列表
         """
         with self.lock:
             return list(self.cache.keys())
-    
+
     def cleanup_expired(self) -> int:
         """清理过期缓存项。"""
         with self.lock:
@@ -171,11 +171,11 @@ class SmartCache:
                 self.expirations += 1
 
             return len(expired_keys)
-    
+
     def resize(self, new_maxsize: int) -> None:
         """
         调整缓存大小
-        
+
         Args:
             new_maxsize: 新的最大缓存项数
         """
@@ -186,7 +186,7 @@ class SmartCache:
                     evicted_key, _ = self.cache.popitem(last=False)
                     self.evictions += 1
                     logger.debug(f"Resize eviction: {evicted_key}")
-            
+
             self.maxsize = new_maxsize
             logger.info(f"Cache resized: new_maxsize={new_maxsize}")
 
@@ -198,11 +198,11 @@ _global_cache: Optional[SmartCache] = None
 def get_global_cache(maxsize: int = 1000, ttl: int = 300) -> SmartCache:
     """
     获取全局缓存实例（单例模式）
-    
+
     Args:
         maxsize: 最大缓存项数
         ttl: 缓存项过期时间（秒）
-        
+
     Returns:
         全局缓存实例
     """
@@ -222,7 +222,7 @@ def clear_global_cache() -> None:
 def get_global_cache_stats() -> Dict[str, Any]:
     """
     获取全局缓存统计信息
-    
+
     Returns:
         缓存统计信息
     """

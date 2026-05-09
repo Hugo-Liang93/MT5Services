@@ -1,6 +1,7 @@
 """§0cc P2 回归：build_research_data_deps 必须暴露 close 方法让 mining
 入口能正确清理 writer/pipeline。
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -39,18 +40,18 @@ def test_build_research_data_deps_exposes_close(monkeypatch) -> None:
 
     # 必须暴露 close()
     close = getattr(deps, "close", None)
-    assert callable(close), (
-        "ResearchDataDeps 必须暴露 close()/shutdown()/context manager 让 mining 入口清理"
-    )
+    assert callable(
+        close
+    ), "ResearchDataDeps 必须暴露 close()/shutdown()/context manager 让 mining 入口清理"
 
     # 调用 close 必须级联关闭 writer + pipeline
     close()
-    assert fake_writer.close.called, (
-        "deps.close() 必须级联调 writer.close()，否则连接池泄漏"
-    )
-    assert fake_pipeline.shutdown.called, (
-        "deps.close() 必须级联调 pipeline.shutdown()，否则线程池泄漏"
-    )
+    assert (
+        fake_writer.close.called
+    ), "deps.close() 必须级联调 writer.close()，否则连接池泄漏"
+    assert (
+        fake_pipeline.shutdown.called
+    ), "deps.close() 必须级联调 pipeline.shutdown()，否则线程池泄漏"
 
 
 def test_research_data_deps_supports_context_manager(monkeypatch) -> None:

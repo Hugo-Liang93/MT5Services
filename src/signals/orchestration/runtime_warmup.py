@@ -60,9 +60,7 @@ def check_warmup_barrier(
                 return False
 
         if scope == "intrabar" and runtime._warmup_ready_fn is not None:
-            if not _check_intrabar_warmup(
-                runtime, symbol, timeframe, indicators
-            ):
+            if not _check_intrabar_warmup(runtime, symbol, timeframe, indicators):
                 return False
 
     return True

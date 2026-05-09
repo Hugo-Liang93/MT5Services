@@ -7,9 +7,11 @@ import threading
 from collections import deque
 from datetime import datetime, timezone
 from time import monotonic
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..service import StrategyCapability
+from .policy import SignalPolicy
+from .runtime_metadata import build_snapshot_metadata
 from .runtime_processing import dequeue_event as _runtime_dequeue_event
 from .runtime_processing import enqueue_event as _runtime_enqueue_event
 from .runtime_processing import on_snapshot as _runtime_on_snapshot
@@ -21,16 +23,12 @@ from .runtime_status import (
     get_regime_stability_map,
 )
 from .runtime_warmup import check_warmup_barrier
-from .runtime_metadata import build_snapshot_metadata
-from .state_machine import (
-    build_transition_metadata as _build_transition_metadata,
-)
+from .state_machine import build_transition_metadata as _build_transition_metadata
 from .state_machine import is_new_snapshot as _sm_is_new_snapshot
 from .state_machine import mark_emitted as _sm_mark_emitted
 from .state_machine import should_emit as _sm_should_emit
 from .state_machine import snapshot_signature as _sm_snapshot_signature
 from .state_machine import transition_confirmed
-from .policy import SignalPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +45,16 @@ class SignalLifecyclePolicy:
     @staticmethod
     def parse_event_time(value: Any) -> datetime:
         if isinstance(value, datetime):
-            return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+            return (
+                value
+                if value.tzinfo is not None
+                else value.replace(tzinfo=timezone.utc)
+            )
         text = str(value)
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        return (
+            parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        )
 
     @staticmethod
     def build_transition_metadata(
@@ -166,7 +170,9 @@ class SignalLifecyclePolicy:
         with self._runtime._meta_lock:
             return self._runtime._shard_locks.setdefault(key, threading.Lock())
 
-    def get_regime_stability(self, symbol: str, timeframe: str) -> dict[str, Any] | None:
+    def get_regime_stability(
+        self, symbol: str, timeframe: str
+    ) -> dict[str, Any] | None:
         return get_regime_stability(self._runtime, symbol, timeframe)
 
     def get_regime_stability_map(self) -> dict[str, dict[str, Any]]:
@@ -188,14 +194,20 @@ class RuntimeStatusBuilder:
     def count_active_states(self) -> dict:
         return count_active_states(self._runtime)
 
-    def get_regime_stability(self, symbol: str, timeframe: str) -> dict[str, Any] | None:
+    def get_regime_stability(
+        self, symbol: str, timeframe: str
+    ) -> dict[str, Any] | None:
         return get_regime_stability(self._runtime, symbol, timeframe)
 
     def get_regime_stability_map(self) -> dict[str, dict[str, Any]]:
         return get_regime_stability_map(self._runtime)
 
     def filter_status(self) -> dict[str, Any]:
-        return self._runtime.filter_chain.filter_status() if self._runtime.filter_chain is not None else {}
+        return (
+            self._runtime.filter_chain.filter_status()
+            if self._runtime.filter_chain is not None
+            else {}
+        )
 
 
 class RuntimePolicyCoordinator:
@@ -208,7 +220,9 @@ class RuntimePolicyCoordinator:
     def _normalize_timeframe(timeframe: str) -> str:
         return str(timeframe).strip().upper()
 
-    def _resolve_strategy_capabilities(self) -> tuple[StrategyCapability, ...] | list[dict[str, Any]] | None:
+    def _resolve_strategy_capabilities(
+        self,
+    ) -> tuple[StrategyCapability, ...] | list[dict[str, Any]] | None:
         raw_catalog = self._runtime.service.strategy_capability_catalog()
         if raw_catalog is None:
             return None
@@ -270,7 +284,9 @@ class RuntimePolicyCoordinator:
                     dropped_samples.append(f"{symbol}/{timeframe}:{strategy}")
                 continue
 
-            allowed_timeframes = self._runtime.policy.strategy_timeframes.get(strategy, ())
+            allowed_timeframes = self._runtime.policy.strategy_timeframes.get(
+                strategy, ()
+            )
             if allowed_timeframes:
                 allowed_set = {
                     self._normalize_timeframe(tf) for tf in allowed_timeframes
@@ -364,9 +380,7 @@ class RuntimeLifecycleManager:
 
     def start_loop(self, target, *, name: str = "signal-runtime") -> None:
         self._runtime._queue_runner.attach()
-        self._runtime._thread = threading.Thread(
-            target=target, name=name, daemon=True
-        )
+        self._runtime._thread = threading.Thread(target=target, name=name, daemon=True)
         self._runtime._thread.start()
 
     def stop_loop(self, timeout: float) -> bool:
@@ -436,7 +450,9 @@ class QueueRunner:
     def detach(self) -> None:
         self._runtime.snapshot_source.remove_snapshot_listener(self._snapshot_listener)
 
-    def enqueue(self, item: tuple[str, str, str, dict[str, dict[str, float]], dict[str, Any]]) -> None:
+    def enqueue(
+        self, item: tuple[str, str, str, dict[str, dict[str, float]], dict[str, Any]]
+    ) -> None:
         _runtime_enqueue_event(self._runtime, item)
 
     def dequeue(self, timeout: float) -> tuple | None:

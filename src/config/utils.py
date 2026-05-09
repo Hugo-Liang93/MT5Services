@@ -10,7 +10,6 @@ from src.config.instance_context import (
     resolve_instance_config_dir,
 )
 
-
 _INSTANCE_SCOPED_CONFIGS = {
     "market.ini",
     "mt5.ini",
@@ -36,7 +35,9 @@ def _allows_instance_layers(name_or_path: str) -> bool:
 
 
 def _project_root(base_dir: Optional[str] = None) -> str:
-    return base_dir or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return base_dir or os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..")
+    )
 
 
 def _config_root(base_dir: Optional[str] = None) -> str:
@@ -44,7 +45,11 @@ def _config_root(base_dir: Optional[str] = None) -> str:
 
 
 def _local_name(filename: str) -> str:
-    return filename[:-4] + ".local.ini" if filename.endswith(".ini") else filename + ".local"
+    return (
+        filename[:-4] + ".local.ini"
+        if filename.endswith(".ini")
+        else filename + ".local"
+    )
 
 
 def _resolve_named_config_path(
@@ -66,9 +71,7 @@ def _resolve_named_config_path(
             instance_candidate = instance_dir / name_or_path
             if instance_candidate.exists():
                 return str(instance_candidate)
-    abs_candidate = os.path.abspath(
-        os.path.join(_config_root(base_dir), name_or_path)
-    )
+    abs_candidate = os.path.abspath(os.path.join(_config_root(base_dir), name_or_path))
     return abs_candidate if os.path.exists(abs_candidate) else None
 
 
@@ -78,7 +81,9 @@ def _read_ini(path: str) -> configparser.ConfigParser:
     return parser
 
 
-def _merge_parsers(*parsers: Optional[configparser.ConfigParser]) -> Optional[configparser.ConfigParser]:
+def _merge_parsers(
+    *parsers: Optional[configparser.ConfigParser],
+) -> Optional[configparser.ConfigParser]:
     merged_parser = configparser.ConfigParser(interpolation=None)
     merged_any = False
     for parser in parsers:
@@ -103,7 +108,9 @@ def _load_named_config_layers(
     global_path = os.path.abspath(os.path.join(_config_root(base_dir), name_or_path))
     if os.path.exists(global_path):
         layers.append((name_or_path, _read_ini(global_path)))
-    normalized_instance = normalize_instance_name(get_current_instance_name(instance_name))
+    normalized_instance = normalize_instance_name(
+        get_current_instance_name(instance_name)
+    )
     if normalized_instance is not None and _allows_instance_layers(name_or_path):
         instance_dir = resolve_instance_config_dir(
             instance_name=normalized_instance,
@@ -117,7 +124,9 @@ def _load_named_config_layers(
     return layers
 
 
-def resolve_config_path(name_or_path: str, base_dir: Optional[str] = None) -> Optional[str]:
+def resolve_config_path(
+    name_or_path: str, base_dir: Optional[str] = None
+) -> Optional[str]:
     """Resolve config path relative to <project_root>/config for non-absolute input."""
     if not name_or_path:
         return None
@@ -167,7 +176,9 @@ def load_config_with_base(
     - Shared configs such as app.ini/db.ini/signal.ini/topology.ini remain
       rooted at config/*.ini and config/*.local.ini only.
     """
-    normalized_instance = normalize_instance_name(get_current_instance_name(instance_name))
+    normalized_instance = normalize_instance_name(
+        get_current_instance_name(instance_name)
+    )
     base_local_name = _local_name(base_config)
     target_local_name = _local_name(config_name)
 
@@ -233,7 +244,9 @@ def get_merged_option_source(
     if not section or not key:
         return None
 
-    normalized_instance = normalize_instance_name(get_current_instance_name(instance_name))
+    normalized_instance = normalize_instance_name(
+        get_current_instance_name(instance_name)
+    )
 
     def _reverse_layers(filename: str) -> list[tuple[str, configparser.ConfigParser]]:
         return list(
@@ -262,7 +275,9 @@ def get_merged_option_source(
     return None
 
 
-def get_merged_config(config_name: str, *, instance_name: Optional[str] = None) -> Dict[str, Any]:
+def get_merged_config(
+    config_name: str, *, instance_name: Optional[str] = None
+) -> Dict[str, Any]:
     """Return merged config as nested dict."""
     _, parser = load_config_with_base(config_name, instance_name=instance_name)
     if not parser:
@@ -287,13 +302,17 @@ class ConfigValidator:
         if not symbols:
             raise ValueError("No trading symbols configured")
         if default_symbol and default_symbol not in symbols:
-            raise ValueError(f"Default symbol '{default_symbol}' not in symbols list: {symbols}")
+            raise ValueError(
+                f"Default symbol '{default_symbol}' not in symbols list: {symbols}"
+            )
 
         timeframes_raw = trading.get("timeframes", "")
         if isinstance(timeframes_raw, list):
             timeframes = [str(t).strip() for t in timeframes_raw if str(t).strip()]
         else:
-            timeframes = [t.strip() for t in str(timeframes_raw).split(",") if t.strip()]
+            timeframes = [
+                t.strip() for t in str(timeframes_raw).split(",") if t.strip()
+            ]
 
         valid_timeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
         for tf in timeframes:
@@ -314,7 +333,5 @@ class ConfigValidator:
         for tf, interval in dict(intervals.get("ohlc_intervals", {}) or {}).items():
             tf_interval = float(interval)
             if tf_interval < 1.0:
-                raise ValueError(
-                    f"OHLC interval for {tf} too small: {tf_interval}"
-                )
+                raise ValueError(f"OHLC interval for {tf} too small: {tf_interval}")
         return True

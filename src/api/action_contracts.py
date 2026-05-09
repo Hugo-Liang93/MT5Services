@@ -224,7 +224,9 @@ def build_replayed_action_response(
                     or response_payload.get("message")
                     or "replayed operator action failed"
                 ),
-                "suggested_action": getattr(suggested_action, "value", suggested_action),
+                "suggested_action": getattr(
+                    suggested_action, "value", suggested_action
+                ),
                 "details": dict(response_payload.get("details") or {}),
             },
             metadata={

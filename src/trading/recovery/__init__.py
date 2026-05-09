@@ -5,13 +5,13 @@ strategies may trigger a cycle, but sizing escalation and recovery gates stay in
 this domain so they remain testable, bounded, and auditable.
 """
 
-from .controller import BoundedRecoveryController
 from .analytics import RecoveryDecisionAnalytics
 from .calibration_guard import (
     RecoveryCostCalibrationDecision,
     RecoveryCostCalibrationGuard,
     RecoveryCostCalibrationGuardSettings,
 )
+from .controller import BoundedRecoveryController
 from .entry_policies import (
     RecoveryCostDecision,
     RecoveryCostGate,
@@ -48,6 +48,7 @@ def __getattr__(name: str):
         }
         return exports[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "BoundedRecoveryController",

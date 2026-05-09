@@ -75,9 +75,7 @@ def test_pipeline_gate_audit_groups_dynamic_and_exact_gate_reasons() -> None:
     assert by_family["intrabar_synthesis_stale"]["events"] == 1
 
     by_reason = {item["gate_reason"]: item for item in summary["by_reason"]}
-    assert (
-        by_reason["session_transition_cooldown:london_to_new_york"]["events"] == 1
-    )
+    assert by_reason["session_transition_cooldown:london_to_new_york"]["events"] == 1
 
     by_day = {item["day"]: item for item in summary["by_day"]}
     assert by_day["2026-04-13"]["families"]["session_transition_cooldown"] == 1
@@ -130,4 +128,3 @@ def test_pipeline_gate_audit_can_filter_by_gate_family_and_source() -> None:
     assert summary["by_source"] == [
         {"gate_source": "execution", "events": 1, "trace_count": 1}
     ]
-

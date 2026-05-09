@@ -144,9 +144,7 @@ def test_register_handles_multiple_sources(tmp_path: Path) -> None:
 def test_register_returns_empty_on_missing_path(tmp_path: Path) -> None:
     """不存在的 path 不应 raise，返回空 map（便于多 source 容错）。"""
     catalog: "OrderedDict[str, SignalStrategy]" = OrderedDict()
-    tf_map = register_mined_rule_strategies(
-        catalog, [tmp_path / "does_not_exist.json"]
-    )
+    tf_map = register_mined_rule_strategies(catalog, [tmp_path / "does_not_exist.json"])
     assert tf_map == {}
 
 
@@ -172,6 +170,6 @@ def test_register_returns_per_spec_timeframe_map(tmp_path: Path) -> None:
     assert len(tf_map) == 1
     spec_name = next(iter(tf_map))
     assert spec_name.startswith("structured_mined_h4_")
-    assert tf_map[spec_name] == ["H4"], (
-        f"spec mining tf=H4 应仅允许 H4 跑，得到 {tf_map[spec_name]}"
-    )
+    assert tf_map[spec_name] == [
+        "H4"
+    ], f"spec mining tf=H4 应仅允许 H4 跑，得到 {tf_map[spec_name]}"

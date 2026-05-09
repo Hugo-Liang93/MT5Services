@@ -130,7 +130,11 @@ def test_build_trade_detail_returns_six_dimensions() -> None:
             },
             "exit": {"status": "closed"},
             "outcome": {"won": True},
-            "timeline": [{"stage": "entry"}, {"stage": "management"}, {"stage": "exit"}],
+            "timeline": [
+                {"stage": "entry"},
+                {"stage": "management"},
+                {"stage": "exit"},
+            ],
             "data_gaps": [],
         },
         "facts": {

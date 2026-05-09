@@ -40,7 +40,9 @@ def _normalize_mapping(value: Any) -> dict[str, Any]:
 
 def _normalize_recorded_at(value: Any) -> str:
     if isinstance(value, datetime):
-        normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        normalized = (
+            value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        )
         return normalized.isoformat()
     text = str(value or "").strip()
     if text:
@@ -110,9 +112,11 @@ def bind_command_item_result(
     message = _string_or_none(raw.get("message"))
     if message is None:
         raise ValueError("operator_command_result_missing_message")
-    action_id = _string_or_none(raw.get("action_id")) or _string_or_none(
-        item.get("action_id")
-    ) or _string_or_none(item.get("command_id"))
+    action_id = (
+        _string_or_none(raw.get("action_id"))
+        or _string_or_none(item.get("action_id"))
+        or _string_or_none(item.get("command_id"))
+    )
     if action_id is None:
         raise ValueError("operator_command_result_missing_action_id")
     return build_operator_command_result(
@@ -120,14 +124,18 @@ def bind_command_item_result(
         status=status,
         action_id=action_id,
         command_id=_string_or_none(item.get("command_id")),
-        audit_id=_string_or_none(raw.get("audit_id")) or _string_or_none(item.get("audit_id")),
+        audit_id=_string_or_none(raw.get("audit_id"))
+        or _string_or_none(item.get("audit_id")),
         actor=_string_or_none(raw.get("actor")) or _string_or_none(item.get("actor")),
-        reason=_string_or_none(raw.get("reason")) or _string_or_none(item.get("reason")),
+        reason=_string_or_none(raw.get("reason"))
+        or _string_or_none(item.get("reason")),
         idempotency_key=_string_or_none(raw.get("idempotency_key"))
         or _string_or_none(item.get("idempotency_key")),
-        request_context=raw.get("request_context")
-        if isinstance(raw.get("request_context"), Mapping)
-        else item.get("request_context"),
+        request_context=(
+            raw.get("request_context")
+            if isinstance(raw.get("request_context"), Mapping)
+            else item.get("request_context")
+        ),
         message=message,
         error_code=_string_or_none(raw.get("error_code")),
         recorded_at=raw.get("recorded_at"),
@@ -160,26 +168,33 @@ def build_existing_command_result(row: Mapping[str, Any]) -> dict[str, Any]:
             if status == "pending"
             else f"operator command {status}"
         )
-    action_id = _string_or_none(response_payload.get("action_id")) or _string_or_none(
-        row.get("action_id")
-    ) or _string_or_none(row.get("command_id"))
+    action_id = (
+        _string_or_none(response_payload.get("action_id"))
+        or _string_or_none(row.get("action_id"))
+        or _string_or_none(row.get("command_id"))
+    )
     return build_operator_command_result(
-        accepted=bool(response_payload.get("accepted"))
-        if "accepted" in response_payload
-        else status != "failed",
+        accepted=(
+            bool(response_payload.get("accepted"))
+            if "accepted" in response_payload
+            else status != "failed"
+        ),
         status=status,
         action_id=action_id,
         command_id=_string_or_none(row.get("command_id")),
         audit_id=_string_or_none(response_payload.get("audit_id"))
         or _string_or_none(row.get("audit_id")),
-        actor=_string_or_none(response_payload.get("actor")) or _string_or_none(row.get("actor")),
+        actor=_string_or_none(response_payload.get("actor"))
+        or _string_or_none(row.get("actor")),
         reason=_string_or_none(response_payload.get("reason"))
         or _string_or_none(row.get("reason")),
         idempotency_key=_string_or_none(response_payload.get("idempotency_key"))
         or _string_or_none(row.get("idempotency_key")),
-        request_context=response_payload.get("request_context")
-        if isinstance(response_payload.get("request_context"), Mapping)
-        else row.get("request_context"),
+        request_context=(
+            response_payload.get("request_context")
+            if isinstance(response_payload.get("request_context"), Mapping)
+            else row.get("request_context")
+        ),
         message=message,
         error_code=_string_or_none(response_payload.get("error_code"))
         or _string_or_none(row.get("last_error_code")),

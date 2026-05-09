@@ -39,15 +39,15 @@ def _make_matrix_with_barrier(
         symbol="XAUUSD",
         timeframe="H1",
         n_bars=n,
-        bar_times=[
-            datetime(2026, 1, 1, tzinfo=timezone.utc) for _ in range(n)
-        ],
+        bar_times=[datetime(2026, 1, 1, tzinfo=timezone.utc) for _ in range(n)],
         opens=[2000.0] * n,
         highs=[2001.0] * n,
         lows=[1999.0] * n,
         closes=[2000.0] * n,
         volumes=[100.0] * n,
-        indicators=[{"rsi14": {"rsi": v}} if v is not None else {} for v in feature_values],
+        indicators=[
+            {"rsi14": {"rsi": v}} if v is not None else {} for v in feature_values
+        ],
         regimes=[RegimeType.UNCERTAIN for _ in range(n)],
         soft_regimes=[None] * n,
         forward_returns={},
@@ -141,9 +141,7 @@ class TestAnalyzerBehavior:
         )
         results = analyze_barrier_predictive_power(
             matrix,
-            config=PredictivePowerConfig(
-                n_permutations=0, significance_level=0.05
-            ),
+            config=PredictivePowerConfig(n_permutations=0, significance_level=0.05),
             overfitting_config=OverfittingConfig(min_samples=30),
         )
         long_results = [r for r in results if r.direction == "long"]

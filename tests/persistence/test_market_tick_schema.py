@@ -23,7 +23,10 @@ def test_ticks_schema_contains_tradeable_tick_fields() -> None:
     assert "last        double precision" in ddl
     assert "flags       integer" in ddl
     assert "price       double precision" in ddl
-    assert "ALTER TABLE ticks ADD COLUMN IF NOT EXISTS bid DOUBLE PRECISION" in ticks.MIGRATION_SQL
+    assert (
+        "ALTER TABLE ticks ADD COLUMN IF NOT EXISTS bid DOUBLE PRECISION"
+        in ticks.MIGRATION_SQL
+    )
     assert "SET last = price" in ticks.MIGRATION_SQL
     assert schema.TICKS_MIGRATION_SQL in schema.POST_INIT_DDL_STATEMENTS
 

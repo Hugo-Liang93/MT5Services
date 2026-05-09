@@ -238,8 +238,7 @@ def test_default_signal_config_is_price_action_only_without_demo_binding(monkeyp
     assert deployment.locked_sessions == ("london", "new_york")
 
     assert not any(
-        key.startswith("structured_micro_momentum__")
-        for key in cfg.strategy_params
+        key.startswith("structured_micro_momentum__") for key in cfg.strategy_params
     )
 
 

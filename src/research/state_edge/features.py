@@ -39,7 +39,9 @@ class StateEdgeFeatureBuilder:
             columns.append((key, [self._to_float(v) for v in raw_values]))
 
         regimes = [self._regime_name(r) for r in matrix.regimes]
-        regime_codes = {name: float(idx) for idx, name in enumerate(sorted(set(regimes)))}
+        regime_codes = {
+            name: float(idx) for idx, name in enumerate(sorted(set(regimes)))
+        }
         columns.append(
             (
                 "regime.hard_code",
@@ -60,13 +62,19 @@ class StateEdgeFeatureBuilder:
                 (
                     f"soft_regime.{name}",
                     [
-                        self._to_float(item.get(name, 0.0)) if isinstance(item, dict) else 0.0
+                        (
+                            self._to_float(item.get(name, 0.0))
+                            if isinstance(item, dict)
+                            else 0.0
+                        )
                         for item in matrix.soft_regimes
                     ],
                 )
             )
 
-        sessions = list(matrix.sessions) if matrix.sessions else ["unknown"] * matrix.n_bars
+        sessions = (
+            list(matrix.sessions) if matrix.sessions else ["unknown"] * matrix.n_bars
+        )
         if len(sessions) < matrix.n_bars:
             sessions = sessions + ["unknown"] * (matrix.n_bars - len(sessions))
         session_keys = sorted(set(str(s) for s in sessions[: matrix.n_bars]))
@@ -74,7 +82,10 @@ class StateEdgeFeatureBuilder:
             columns.append(
                 (
                     f"session.{name}",
-                    [1.0 if str(sessions[i]) == name else 0.0 for i in range(matrix.n_bars)],
+                    [
+                        1.0 if str(sessions[i]) == name else 0.0
+                        for i in range(matrix.n_bars)
+                    ],
                 )
             )
 

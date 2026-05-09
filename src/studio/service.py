@@ -120,9 +120,7 @@ class StudioService:
             if agent.get("status") not in ("idle", "disconnected", "error")
         )
         alerts = sum(
-            1
-            for agent in agents
-            if agent.get("alertLevel") in ("warning", "error")
+            1 for agent in agents if agent.get("alertLevel") in ("warning", "error")
         )
 
         summary: dict[str, Any] = {

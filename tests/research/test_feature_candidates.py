@@ -12,7 +12,7 @@ from src.research.core.contracts import (
     ThresholdSweepResult,
 )
 from src.research.features import discover_feature_candidates
-from src.research.features.candidates import _FeatureMeta, _FEATURE_META_REGISTRY
+from src.research.features.candidates import _FEATURE_META_REGISTRY, _FeatureMeta
 
 
 def _predictive_result(
@@ -124,7 +124,9 @@ def _mining_result(
         completed_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         predictive_power=predictive_items,
         threshold_sweeps=threshold_items,
-        mined_rules=[_Rule(feature_name=rule_feature_name)] if rule_feature_name else [],
+        mined_rules=(
+            [_Rule(feature_name=rule_feature_name)] if rule_feature_name else []
+        ),
     )
 
 

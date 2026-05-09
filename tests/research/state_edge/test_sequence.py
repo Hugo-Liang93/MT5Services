@@ -11,8 +11,10 @@ from src.research.state_edge.features import StateEdgeFeatureBuilder
 from src.research.state_edge.labels import StateEdgeLabelBuilder
 from src.research.state_edge.neighbors import ShapeNeighborIndex
 from src.research.state_edge.sequence import SequenceWindowBuilder
-from src.research.state_edge.sequence_training import train_sequence_tcn_artifact
-from src.research.state_edge.sequence_training import train_sequence_mlp_artifact
+from src.research.state_edge.sequence_training import (
+    train_sequence_mlp_artifact,
+    train_sequence_tcn_artifact,
+)
 
 
 def _outcomes(values: list[float]) -> list[BarrierOutcome]:
@@ -70,7 +72,9 @@ def test_sequence_window_builder_adds_candle_shape_without_future_fields() -> No
     assert "indicator.rsi14.rsi" in sequence.feature_keys
     assert not any("future" in key.lower() for key in sequence.feature_keys)
     first_target = sequence.target_indices[0]
-    assert sequence.windows[0, -1, sequence.feature_keys.index("candle.close_location")] == pytest.approx(
+    assert sequence.windows[
+        0, -1, sequence.feature_keys.index("candle.close_location")
+    ] == pytest.approx(
         (matrix.closes[first_target] - matrix.lows[first_target])
         / (matrix.highs[first_target] - matrix.lows[first_target])
     )

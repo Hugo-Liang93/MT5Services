@@ -121,10 +121,14 @@ def test_get_merged_option_source_prefers_local_layers(tmp_path: Path):
     )
 
     assert (
-        utils.get_merged_option_source("app.ini", "system", "api_port", base_dir=str(tmp_path))
+        utils.get_merged_option_source(
+            "app.ini", "system", "api_port", base_dir=str(tmp_path)
+        )
         == "app.local.ini[system].api_port"
     )
     assert (
-        utils.get_merged_option_source("market.ini", "api", "host", base_dir=str(tmp_path))
+        utils.get_merged_option_source(
+            "market.ini", "api", "host", base_dir=str(tmp_path)
+        )
         == "market.local.ini[api].host"
     )

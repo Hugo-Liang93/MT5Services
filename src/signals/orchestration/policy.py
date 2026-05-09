@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional, Mapping
-from collections.abc import Iterable
+from typing import Any, Mapping, Optional
 
 from ..contracts import (
     SESSION_LONDON,
@@ -63,7 +63,10 @@ class SignalPolicy:
 
     def strategy_capability_contract(self) -> tuple[dict[str, Any], ...]:
         """能力快照统一契约输出（对齐 module/policy 对账口）。"""
-        return tuple(capability.as_contract() for capability in self.strategy_capability_catalog())
+        return tuple(
+            capability.as_contract()
+            for capability in self.strategy_capability_catalog()
+        )
 
     def strategy_capability_index(self) -> tuple[StrategyCapability, ...]:
         """能力索引别名：返回能力清单的可迭代视图。"""
@@ -73,18 +76,14 @@ class SignalPolicy:
         """以声明快照形式返回当前策略能力清单。"""
         return self.strategy_capability_catalog()
 
-    def get_strategy_capability(
-        self, strategy: str
-    ) -> StrategyCapability | None:
+    def get_strategy_capability(self, strategy: str) -> StrategyCapability | None:
         return self.strategy_capabilities.get(strategy)
 
     def get_warmup_required_indicators(self) -> tuple[str, ...]:
         """公开读取 warmup 基线指标。"""
         return tuple(self.warmup_required_indicators)
 
-    def get_strategy_deployment(
-        self, strategy: str
-    ) -> StrategyDeployment | None:
+    def get_strategy_deployment(self, strategy: str) -> StrategyDeployment | None:
         return self.strategy_deployments.get(strategy)
 
     def allows_runtime_evaluation(self, strategy: str) -> bool:
@@ -115,9 +114,7 @@ class SignalPolicy:
         """策略声明的必需市场数据 lane 类型。"""
         capability = self.get_strategy_capability(strategy)
         return (
-            capability.market_data_requirements
-            if capability is not None
-            else tuple()
+            capability.market_data_requirements if capability is not None else tuple()
         )
 
     def intrabar_strategies(self) -> tuple[str, ...]:

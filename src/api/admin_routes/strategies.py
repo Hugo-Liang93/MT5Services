@@ -138,9 +138,7 @@ def _reconcile_execution_plans(
         else set()
     )
 
-    module_indicators = set(
-        _sorted_texts(module_plan.get("required_indicators_union"))
-    )
+    module_indicators = set(_sorted_texts(module_plan.get("required_indicators_union")))
     runtime_indicators = set(
         _sorted_texts(runtime_plan.get("required_indicators_union"))
     )
@@ -168,9 +166,13 @@ def _reconcile_execution_plans(
     if backtest_plan is not None:
         payload["runtime_vs_backtest"] = {
             "runtime_only_strategies": sorted(runtime_strategies - backtest_strategies),
-            "backtest_only_strategies": sorted(backtest_strategies - runtime_strategies),
+            "backtest_only_strategies": sorted(
+                backtest_strategies - runtime_strategies
+            ),
             "runtime_only_indicators": sorted(runtime_indicators - backtest_indicators),
-            "backtest_only_indicators": sorted(backtest_indicators - runtime_indicators),
+            "backtest_only_indicators": sorted(
+                backtest_indicators - runtime_indicators
+            ),
             "aligned": (
                 runtime_strategies == backtest_strategies
                 and runtime_indicators == backtest_indicators
@@ -189,9 +191,13 @@ def _reconcile_execution_plans(
     return payload
 
 
-@router.get("/performance/strategies", response_model=ApiResponse[StrategyPerformanceReport])
+@router.get(
+    "/performance/strategies", response_model=ApiResponse[StrategyPerformanceReport]
+)
 def admin_performance_strategies(
-    hours: int = Query(default=168, ge=1, le=720, description="历史统计范围，单位小时。"),
+    hours: int = Query(
+        default=168, ge=1, le=720, description="历史统计范围，单位小时。"
+    ),
     perf_tracker: StrategyPerformanceTracker = Depends(deps.get_performance_tracker),
     calibrator: ConfidenceCalibrator = Depends(deps.get_calibrator),
     signal_svc: SignalModule = Depends(deps.get_signal_service),
@@ -212,11 +218,19 @@ def admin_performance_strategies(
         calibrator_info = calibrator.describe()
     except Exception:
         calibrator_info = {}
-    report = StrategyPerformanceReport(session_ranking=ranking, session_summary=summary, historical_winrates=winrates, calibrator=calibrator_info)
+    report = StrategyPerformanceReport(
+        session_ranking=ranking,
+        session_summary=summary,
+        historical_winrates=winrates,
+        calibrator=calibrator_info,
+    )
     return ApiResponse.success_response(report)
 
 
-@router.get("/performance/confidence-pipeline/{symbol}/{timeframe}", response_model=ApiResponse[ConfidencePipelineView])
+@router.get(
+    "/performance/confidence-pipeline/{symbol}/{timeframe}",
+    response_model=ApiResponse[ConfidencePipelineView],
+)
 def admin_confidence_pipeline(
     symbol: str,
     timeframe: str,
@@ -237,7 +251,9 @@ def admin_confidence_pipeline(
             multiplier = perf_tracker.get_multiplier(name)
         except Exception:
             multiplier = 1.0
-        strategies_pipeline.append({**descriptor, "session_multiplier": multiplier, "session_stats": stats})
+        strategies_pipeline.append(
+            {**descriptor, "session_multiplier": multiplier, "session_stats": stats}
+        )
     return ApiResponse.success_response(
         ConfidencePipelineView(
             symbol=symbol,
@@ -250,11 +266,17 @@ def admin_confidence_pipeline(
 
 
 @router.get("/strategies", response_model=ApiResponse[List[StrategyDetail]])
-def admin_strategies(signal_svc: SignalModule = Depends(deps.get_signal_service)) -> ApiResponse[List[StrategyDetail]]:
-    return ApiResponse.success_response([StrategyDetail(**row) for row in signal_svc.strategy_catalog()])
+def admin_strategies(
+    signal_svc: SignalModule = Depends(deps.get_signal_service),
+) -> ApiResponse[List[StrategyDetail]]:
+    return ApiResponse.success_response(
+        [StrategyDetail(**row) for row in signal_svc.strategy_catalog()]
+    )
 
 
-@router.get("/strategies/capability-reconciliation", response_model=ApiResponse[Dict[str, Any]])
+@router.get(
+    "/strategies/capability-reconciliation", response_model=ApiResponse[Dict[str, Any]]
+)
 def admin_strategy_capability_reconciliation(
     signal_svc: SignalModule = Depends(deps.get_signal_service),
     signal_runtime: SignalRuntime = Depends(deps.get_signal_runtime),
@@ -266,7 +288,9 @@ def admin_strategy_capability_reconciliation(
     return ApiResponse.success_response(payload)
 
 
-@router.get("/strategies/capability-contract", response_model=ApiResponse[Dict[str, Any]])
+@router.get(
+    "/strategies/capability-contract", response_model=ApiResponse[Dict[str, Any]]
+)
 def admin_strategy_capability_contract(
     signal_svc: SignalModule = Depends(deps.get_signal_service),
     signal_runtime: SignalRuntime = Depends(deps.get_signal_runtime),
@@ -283,7 +307,9 @@ def admin_strategy_capability_contract(
     )
 
 
-@router.get("/strategies/capability-execution-plan", response_model=ApiResponse[Dict[str, Any]])
+@router.get(
+    "/strategies/capability-execution-plan", response_model=ApiResponse[Dict[str, Any]]
+)
 def admin_strategy_capability_execution_plan(
     run_id: str | None = Query(
         default=None,
@@ -294,7 +320,9 @@ def admin_strategy_capability_execution_plan(
 ) -> ApiResponse[Dict[str, Any]]:
     module_plan = _build_module_capability_execution_plan(signal_svc)
     runtime_status = signal_runtime.status()
-    runtime_plan = dict(runtime_status.get("strategy_capability_execution_plan", {}) or {})
+    runtime_plan = dict(
+        runtime_status.get("strategy_capability_execution_plan", {}) or {}
+    )
 
     backtest_snapshot = _resolve_backtest_execution_plan(run_id)
     backtest_plan = (
@@ -333,7 +361,11 @@ def admin_strategy_detail(
     perf_tracker: StrategyPerformanceTracker = Depends(deps.get_performance_tracker),
 ) -> ApiResponse[StrategySessionDetailView]:
     if name not in signal_svc.list_strategies():
-        return ApiResponse.error_response(error_code="VALIDATION_ERROR", error_message=f"Strategy '{name}' not found", suggested_action="Check /v1/admin/strategies for available strategies")
+        return ApiResponse.error_response(
+            error_code="VALIDATION_ERROR",
+            error_message=f"Strategy '{name}' not found",
+            suggested_action="Check /v1/admin/strategies for available strategies",
+        )
     detail = build_strategy_detail(name, signal_svc)
     try:
         stats = perf_tracker.get_strategy_stats(name)

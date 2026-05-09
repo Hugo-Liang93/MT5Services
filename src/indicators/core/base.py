@@ -48,7 +48,9 @@ def get_int(params: dict, key: str, default: int, aliases: Sequence[str] = ()) -
     return default
 
 
-def get_float(params: dict, key: str, default: float, aliases: Sequence[str] = ()) -> float:
+def get_float(
+    params: dict, key: str, default: float, aliases: Sequence[str] = ()
+) -> float:
     """Fetch float param with aliases."""
     for k in (key, *aliases):
         if k in params:
@@ -66,11 +68,16 @@ def get_float(params: dict, key: str, default: float, aliases: Sequence[str] = (
 # 轻量缓存：同一 pipeline 批次内 21 个指标共享提取结果。
 # 以 (id(bars), len(bars), last_bar_fingerprint) 为键，仅缓存最近一次提取。
 _bars_array_cache: Dict[str, Any] = {
-    "bars_id": -1, "bars_len": -1, "bars_fp": None, "hlcv": None,
+    "bars_id": -1,
+    "bars_len": -1,
+    "bars_fp": None,
+    "hlcv": None,
 }
 
 
-def _get_full_hlcv(bars: List[OHLC]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _get_full_hlcv(
+    bars: List[OHLC],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """提取全量 bars 的 HLCV 数组（带同批次缓存）。
 
     同一 pipeline 批次中，bars 是同一个 list 对象（id 相同），
@@ -82,14 +89,23 @@ def _get_full_hlcv(bars: List[OHLC]) -> Tuple[np.ndarray, np.ndarray, np.ndarray
     last = bars[-1] if bars else None
     first = bars[0] if bars else None
     fp = (
-        getattr(first, "time", None), getattr(first, "high", None),
-        getattr(last, "time", None), getattr(last, "high", None),
-        getattr(last, "low", None), getattr(last, "close", None),
-    ) if last else None
+        (
+            getattr(first, "time", None),
+            getattr(first, "high", None),
+            getattr(last, "time", None),
+            getattr(last, "high", None),
+            getattr(last, "low", None),
+            getattr(last, "close", None),
+        )
+        if last
+        else None
+    )
     cache = _bars_array_cache
-    if (cache["bars_id"] == bars_id
-            and cache["bars_len"] == bars_len
-            and cache["bars_fp"] == fp):
+    if (
+        cache["bars_id"] == bars_id
+        and cache["bars_len"] == bars_len
+        and cache["bars_fp"] == fp
+    ):
         return cache["hlcv"]  # type: ignore[return-value]
 
     n = bars_len
@@ -156,7 +172,12 @@ def get_hlcv_arrays(
     if isinstance(bars, list):
         highs, lows, closes, volumes = _get_full_hlcv(bars)
         if lookback > 0:
-            return highs[-lookback:], lows[-lookback:], closes[-lookback:], volumes[-lookback:]
+            return (
+                highs[-lookback:],
+                lows[-lookback:],
+                closes[-lookback:],
+                volumes[-lookback:],
+            )
         return highs, lows, closes, volumes
     # fallback for non-list iterables
     window = list(bars)[-lookback:] if lookback > 0 else list(bars)

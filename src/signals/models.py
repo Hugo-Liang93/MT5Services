@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import math
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 
 def _json_safe(value: Any) -> Any:
     if isinstance(value, datetime):
-        normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        normalized = (
+            value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        )
         return normalized.isoformat()
     if isinstance(value, float):
         return value if math.isfinite(value) else None

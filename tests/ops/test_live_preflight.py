@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.ops.cli import live_preflight
 from src.ops import mt5_session_gate
+from src.ops.cli import live_preflight
 from src.signals.contracts import StrategyDeployment, StrategyDeploymentStatus
 
 

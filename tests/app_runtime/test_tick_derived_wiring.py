@@ -19,7 +19,9 @@ class _MarketService:
 
     def remove_tick_batch_listener(self, listener) -> None:
         self.listeners = [
-            item for item in self.listeners if not same_listener_reference(item, listener)
+            item
+            for item in self.listeners
+            if not same_listener_reference(item, listener)
         ]
 
     def add_quote_listener(self, listener) -> None:
@@ -27,7 +29,9 @@ class _MarketService:
 
     def remove_quote_listener(self, listener) -> None:
         self.listeners = [
-            item for item in self.listeners if not same_listener_reference(item, listener)
+            item
+            for item in self.listeners
+            if not same_listener_reference(item, listener)
         ]
 
 

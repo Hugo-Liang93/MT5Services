@@ -12,8 +12,10 @@ from src.research.core.ports import ResearchDataDeps
 from src.research.features.hub import FeatureHub
 from src.research.state_edge.artifacts import StateEdgeArtifact, save_artifact
 from src.research.state_edge.backends import resolve_backend
-from src.research.state_edge.sequence_training import train_sequence_tcn_artifact
-from src.research.state_edge.sequence_training import train_sequence_mlp_artifact
+from src.research.state_edge.sequence_training import (
+    train_sequence_mlp_artifact,
+    train_sequence_tcn_artifact,
+)
 from src.research.state_edge.training import train_state_edge_artifact
 from src.utils.timezone import utc_now
 
@@ -69,7 +71,9 @@ class StateEdgeLab:
             sequence_window or self._config.state_edge_model.sequence_window
         )
         self._epochs = epochs or self._config.state_edge_model.sequence_epochs
-        self._batch_size = batch_size or self._config.state_edge_model.sequence_batch_size
+        self._batch_size = (
+            batch_size or self._config.state_edge_model.sequence_batch_size
+        )
         self._feature_hub = FeatureHub(self._config)
 
     def run(
@@ -124,7 +128,10 @@ class StateEdgeLab:
                 batch_size=self._batch_size,
                 learning_rate=self._config.state_edge_model.sequence_learning_rate,
             )
-        elif self._model_kind == "tabular" or self._model_kind == "hist_gradient_boosting":
+        elif (
+            self._model_kind == "tabular"
+            or self._model_kind == "hist_gradient_boosting"
+        ):
             artifact = train_state_edge_artifact(
                 matrix,
                 backend_name=self._backend_name,

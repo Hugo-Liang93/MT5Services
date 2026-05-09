@@ -153,5 +153,9 @@ def test_status_probe_records_consumer_progress_health_metrics() -> None:
     calls = [args[:3] for args, _kwargs in health.record_metric.call_args_list]
     assert ("execution_intent_consumer", "consumer_stalled", 1.0) in calls
     assert ("execution_intent_consumer", "consumer_consecutive_errors", 4.0) in calls
-    assert ("execution_intent_consumer", "consumer_in_flight_duration_seconds", 61.0) in calls
+    assert (
+        "execution_intent_consumer",
+        "consumer_in_flight_duration_seconds",
+        61.0,
+    ) in calls
     assert ("execution_intent_consumer", "consumer_lease_takeovers_total", 2.0) in calls

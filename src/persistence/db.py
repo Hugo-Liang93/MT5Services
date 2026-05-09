@@ -609,7 +609,9 @@ class TimescaleWriter:
         return self.trade_command_repo.count_successful_trade_commands_since(**kwargs)
 
     def count_trade_frequency_reservations_since(self, **kwargs) -> int:
-        return self.trade_command_repo.count_trade_frequency_reservations_since(**kwargs)
+        return self.trade_command_repo.count_trade_frequency_reservations_since(
+            **kwargs
+        )
 
     def reserve_trade_frequency_quota(self, **kwargs) -> str:
         return self.trade_command_repo.reserve_trade_frequency_quota(**kwargs)

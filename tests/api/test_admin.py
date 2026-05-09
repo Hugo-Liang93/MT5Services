@@ -24,7 +24,6 @@ from src.api.admin_schemas import (
 from src.api.schemas import ApiResponse
 from src.monitoring.pipeline import PipelineEventBus
 
-
 # ── Helpers ───────────────────────────────────────────────────
 
 
@@ -303,7 +302,6 @@ class TestConfig:
         resp = client.get("/v1/admin/config/indicators?display_only=true")
         data = resp.json()["data"]
         assert data["total_count"] == 1  # only display
-
 
 
 # ═══════════════════════════════════════════════════════════════

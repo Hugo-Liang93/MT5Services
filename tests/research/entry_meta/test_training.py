@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
 
+from src.research.core.backends import BackendUnavailableError
 from src.research.entry_meta.dataset import EntryMetaDatasetBuilder
 from src.research.entry_meta.features import EntryMetaFeatureMatrix
 from src.research.entry_meta.scoring import EntryMetaScorer
 from src.research.entry_meta.training import train_entry_meta_bundle
-from src.research.core.backends import BackendUnavailableError
 
 
 @dataclass
@@ -61,11 +60,15 @@ def _trade(bar_time: datetime, pnl: float, index: int) -> dict[str, object]:
 
 
 def _dataset(matrix, pnls: list[float]):
-    trades = [_trade(matrix.bar_times[index], pnl, index) for index, pnl in enumerate(pnls)]
+    trades = [
+        _trade(matrix.bar_times[index], pnl, index) for index, pnl in enumerate(pnls)
+    ]
     return EntryMetaDatasetBuilder().build(matrix, trades)
 
 
-def test_cpu_training_outputs_artifact_probabilities_aligned_to_take_and_block() -> None:
+def test_cpu_training_outputs_artifact_probabilities_aligned_to_take_and_block() -> (
+    None
+):
     matrix = _matrix()
     dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0, 9.0, -4.0, 6.0, -2.0])
 
@@ -84,14 +87,18 @@ def test_cpu_training_outputs_artifact_probabilities_aligned_to_take_and_block()
     assert bundle.dataset is dataset
     assert len(bundle.artifact.predictions) == len(dataset.trades)
     for prediction in bundle.artifact.predictions:
-        assert prediction.take_entry_prob == pytest.approx(1.0 - prediction.block_entry_prob)
+        assert prediction.take_entry_prob == pytest.approx(
+            1.0 - prediction.block_entry_prob
+        )
         assert 0.0 <= prediction.take_entry_prob <= 1.0
         assert 0.0 <= prediction.block_entry_prob <= 1.0
     assert bundle.artifact.metrics["oos_samples"] == 4
     assert "oos_accuracy" in bundle.artifact.metrics
     assert "probability_distribution" in bundle.artifact.metrics
     assert bundle.artifact.model_payload["estimator"] == "logistic_regression_v1"
-    assert bundle.artifact.model_payload["feature_order"] == bundle.features.feature_keys
+    assert (
+        bundle.artifact.model_payload["feature_order"] == bundle.features.feature_keys
+    )
     assert bundle.artifact.model_payload["classes"] == [0, 1]
     assert bundle.artifact.model_payload["prediction_reuse"] == "dynamic_scorer"
 
@@ -165,7 +172,9 @@ def test_training_dynamic_scorer_reproduces_saved_predictions() -> None:
         feature_keys=bundle.artifact.feature_keys,
     )
 
-    for row, prediction in zip(bundle.features.rows, bundle.artifact.predictions, strict=True):
+    for row, prediction in zip(
+        bundle.features.rows, bundle.artifact.predictions, strict=True
+    ):
         score = scorer.score(row)
 
         assert score.score_source == "dynamic_scorer"
@@ -188,8 +197,12 @@ def test_training_uses_constant_refit_when_train_slice_has_one_class() -> None:
         "block_entry": 0.0,
         "take_entry": 1.0,
     }
-    assert {prediction.take_entry_prob for prediction in bundle.artifact.predictions} == {1.0}
-    assert {prediction.block_entry_prob for prediction in bundle.artifact.predictions} == {0.0}
+    assert {
+        prediction.take_entry_prob for prediction in bundle.artifact.predictions
+    } == {1.0}
+    assert {
+        prediction.block_entry_prob for prediction in bundle.artifact.predictions
+    } == {0.0}
 
 
 def test_training_uses_constant_refit_when_train_slice_is_empty() -> None:
@@ -200,7 +213,10 @@ def test_training_uses_constant_refit_when_train_slice_is_empty() -> None:
     bundle = train_entry_meta_bundle(matrix, dataset, "cpu")
 
     assert bundle.artifact.status == "refit"
-    assert bundle.artifact.model_payload["reason"] == "insufficient_train_classes_or_features"
+    assert (
+        bundle.artifact.model_payload["reason"]
+        == "insufficient_train_classes_or_features"
+    )
     assert bundle.artifact.model_payload["class_probs"] == {
         "block_entry": 0.5,
         "take_entry": 0.5,

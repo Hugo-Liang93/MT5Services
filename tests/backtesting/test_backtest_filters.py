@@ -122,9 +122,13 @@ class TestBacktestFilterSimulator:
             )
         )
         # 伦敦盘内
-        sim.should_evaluate("XAUUSD", bar_time=datetime(2025, 6, 4, 10, 0, tzinfo=timezone.utc))
+        sim.should_evaluate(
+            "XAUUSD", bar_time=datetime(2025, 6, 4, 10, 0, tzinfo=timezone.utc)
+        )
         # 亚盘（被过滤）
-        sim.should_evaluate("XAUUSD", bar_time=datetime(2025, 6, 4, 3, 0, tzinfo=timezone.utc))
+        sim.should_evaluate(
+            "XAUUSD", bar_time=datetime(2025, 6, 4, 3, 0, tzinfo=timezone.utc)
+        )
         assert sim.stats.total_bars_evaluated == 2
         assert sim.stats.total_bars_rejected == 1
 

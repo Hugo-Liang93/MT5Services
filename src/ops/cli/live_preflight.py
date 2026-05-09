@@ -28,10 +28,8 @@ sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 
-import warnings
-
 import logging
-
+import warnings
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from src.ops.mt5_session_gate import (
@@ -289,8 +287,8 @@ def _check_config_consistency() -> (
 
     try:
         from src.backtesting.config import get_backtest_defaults
-        from src.config.signal import get_signal_config
         from src.config.centralized import get_risk_config
+        from src.config.signal import get_signal_config
 
         signal_cfg = get_signal_config()
         risk_cfg = get_risk_config()
@@ -461,8 +459,7 @@ def _check_effective_strategy_routing(environment: str) -> List[Tuple[str, str, 
                     "Effective strategy routing",
                     "FAIL",
                     "account_bindings reference strategies without deployment "
-                    "contracts: "
-                    + ", ".join(missing_deployments),
+                    "contracts: " + ", ".join(missing_deployments),
                 )
             )
 
@@ -505,8 +502,7 @@ def _check_effective_strategy_routing(environment: str) -> List[Tuple[str, str, 
                     "Effective strategy routing",
                     "FAIL",
                     "auto_trade_enabled=true but executable strategies are not "
-                    "bound to any account: "
-                    + ", ".join(unrouted),
+                    "bound to any account: " + ", ".join(unrouted),
                 )
             )
 
@@ -568,7 +564,9 @@ def _environment_account_aliases(environment: str) -> set[str]:
         return set()
 
     aliases: set[str] = set()
-    for raw_instance in tuple(getattr(group, "instances", (group.main, *group.workers))):
+    for raw_instance in tuple(
+        getattr(group, "instances", (group.main, *group.workers))
+    ):
         instance_name = str(raw_instance).strip()
         if not instance_name:
             continue
@@ -700,9 +698,9 @@ def _evaluate_instance_risk(
 
     policy = getattr(risk_cfg, "preflight_policy", None) or PreflightRiskPolicy()
 
-    data_policy = str(
-        getattr(risk_cfg, "data_unavailable_policy", "") or ""
-    ).strip().lower()
+    data_policy = (
+        str(getattr(risk_cfg, "data_unavailable_policy", "") or "").strip().lower()
+    )
     if not data_policy:
         status = "FAIL" if live_env else "WARN"
         detail = "not set; live hard-risk fact sources must fail closed"

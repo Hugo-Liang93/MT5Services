@@ -33,30 +33,122 @@ class RetentionSpec:
 # ── 默认 policy 配置（可通过 db.ini [retention] 覆盖天数） ───────────────
 DEFAULT_POLICIES: list[RetentionSpec] = [
     # ── L3: 高频行情（短保留，激进压缩） ──
-    RetentionSpec("ticks",                  retention_days=90,  compress_after_days=3,  segment_by="symbol",                  order_by="time DESC"),
-    RetentionSpec("quotes",                 retention_days=90,  compress_after_days=3,  segment_by="symbol",                  order_by="time DESC"),
-    RetentionSpec("ohlc_intrabar",          retention_days=30,  compress_after_days=3,  segment_by="symbol, timeframe",       order_by="recorded_at DESC"),
-
+    RetentionSpec(
+        "ticks",
+        retention_days=90,
+        compress_after_days=3,
+        segment_by="symbol",
+        order_by="time DESC",
+    ),
+    RetentionSpec(
+        "quotes",
+        retention_days=90,
+        compress_after_days=3,
+        segment_by="symbol",
+        order_by="time DESC",
+    ),
+    RetentionSpec(
+        "ohlc_intrabar",
+        retention_days=30,
+        compress_after_days=3,
+        segment_by="symbol, timeframe",
+        order_by="recorded_at DESC",
+    ),
     # ── L3: 预览/诊断（短保留） ──
-    RetentionSpec("signal_preview_events",  retention_days=7,   compress_after_days=3,  segment_by="symbol, timeframe",       order_by="generated_at DESC"),
-    RetentionSpec("pipeline_trace_events",  retention_days=30,  compress_after_days=7,  segment_by="symbol, timeframe",       order_by="recorded_at DESC"),
-
+    RetentionSpec(
+        "signal_preview_events",
+        retention_days=7,
+        compress_after_days=3,
+        segment_by="symbol, timeframe",
+        order_by="generated_at DESC",
+    ),
+    RetentionSpec(
+        "pipeline_trace_events",
+        retention_days=30,
+        compress_after_days=7,
+        segment_by="symbol, timeframe",
+        order_by="recorded_at DESC",
+    ),
     # ── L2: 信号/指标结果（中等保留） ──
-    RetentionSpec("ohlc",                   retention_days=365, compress_after_days=30, segment_by="symbol, timeframe",       order_by="time DESC"),
-    RetentionSpec("signal_events",          retention_days=180, compress_after_days=14, segment_by="symbol, timeframe",       order_by="generated_at DESC"),
-    RetentionSpec("signal_outcomes",        retention_days=180, compress_after_days=14, segment_by="symbol, timeframe",       order_by="recorded_at DESC"),
-    RetentionSpec("auto_executions",        retention_days=180, compress_after_days=14, segment_by="symbol",                  order_by="executed_at DESC"),
-
+    RetentionSpec(
+        "ohlc",
+        retention_days=365,
+        compress_after_days=30,
+        segment_by="symbol, timeframe",
+        order_by="time DESC",
+    ),
+    RetentionSpec(
+        "signal_events",
+        retention_days=180,
+        compress_after_days=14,
+        segment_by="symbol, timeframe",
+        order_by="generated_at DESC",
+    ),
+    RetentionSpec(
+        "signal_outcomes",
+        retention_days=180,
+        compress_after_days=14,
+        segment_by="symbol, timeframe",
+        order_by="recorded_at DESC",
+    ),
+    RetentionSpec(
+        "auto_executions",
+        retention_days=180,
+        compress_after_days=14,
+        segment_by="symbol",
+        order_by="executed_at DESC",
+    ),
     # ── L2: 经济日历 ──
-    RetentionSpec("economic_calendar_events",       retention_days=365, compress_after_days=30, segment_by="country",                   order_by="scheduled_at DESC"),
-    RetentionSpec("economic_calendar_event_updates", retention_days=90,  compress_after_days=14, segment_by="event_uid",                 order_by="recorded_at DESC"),
-    RetentionSpec("economic_event_market_impact",    retention_days=180, compress_after_days=30, segment_by="symbol, event_uid",         order_by="recorded_at DESC"),
-
+    RetentionSpec(
+        "economic_calendar_events",
+        retention_days=365,
+        compress_after_days=30,
+        segment_by="country",
+        order_by="scheduled_at DESC",
+    ),
+    RetentionSpec(
+        "economic_calendar_event_updates",
+        retention_days=90,
+        compress_after_days=14,
+        segment_by="event_uid",
+        order_by="recorded_at DESC",
+    ),
+    RetentionSpec(
+        "economic_event_market_impact",
+        retention_days=180,
+        compress_after_days=30,
+        segment_by="symbol, event_uid",
+        order_by="recorded_at DESC",
+    ),
     # ── L1: 交易审计（长保留，晚压缩） ──
-    RetentionSpec("trade_outcomes",         retention_days=730, compress_after_days=30, segment_by="symbol, strategy",        order_by="recorded_at DESC"),
-    RetentionSpec("trade_command_audits",   retention_days=730, compress_after_days=30, segment_by="account_key",             order_by="recorded_at DESC"),
-    RetentionSpec("circuit_breaker_history", retention_days=365, compress_after_days=30, segment_by="account_key",            order_by="recorded_at DESC"),
-    RetentionSpec("position_sl_tp_history", retention_days=365, compress_after_days=30, segment_by="symbol",                  order_by="recorded_at DESC"),
+    RetentionSpec(
+        "trade_outcomes",
+        retention_days=730,
+        compress_after_days=30,
+        segment_by="symbol, strategy",
+        order_by="recorded_at DESC",
+    ),
+    RetentionSpec(
+        "trade_command_audits",
+        retention_days=730,
+        compress_after_days=30,
+        segment_by="account_key",
+        order_by="recorded_at DESC",
+    ),
+    RetentionSpec(
+        "circuit_breaker_history",
+        retention_days=365,
+        compress_after_days=30,
+        segment_by="account_key",
+        order_by="recorded_at DESC",
+    ),
+    RetentionSpec(
+        "position_sl_tp_history",
+        retention_days=365,
+        compress_after_days=30,
+        segment_by="symbol",
+        order_by="recorded_at DESC",
+    ),
 ]
 
 

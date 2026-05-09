@@ -94,9 +94,9 @@ def trade_runtime_mode_update(
             "command_id": result.get("command_id"),
             "audit_id": result.get("audit_id"),
             "actor": actor,
-            "target_account_alias": (
-                result.get("effective_state", {}) or {}
-            ).get("target_account_alias")
+            "target_account_alias": (result.get("effective_state", {}) or {}).get(
+                "target_account_alias"
+            )
             or request.account_alias,
         }
         if bool(result.get("replayed")):
@@ -105,7 +105,9 @@ def trade_runtime_mode_update(
     return ApiResponse.error_response(
         error_code=AIErrorCode.INVALID_PARAMETER_VALUE,
         error_message=str(
-            result.get("error_message") or result.get("message") or "runtime mode update failed"
+            result.get("error_message")
+            or result.get("message")
+            or "runtime mode update failed"
         ),
         suggested_action=AIErrorAction.VALIDATE_PARAMETERS,
         details=result,

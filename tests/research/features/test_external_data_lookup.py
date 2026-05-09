@@ -1,6 +1,7 @@
 """external_data_lookup — shared factory for FeatureProviders to query
 daily_external_ohlc by (symbol, field, date), with per-instance caching.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -9,8 +10,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.research.features.external_data_lookup import (
-    make_daily_field_lookup,
     SUPPORTED_FIELDS,
+    make_daily_field_lookup,
 )
 
 

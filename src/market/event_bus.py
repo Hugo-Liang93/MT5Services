@@ -7,11 +7,11 @@ from cache management. MarketDataService delegates to this class.
 from __future__ import annotations
 
 import concurrent.futures
-from dataclasses import dataclass
 import logging
 import queue
-import time
 import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, List, Optional
 
@@ -186,19 +186,22 @@ class MarketEventBus:
             maxsize=ohlc_event_queue_size,
         )
         self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="mds-listener",
+            max_workers=2,
+            thread_name_prefix="mds-listener",
         )
 
     # ── OHLC close listeners ──────────────────────────────────
 
     def add_ohlc_close_listener(
-        self, listener: Callable[[str, str, datetime], None],
+        self,
+        listener: Callable[[str, str, datetime], None],
     ) -> None:
         with self._lock:
             self._ohlc_close_listeners.append(listener)
 
     def remove_ohlc_close_listener(
-        self, listener: Callable[[str, str, datetime], None],
+        self,
+        listener: Callable[[str, str, datetime], None],
     ) -> None:
         with self._lock:
             self._ohlc_close_listeners = [
@@ -210,13 +213,15 @@ class MarketEventBus:
     # ── Intrabar listeners ────────────────────────────────────
 
     def add_intrabar_listener(
-        self, listener: Callable[[str, str, Any], None],
+        self,
+        listener: Callable[[str, str, Any], None],
     ) -> None:
         with self._lock:
             self._intrabar_listeners.append(listener)
 
     def remove_intrabar_listener(
-        self, listener: Callable[[str, str, Any], None],
+        self,
+        listener: Callable[[str, str, Any], None],
     ) -> None:
         with self._lock:
             self._intrabar_listeners = [
@@ -228,35 +233,41 @@ class MarketEventBus:
     # ── Tick batch listeners ─────────────────────────────────
 
     def add_tick_batch_listener(
-        self, listener: Callable[[TickBatchEvent], None],
+        self,
+        listener: Callable[[TickBatchEvent], None],
     ) -> None:
         self._tick_batch_bus.add_listener(listener)
 
     def remove_tick_batch_listener(
-        self, listener: Callable[[TickBatchEvent], None],
+        self,
+        listener: Callable[[TickBatchEvent], None],
     ) -> None:
         self._tick_batch_bus.remove_listener(listener)
 
     def add_quote_listener(
-        self, listener: Callable[[QuoteEvent], None],
+        self,
+        listener: Callable[[QuoteEvent], None],
     ) -> None:
         self._quote_bus.add_listener(listener)
 
     def remove_quote_listener(
-        self, listener: Callable[[QuoteEvent], None],
+        self,
+        listener: Callable[[QuoteEvent], None],
     ) -> None:
         self._quote_bus.remove_listener(listener)
 
     # ── Durable event sink / queue ────────────────────────────
 
     def set_ohlc_event_sink(
-        self, sink: Optional[Callable[[str, str, datetime], None]],
+        self,
+        sink: Optional[Callable[[str, str, datetime], None]],
     ) -> None:
         """Register a durable event sink for closed-bar notifications."""
         self._ohlc_event_sink = sink
 
     def get_ohlc_event(
-        self, timeout: Optional[float] = None,
+        self,
+        timeout: Optional[float] = None,
     ) -> Optional[tuple]:
         try:
             return self._ohlc_event_queue.get(timeout=timeout)
@@ -266,7 +277,10 @@ class MarketEventBus:
     # ── Dispatch ──────────────────────────────────────────────
 
     def dispatch_ohlc_closed(
-        self, symbol: str, timeframe: str, bar_time: datetime,
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
     ) -> None:
         """Broadcast an OHLC close event to all listeners + sink/queue."""
         if self._shutdown_flag:
@@ -274,7 +288,11 @@ class MarketEventBus:
         for listener in list(self._ohlc_close_listeners):
             try:
                 self._executor.submit(
-                    self._safe_call_ohlc_listener, listener, symbol, timeframe, bar_time,
+                    self._safe_call_ohlc_listener,
+                    listener,
+                    symbol,
+                    timeframe,
+                    bar_time,
                 )
             except RuntimeError:
                 return  # executor already shut down
@@ -285,18 +303,25 @@ class MarketEventBus:
             except Exception:
                 logger.exception(
                     "Failed to publish OHLC close event for %s/%s at %s",
-                    symbol, timeframe, bar_time,
+                    symbol,
+                    timeframe,
+                    bar_time,
                 )
         try:
             self._ohlc_event_queue.put_nowait((symbol, timeframe, bar_time))
         except queue.Full:
             logger.warning(
                 "Dropped in-memory OHLC close event because the queue is full: %s/%s %s",
-                symbol, timeframe, bar_time,
+                symbol,
+                timeframe,
+                bar_time,
             )
 
     def dispatch_intrabar(
-        self, symbol: str, timeframe: str, bar: Any,
+        self,
+        symbol: str,
+        timeframe: str,
+        bar: Any,
     ) -> None:
         """Broadcast an intrabar update to all listeners."""
         if self._shutdown_flag:
@@ -304,7 +329,11 @@ class MarketEventBus:
         for listener in list(self._intrabar_listeners):
             try:
                 self._executor.submit(
-                    self._safe_call_intrabar_listener, listener, symbol, timeframe, bar,
+                    self._safe_call_intrabar_listener,
+                    listener,
+                    symbol,
+                    timeframe,
+                    bar,
                 )
             except RuntimeError:
                 return  # executor already shut down
@@ -364,7 +393,9 @@ class MarketEventBus:
         except Exception:
             logger.exception(
                 "Failed to notify OHLC close listener for %s/%s at %s",
-                symbol, timeframe, bar_time,
+                symbol,
+                timeframe,
+                bar_time,
             )
 
     @staticmethod
@@ -381,10 +412,14 @@ class MarketEventBus:
             if elapsed_ms > 100:
                 logger.warning(
                     "Slow intrabar listener for %s/%s took %.1fms",
-                    symbol, timeframe, elapsed_ms,
+                    symbol,
+                    timeframe,
+                    elapsed_ms,
                 )
         except Exception:
             logger.exception(
                 "Failed to publish intrabar event for %s/%s at %s",
-                symbol, timeframe, getattr(bar, "time", "?"),
+                symbol,
+                timeframe,
+                getattr(bar, "time", "?"),
             )

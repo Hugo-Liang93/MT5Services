@@ -23,7 +23,6 @@ from src.monitoring.pipeline import (
     PipelineEventBus,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────
 
 
@@ -103,9 +102,7 @@ class TestEmit:
         bus.emit(_make_event())
         assert bus.stats()["total_emitted"] == 2
 
-    def test_listener_error_does_not_block_others(
-        self, bus: PipelineEventBus
-    ) -> None:
+    def test_listener_error_does_not_block_others(self, bus: PipelineEventBus) -> None:
         bad = MagicMock(side_effect=RuntimeError("boom"))
         good = MagicMock()
         bus.add_listener(bad)
@@ -158,7 +155,12 @@ class TestConvenienceEmitters:
         bus.add_listener(received.append)
 
         bus.emit_indicator_computed(
-            "t3", "XAUUSD", "M5", "confirmed", 12.345, 8,
+            "t3",
+            "XAUUSD",
+            "M5",
+            "confirmed",
+            12.345,
+            8,
             indicator_names=["rsi14", "atr14"],
         )
 
@@ -168,9 +170,7 @@ class TestConvenienceEmitters:
         assert ev.payload["indicator_count"] == 8
         assert ev.payload["indicator_names"] == ["rsi14", "atr14"]
 
-    def test_emit_indicator_computed_no_names(
-        self, bus: PipelineEventBus
-    ) -> None:
+    def test_emit_indicator_computed_no_names(self, bus: PipelineEventBus) -> None:
         received: list[PipelineEvent] = []
         bus.add_listener(received.append)
         bus.emit_indicator_computed("t4", "XAUUSD", "M5", "confirmed", 5.0, 3)
@@ -191,9 +191,7 @@ class TestConvenienceEmitters:
         assert ev.payload["indicator_count"] == 5
         assert ev.payload["indicators"] == indicators
 
-    def test_emit_snapshot_published_no_indicators(
-        self, bus: PipelineEventBus
-    ) -> None:
+    def test_emit_snapshot_published_no_indicators(self, bus: PipelineEventBus) -> None:
         received: list[PipelineEvent] = []
         bus.add_listener(received.append)
         bar_time = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
@@ -205,8 +203,14 @@ class TestConvenienceEmitters:
         bus.add_listener(received.append)
 
         bus.emit_signal_evaluated(
-            "t7", "XAUUSD", "M5", "confirmed",
-            "rsi_reversion", "buy", 0.87654, "confirmed_buy",
+            "t7",
+            "XAUUSD",
+            "M5",
+            "confirmed",
+            "rsi_reversion",
+            "buy",
+            0.87654,
+            "confirmed_buy",
         )
 
         ev = received[0]
@@ -246,24 +250,56 @@ class TestConvenienceEmitters:
         bus.add_listener(received.append)
 
         bus.emit_execution_decided(
-            "t8", "XAUUSD", "M5", "confirmed",
-            strategy="trendline", direction="buy", order_kind="market",
+            "t8",
+            "XAUUSD",
+            "M5",
+            "confirmed",
+            strategy="trendline",
+            direction="buy",
+            order_kind="market",
         )
         bus.emit_execution_blocked(
-            "t8", "XAUUSD", "M5", "confirmed",
-            strategy="trendline", direction="buy", reason="after_eod_block", category="eod_guard",
+            "t8",
+            "XAUUSD",
+            "M5",
+            "confirmed",
+            strategy="trendline",
+            direction="buy",
+            reason="after_eod_block",
+            category="eod_guard",
         )
         bus.emit_execution_submitted(
-            "t8", "XAUUSD", "M5", "confirmed",
-            strategy="trendline", direction="buy", order_kind="market", request_id="sig-1", ticket=1001,
+            "t8",
+            "XAUUSD",
+            "M5",
+            "confirmed",
+            strategy="trendline",
+            direction="buy",
+            order_kind="market",
+            request_id="sig-1",
+            ticket=1001,
         )
         bus.emit_pending_order_submitted(
-            "t8", "XAUUSD", "M5", "confirmed",
-            strategy="trendline", direction="buy", order_kind="limit", request_id="sig-2", ticket=1002,
+            "t8",
+            "XAUUSD",
+            "M5",
+            "confirmed",
+            strategy="trendline",
+            direction="buy",
+            order_kind="limit",
+            request_id="sig-2",
+            ticket=1002,
         )
         bus.emit_execution_failed(
-            "t8", "XAUUSD", "M5", "confirmed",
-            strategy="trendline", direction="buy", order_kind="market", reason="network_error", category="dispatch",
+            "t8",
+            "XAUUSD",
+            "M5",
+            "confirmed",
+            strategy="trendline",
+            direction="buy",
+            order_kind="market",
+            reason="network_error",
+            category="dispatch",
         )
 
         assert [item.type for item in received] == [
@@ -291,9 +327,7 @@ class TestShutdown:
         bus.shutdown()
         assert bus.stats()["listeners"] == 0
 
-    def test_shutdown_prevents_further_emit(
-        self, bus: PipelineEventBus
-    ) -> None:
+    def test_shutdown_prevents_further_emit(self, bus: PipelineEventBus) -> None:
         bus.shutdown()
         bus.emit(_make_event())
         assert bus.stats()["total_emitted"] == 0
@@ -337,8 +371,12 @@ class TestPipelineEvent:
 
     def test_default_payload(self) -> None:
         event = PipelineEvent(
-            type="test", trace_id="t", symbol="X", timeframe="M1",
-            scope="confirmed", ts="2025-01-01T00:00:00",
+            type="test",
+            trace_id="t",
+            symbol="X",
+            timeframe="M1",
+            scope="confirmed",
+            ts="2025-01-01T00:00:00",
         )
         assert event.payload == {}
 
@@ -363,9 +401,7 @@ class TestConcurrency:
         threads = []
         for i in range(10):
             t = threading.Thread(
-                target=lambda idx=i: bus.emit(
-                    _make_event(trace_id=f"t-{idx}")
-                )
+                target=lambda idx=i: bus.emit(_make_event(trace_id=f"t-{idx}"))
             )
             threads.append(t)
             t.start()

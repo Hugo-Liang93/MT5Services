@@ -82,7 +82,9 @@ class RecoveryCanaryGate:
             1 for event in blocked_events if event.reason in ignored_reasons
         )
         effective_blocked_count = max(0, len(blocked_events) - ignored_blocked_count)
-        blocked_ratio = effective_blocked_count / event_count if event_count > 0 else 0.0
+        blocked_ratio = (
+            effective_blocked_count / event_count if event_count > 0 else 0.0
+        )
         if blocked_ratio > self._policy.max_blocked_ratio:
             reasons.append("blocked_ratio_above_maximum")
 

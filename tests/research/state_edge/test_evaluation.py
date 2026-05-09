@@ -37,11 +37,7 @@ def _result(
     }
     if state_edge_overlay is not None:
         result["state_edge_overlay"] = state_edge_overlay
-    return {
-        key: value
-        for key, value in result.items()
-        if value is not None
-    }
+    return {key: value for key, value in result.items() if value is not None}
 
 
 def test_decision_accepts_pf_or_expectancy_gain_without_dd_breach() -> None:
@@ -116,7 +112,9 @@ def test_threshold_report_selects_best_accepted_threshold_by_trade_increment() -
     assert report.best_decision.status == "accepted"
 
 
-def test_overlay_validation_report_includes_shadow_check_and_filter_diagnostics() -> None:
+def test_overlay_validation_report_includes_shadow_check_and_filter_diagnostics() -> (
+    None
+):
     baseline = _result(
         pf=2.299,
         expectancy=10.97,
@@ -215,12 +213,17 @@ def test_overlay_validation_report_includes_shadow_check_and_filter_diagnostics(
 
     assert payload["status"] == "rejected"
     assert payload["shadow_check"]["status"] == "passed"
-    assert payload["threshold_report"]["threshold_results"][0]["decision"]["status"] == "rejected"
+    assert (
+        payload["threshold_report"]["threshold_results"][0]["decision"]["status"]
+        == "rejected"
+    )
     assert payload["filter_diagnostics"][0]["threshold"] == 0.50
     assert payload["filter_diagnostics"][0]["blocked_entries"] == 19
     assert payload["filter_diagnostics"][0]["blocked_by_direction"] == {"buy": 19}
     assert payload["filter_diagnostics"][0]["exact_blocked_trades_available"] is True
-    assert payload["filter_diagnostics"][0]["diagnostic_scope"] == "exact_blocked_entries"
+    assert (
+        payload["filter_diagnostics"][0]["diagnostic_scope"] == "exact_blocked_entries"
+    )
     assert payload["filter_diagnostics"][0]["blocked_entry_summary"] == {
         "count": 1,
         "by_strategy": {"structured_open_range_breakout": 1},
@@ -273,9 +276,12 @@ def test_overlay_validation_report_includes_shadow_check_and_filter_diagnostics(
             }
         ],
     }
-    assert payload["filter_diagnostics"][0]["strategy_deltas"][
-        "structured_regime_exhaustion"
-    ]["pnl_delta"] == -100.76
+    assert (
+        payload["filter_diagnostics"][0]["strategy_deltas"][
+            "structured_regime_exhaustion"
+        ]["pnl_delta"]
+        == -100.76
+    )
 
 
 def test_threshold_report_reads_backtest_runner_state_edge_threshold() -> None:

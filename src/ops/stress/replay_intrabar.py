@@ -38,7 +38,6 @@ from src.signals.orchestration.intrabar_trade_coordinator import (
     IntrabarTradingPolicy,
 )
 
-
 # 父 TF → 秒数（用于把 generated_at 对齐到 parent bar 时间）
 TF_SECONDS: dict[str, int] = {
     "M1": 60,

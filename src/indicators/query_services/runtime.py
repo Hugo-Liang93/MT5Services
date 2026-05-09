@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from contextlib import nullcontext
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from ..runtime.bar_loader import get_max_lookback as _get_max_lookback_fn
 from ..runtime.bar_loader import (
-    get_max_lookback as _get_max_lookback_fn,
     get_min_required_history as _get_min_required_history_fn,
-    indicator_history_requirement as _indicator_history_requirement_fn,
-    reconcile_min_bars as _reconcile_min_bars_fn,
-    resolve_indicator_names as _resolve_indicator_names_fn,
 )
+from ..runtime.bar_loader import (
+    indicator_history_requirement as _indicator_history_requirement_fn,
+)
+from ..runtime.bar_loader import reconcile_min_bars as _reconcile_min_bars_fn
+from ..runtime.bar_loader import resolve_indicator_names as _resolve_indicator_names_fn
 from ..runtime.delta_metrics import apply_delta_metrics as _apply_delta_metrics_fn
 from ..runtime.delta_metrics import get_delta_config as _get_delta_config_fn
 from ..runtime.delta_metrics import (
@@ -22,16 +24,19 @@ from ..runtime.delta_metrics import (
 )
 from ..runtime.pipeline_runner import (
     compute_priority_results as _compute_priority_results_fn,
+)
+from ..runtime.pipeline_runner import (
     compute_results_with_priority_groups as _compute_results_with_priority_groups_fn,
-    compute_with_bars as _compute_with_bars_fn,
-    run_pipeline as _run_pipeline_fn,
 )
+from ..runtime.pipeline_runner import compute_with_bars as _compute_with_bars_fn
+from ..runtime.pipeline_runner import run_pipeline as _run_pipeline_fn
+from .state_view import state_get as _state_get
+from .state_view import state_set as _state_set
+from .storage import group_indicator_values as _group_indicator_values_fn
 from .storage import (
-    group_indicator_values as _group_indicator_values_fn,
     normalize_persisted_indicator_snapshot as _normalize_persisted_indicator_snapshot_fn,
-    store_results as _store_results_fn,
 )
-from .state_view import state_get as _state_get, state_set as _state_set
+from .storage import store_results as _store_results_fn
 
 if TYPE_CHECKING:
     from ..manager import UnifiedIndicatorManager
@@ -56,15 +61,16 @@ def _ensure_bar_event_handlers() -> None:
         and _process_closed_bar_events_batch_fn is not None
     ):
         return
+    from ..runtime.bar_event_handler import process_closed_bar_event as _cb_handler
     from ..runtime.bar_event_handler import (
-        process_closed_bar_event as _cb_handler,
-        process_intrabar_event as _ib_handler,
         process_closed_bar_events_batch as _batch_handler,
     )
+    from ..runtime.bar_event_handler import process_intrabar_event as _ib_handler
 
     _process_closed_bar_event_fn = _cb_handler
     _process_intrabar_event_fn = _ib_handler
     _process_closed_bar_events_batch_fn = _batch_handler
+
 
 __all__ = [
     "resolve_indicator_names",
@@ -372,7 +378,9 @@ def group_indicator_values(
     return _group_indicator_values_fn(manager, results)
 
 
-def indicator_delta_config(manager: "UnifiedIndicatorManager") -> dict[str, tuple[int, ...]]:
+def indicator_delta_config(
+    manager: "UnifiedIndicatorManager",
+) -> dict[str, tuple[int, ...]]:
     config_items = _get_indicator_configs(manager)
     return _get_delta_config_fn(config_items)
 
@@ -390,7 +398,9 @@ def apply_delta_metrics_query(
     def _load_history(sym: str, tf: str, bt: datetime | None, count: int) -> list[Any]:
         if bt is not None:
             return list(
-                manager.market_service.get_ohlc_window(sym, tf, end_time=bt, limit=count)
+                manager.market_service.get_ohlc_window(
+                    sym, tf, end_time=bt, limit=count
+                )
             )
         return list(manager.market_service.get_ohlc_closed(sym, tf, limit=count))
 
@@ -469,11 +479,7 @@ def store_preview_snapshot(
 
     with lock_ctx:
         current = snapshot_cache.get(cache_key)
-        if (
-            current is not None
-            and current[0] == bar_time
-            and current[1] == normalized
-        ):
+        if current is not None and current[0] == bar_time and current[1] == normalized:
             return False
         snapshot_cache.pop(cache_key, None)
         snapshot_cache[cache_key] = (bar_time, normalized)
@@ -492,7 +498,9 @@ def write_back_results(
     bar_time: datetime | None = None,
 ) -> dict[str, dict[str, float]]:
     effective_bar_time = bar_time or (bars[-1].time if bars else None)
-    store_results(manager, symbol, timeframe, effective_bar_time, results, compute_time_ms)
+    store_results(
+        manager, symbol, timeframe, effective_bar_time, results, compute_time_ms
+    )
 
     if not bars or effective_bar_time is None:
         return {}
@@ -585,7 +593,12 @@ def publish_snapshot(
     pipeline_bus = _get_pipeline_bus(manager)
     if pipeline_bus is not None and trace_id is not None:
         pipeline_bus.emit_snapshot_published(
-            trace_id, symbol, timeframe, scope, len(indicators), bar_time,
+            trace_id,
+            symbol,
+            timeframe,
+            scope,
+            len(indicators),
+            bar_time,
             indicators=indicators,
         )
 

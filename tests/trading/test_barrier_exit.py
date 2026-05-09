@@ -65,14 +65,29 @@ def test_exit_spec_chandelier_default_backward_compat():
 
 
 def _make_result_args(
-    action="buy", entry=100.0, high=100.5, low=99.5, close=100.0,
-    atr_at_entry=1.0, sl_atr=1.0, tp_atr=2.0, time_bars=20,
-    bars_held=1, initial_risk=1.0,
+    action="buy",
+    entry=100.0,
+    high=100.5,
+    low=99.5,
+    close=100.0,
+    atr_at_entry=1.0,
+    sl_atr=1.0,
+    tp_atr=2.0,
+    time_bars=20,
+    bars_held=1,
+    initial_risk=1.0,
 ):
     return dict(
-        action=action, entry_price=entry, bar_high=high, bar_low=low,
-        bar_close=close, atr_at_entry=atr_at_entry, sl_atr=sl_atr,
-        tp_atr=tp_atr, time_bars=time_bars, bars_held=bars_held,
+        action=action,
+        entry_price=entry,
+        bar_high=high,
+        bar_low=low,
+        bar_close=close,
+        atr_at_entry=atr_at_entry,
+        sl_atr=sl_atr,
+        tp_atr=tp_atr,
+        time_bars=time_bars,
+        bars_held=bars_held,
         initial_risk=initial_risk,
     )
 

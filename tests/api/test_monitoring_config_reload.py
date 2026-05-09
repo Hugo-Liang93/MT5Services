@@ -32,7 +32,9 @@ def test_trigger_config_reload_clears_caches_and_reloads_file(monkeypatch) -> No
 
 
 def test_trigger_config_reload_raises_when_file_missing(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.monitoring_routes.runtime.reload_configs", lambda: None)
+    monkeypatch.setattr(
+        "src.api.monitoring_routes.runtime.reload_configs", lambda: None
+    )
     monkeypatch.setattr(
         "src.api.monitoring_routes.runtime.get_file_config_manager",
         lambda: SimpleNamespace(reload=lambda filename: False),

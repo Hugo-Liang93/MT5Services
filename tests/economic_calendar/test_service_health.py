@@ -10,17 +10,17 @@ from src.monitoring.health.checks import check_economic_calendar
 from src.monitoring.runtime_task_status import RuntimeTaskState
 
 
-
-
 # §0dk P2：EconomicCalendarService 必填 runtime_identity；test 用 SimpleNamespace stub。
 def _calendar_runtime_identity():
     from types import SimpleNamespace
+
     return SimpleNamespace(
         instance_id="live:test-main",
         instance_role="main",
         account_key="live:Broker-Test:1001",
         account_alias="main",
     )
+
 
 class _DummyDB:
     def __init__(self, rows=None) -> None:
@@ -89,10 +89,20 @@ def _runtime_task_row(
         completed_at,
         None,
         duration_ms,
-        success_count
-        if success_count is not None
-        else (1 if state in {RuntimeTaskState.OK.value, RuntimeTaskState.PARTIAL.value} else 0),
-        0 if state in {RuntimeTaskState.OK.value, RuntimeTaskState.PARTIAL.value} else 1,
+        (
+            success_count
+            if success_count is not None
+            else (
+                1
+                if state in {RuntimeTaskState.OK.value, RuntimeTaskState.PARTIAL.value}
+                else 0
+            )
+        ),
+        (
+            0
+            if state in {RuntimeTaskState.OK.value, RuntimeTaskState.PARTIAL.value}
+            else 1
+        ),
         consecutive_failures,
         last_error,
         {
@@ -104,11 +114,17 @@ def _runtime_task_row(
     )
 
 
-def test_service_does_not_report_stale_while_bootstrap_window_is_open(monkeypatch) -> None:
+def test_service_does_not_report_stale_while_bootstrap_window_is_open(
+    monkeypatch,
+) -> None:
     now = datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc)
     monkeypatch.setattr("src.calendar.service._utc_now", lambda: now)
 
-    service = EconomicCalendarService(_DummyDB(), settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity())
+    service = EconomicCalendarService(
+        _DummyDB(),
+        settings=EconomicConfig(),
+        runtime_identity=_calendar_runtime_identity(),
+    )
     service._scheduler_started_at = now - timedelta(seconds=30)
     service._bootstrap_deadline_at = now + timedelta(seconds=180)
     service._worker = _DummyThread(alive=True)
@@ -119,11 +135,17 @@ def test_service_does_not_report_stale_while_bootstrap_window_is_open(monkeypatc
     assert service.health_state() == "warming_up"
 
 
-def test_service_reports_stale_after_bootstrap_deadline_without_success(monkeypatch) -> None:
+def test_service_reports_stale_after_bootstrap_deadline_without_success(
+    monkeypatch,
+) -> None:
     now = datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc)
     monkeypatch.setattr("src.calendar.service._utc_now", lambda: now)
 
-    service = EconomicCalendarService(_DummyDB(), settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity())
+    service = EconomicCalendarService(
+        _DummyDB(),
+        settings=EconomicConfig(),
+        runtime_identity=_calendar_runtime_identity(),
+    )
     service._scheduler_started_at = now - timedelta(minutes=10)
     service._bootstrap_deadline_at = now - timedelta(seconds=1)
     service._worker = _DummyThread(alive=True)
@@ -158,7 +180,9 @@ def test_restore_job_state_recovers_last_successful_refresh_timestamp() -> None:
             ),
         ]
     )
-    service = EconomicCalendarService(db, settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity())
+    service = EconomicCalendarService(
+        db, settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity()
+    )
 
     service._restore_job_state()
 
@@ -187,7 +211,9 @@ def test_restore_job_state_recovers_last_success_after_stop() -> None:
             ),
         ]
     )
-    service = EconomicCalendarService(db, settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity())
+    service = EconomicCalendarService(
+        db, settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity()
+    )
 
     service._restore_job_state()
 
@@ -238,5 +264,7 @@ def test_health_check_uses_zero_staleness_during_warmup() -> None:
     stats = check_economic_calendar(monitor, "economic_calendar", _DummyService())
 
     assert stats["warming_up"] == "true"
-    staleness_metric = next(item for item in monitor.metrics if item[1] == "economic_calendar_staleness")
+    staleness_metric = next(
+        item for item in monitor.metrics if item[1] == "economic_calendar_staleness"
+    )
     assert staleness_metric[2] == 0.0

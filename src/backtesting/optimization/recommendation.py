@@ -18,12 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from ..models import (
-    ParamChange,
-    Recommendation,
-    RecommendationStatus,
-    RobustnessResult,
-)
+from ..models import ParamChange, Recommendation, RecommendationStatus, RobustnessResult
 
 if TYPE_CHECKING:
     from src.signals.service import SignalModule
@@ -86,7 +81,9 @@ class RecommendationEngine:
         agg = wf_result.aggregate_metrics
 
         # ── 策略参数：多窗口中位数聚合 ────────────────────────────────
-        target_timeframe = timeframe or self._resolve_recommendation_timeframe(wf_result)
+        target_timeframe = timeframe or self._resolve_recommendation_timeframe(
+            wf_result
+        )
         strategy_changes = self._aggregate_strategy_params(
             wf_result, current_strategy_params, target_timeframe
         )
@@ -104,15 +101,17 @@ class RecommendationEngine:
         if robustness and robustness.fragile_params:
             fragile_set = set(robustness.fragile_params)
             before_count = len(all_changes)
-            all_changes = [
-                c for c in all_changes if c.key not in fragile_set
-            ]
+            all_changes = [c for c in all_changes if c.key not in fragile_set]
             filtered = before_count - len(all_changes)
             if filtered > 0:
                 logger.warning(
                     "鲁棒性检查：过滤 %d 个脆弱参数: %s",
                     filtered,
-                    [k for k in fragile_set if k in {c.key for c in strategy_changes + affinity_changes}],
+                    [
+                        k
+                        for k in fragile_set
+                        if k in {c.key for c in strategy_changes + affinity_changes}
+                    ],
                 )
 
         all_changes = self._rank_and_limit(all_changes)
@@ -556,7 +555,9 @@ class ConfigApplicator:
 
     def _read_current_overrides(
         self,
-    ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
+    ) -> Tuple[
+        Dict[str, Any], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]
+    ]:
         """从 signal.local.ini 读取当前覆盖参数。"""
         local_ini = self._config_dir / "signal.local.ini"
         strategy_params: Dict[str, Any] = {}
@@ -599,7 +600,9 @@ class ConfigApplicator:
     @staticmethod
     def _extract_override_dicts(
         changes: List[ParamChange],
-    ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
+    ) -> Tuple[
+        Dict[str, Any], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]
+    ]:
         """从 ParamChange 列表提取 apply_param_overrides 所需的字典。"""
         strategy_params: Dict[str, Any] = {}
         strategy_params_per_tf: Dict[str, Dict[str, float]] = {}
@@ -664,6 +667,8 @@ def load_current_signal_config(
 
     effective_strategy_params = dict(strategy_params)
     if timeframe:
-        effective_strategy_params.update(strategy_params_per_tf.get(timeframe.upper(), {}))
+        effective_strategy_params.update(
+            strategy_params_per_tf.get(timeframe.upper(), {})
+        )
 
     return effective_strategy_params, strategy_params_per_tf, affinity_overrides

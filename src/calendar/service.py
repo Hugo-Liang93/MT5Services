@@ -1,23 +1,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time as dt_time, timedelta, timezone
+from datetime import date, datetime
+from datetime import time as dt_time
+from datetime import timedelta, timezone
 from threading import Event, Lock, RLock, Thread
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from src.calendar.economic_calendar.contracts import (
-    EVENT_STATUS_IMMINENT,
-    EVENT_STATUS_PENDING_RELEASE,
-    EVENT_STATUS_RELEASED,
-    EVENT_STATUS_SCHEDULED,
-    UPCOMING_EVENT_STATUSES,
-)
-from src.clients.economic_calendar import (
-    EconomicCalendarError,
-    EconomicCalendarEvent,
-)
-from src.clients.economic_calendar_registry import ProviderRegistry
-from src.config import EconomicConfig, get_economic_config
 from src.calendar.economic_calendar.calendar_sync import (
     ensure_worker_running,
     fetch_existing_by_uid,
@@ -37,10 +26,15 @@ from src.calendar.economic_calendar.calendar_sync import (
     update_job_state,
     write_events,
 )
-from src.calendar.economic_calendar.observability import (
-    get_updates as get_update_rows,
-    stats as build_stats,
+from src.calendar.economic_calendar.contracts import (
+    EVENT_STATUS_IMMINENT,
+    EVENT_STATUS_PENDING_RELEASE,
+    EVENT_STATUS_RELEASED,
+    EVENT_STATUS_SCHEDULED,
+    UPCOMING_EVENT_STATUSES,
 )
+from src.calendar.economic_calendar.observability import get_updates as get_update_rows
+from src.calendar.economic_calendar.observability import stats as build_stats
 from src.calendar.economic_calendar.trade_guard import (
     build_window,
     compute_window_bounds,
@@ -52,6 +46,9 @@ from src.calendar.economic_calendar.trade_guard import (
     normalize_symbol,
     window_to_datetimes,
 )
+from src.clients.economic_calendar import EconomicCalendarError, EconomicCalendarEvent
+from src.clients.economic_calendar_registry import ProviderRegistry
+from src.config import EconomicConfig, get_economic_config
 from src.persistence.db import TimescaleWriter
 from src.persistence.storage_writer import StorageWriter
 
@@ -116,7 +113,9 @@ class EconomicCalendarService:
         self._last_refresh_completed_at: Optional[datetime] = None
         self._last_refresh_duration_ms: Optional[int] = None
         self._consecutive_failures = 0
-        self._next_run_at: Dict[str, Optional[datetime]] = {name: None for name in _JOB_LABELS}
+        self._next_run_at: Dict[str, Optional[datetime]] = {
+            name: None for name in _JOB_LABELS
+        }
         self._job_state: Dict[str, Dict[str, Any]] = {
             name: {
                 "enabled": self._job_interval(name) > 0,
@@ -144,8 +143,7 @@ class EconomicCalendarService:
                 "last_event_count": 0,
             }
             for name, provider in (
-                (n, self.registry.get(n))
-                for n in self.registry.all_names()
+                (n, self.registry.get(n)) for n in self.registry.all_names()
             )
             if provider is not None
         }
@@ -203,9 +201,15 @@ class EconomicCalendarService:
             return self.registry.release_watch_names()
         return self.registry.configured_names()
 
-    def _normalize_sources(self, sources: Optional[List[str]], job_type: str) -> List[str]:
+    def _normalize_sources(
+        self, sources: Optional[List[str]], job_type: str
+    ) -> List[str]:
         known = set(self.registry.all_names())
-        requested = [source.strip().lower() for source in (sources or self._default_sources_for_job(job_type)) if source]
+        requested = [
+            source.strip().lower()
+            for source in (sources or self._default_sources_for_job(job_type))
+            if source
+        ]
         return [source for source in requested if source in known]
 
     def _job_window(self, job_type: str) -> tuple[datetime, datetime]:
@@ -214,23 +218,37 @@ class EconomicCalendarService:
             start_date, end_date = self.default_window()
             return _start_of_day(start_date), _end_of_day(end_date)
         if job_type == "near_term_sync":
-            return now, now + timedelta(hours=max(1, self.settings.near_term_window_hours))
+            return now, now + timedelta(
+                hours=max(1, self.settings.near_term_window_hours)
+            )
         if job_type == "release_watch":
             return (
-                now - timedelta(minutes=max(0, self.settings.release_watch_lookback_minutes)),
-                now + timedelta(minutes=max(1, self.settings.release_watch_lookahead_minutes)),
+                now
+                - timedelta(
+                    minutes=max(0, self.settings.release_watch_lookback_minutes)
+                ),
+                now
+                + timedelta(
+                    minutes=max(1, self.settings.release_watch_lookahead_minutes)
+                ),
             )
         raise EconomicCalendarError(f"Unsupported economic job type: {job_type}")
 
-    def _event_within_bounds(self, event: EconomicCalendarEvent, start_at: datetime, end_at: datetime) -> bool:
+    def _event_within_bounds(
+        self, event: EconomicCalendarEvent, start_at: datetime, end_at: datetime
+    ) -> bool:
         if event.all_day:
             event_day = event.scheduled_at.astimezone(timezone.utc).date()
             return start_at.date() <= event_day <= end_at.date()
         scheduled_at = event.scheduled_at.astimezone(timezone.utc)
         return start_at <= scheduled_at <= end_at
 
-    def _enrich_events(self, events: List[EconomicCalendarEvent]) -> List[EconomicCalendarEvent]:
-        return [event.enrich_time_context(self.settings.local_timezone) for event in events]
+    def _enrich_events(
+        self, events: List[EconomicCalendarEvent]
+    ) -> List[EconomicCalendarEvent]:
+        return [
+            event.enrich_time_context(self.settings.local_timezone) for event in events
+        ]
 
     def _update_provider_success(self, provider_name: str, event_count: int) -> None:
         state = self._provider_status.get(provider_name)
@@ -268,12 +286,16 @@ class EconomicCalendarService:
             self._update_provider_failure(provider_name, exc)
             raise
 
-    def _derive_status(self, event: EconomicCalendarEvent, observed_at: datetime) -> str:
+    def _derive_status(
+        self, event: EconomicCalendarEvent, observed_at: datetime
+    ) -> str:
         if event.actual or event.revised:
             return EVENT_STATUS_RELEASED
         if event.all_day and observed_at.date() > event.scheduled_at.date():
             return EVENT_STATUS_RELEASED
-        imminent_at = event.scheduled_at - timedelta(minutes=max(0, self.settings.pre_event_buffer_minutes))
+        imminent_at = event.scheduled_at - timedelta(
+            minutes=max(0, self.settings.pre_event_buffer_minutes)
+        )
         if observed_at >= event.scheduled_at:
             return EVENT_STATUS_PENDING_RELEASE
         if observed_at >= imminent_at:
@@ -298,7 +320,8 @@ class EconomicCalendarService:
             event.released_at = observed_at
         event.last_value_check_at = (
             observed_at
-            if value_check or event.status in {EVENT_STATUS_PENDING_RELEASE, EVENT_STATUS_RELEASED}
+            if value_check
+            or event.status in {EVENT_STATUS_PENDING_RELEASE, EVENT_STATUS_RELEASED}
             else (existing.last_value_check_at if existing else None)
         )
         return event
@@ -351,7 +374,9 @@ class EconomicCalendarService:
     def _job_summary(self, **kwargs):
         return job_summary(**kwargs)
 
-    def _schedule_next_run(self, job_type: str, *, from_time: Optional[datetime] = None) -> None:
+    def _schedule_next_run(
+        self, job_type: str, *, from_time: Optional[datetime] = None
+    ) -> None:
         schedule_next_run(self, job_type, from_time=from_time)
 
     def _update_job_state(self, job_type: str, **kwargs) -> None:
@@ -363,7 +388,9 @@ class EconomicCalendarService:
     def _restore_job_state(self) -> None:
         restore_job_state(self)
 
-    def _startup_schedule_time(self, job_type: str, now: datetime) -> Optional[datetime]:
+    def _startup_schedule_time(
+        self, job_type: str, now: datetime
+    ) -> Optional[datetime]:
         return startup_schedule_time(self, job_type, now)
 
     def _run_job(self, **kwargs):
@@ -464,7 +491,11 @@ class EconomicCalendarService:
         statuses: Optional[List[str]] = None,
         importance_min: Optional[int] = None,
     ) -> List[EconomicCalendarEvent]:
-        threshold = importance_min if importance_min is not None else self.settings.high_importance_threshold
+        threshold = (
+            importance_min
+            if importance_min is not None
+            else self.settings.high_importance_threshold
+        )
         return self.get_upcoming(
             hours=hours,
             limit=limit,
@@ -487,12 +518,34 @@ class EconomicCalendarService:
         importance_min: Optional[int] = None,
         include_all_day: Optional[bool] = None,
     ) -> List[EconomicCalendarEvent]:
-        effective_sources = sources if sources is not None else (self.settings.curated_sources or None)
-        effective_countries = countries if countries is not None else (self.settings.curated_countries or None)
-        effective_currencies = currencies if currencies is not None else (self.settings.curated_currencies or None)
-        effective_statuses = statuses if statuses is not None else (self.settings.curated_statuses or None)
-        effective_importance = importance_min if importance_min is not None else self.settings.curated_importance_min
-        allow_all_day = self.settings.curated_include_all_day if include_all_day is None else include_all_day
+        effective_sources = (
+            sources if sources is not None else (self.settings.curated_sources or None)
+        )
+        effective_countries = (
+            countries
+            if countries is not None
+            else (self.settings.curated_countries or None)
+        )
+        effective_currencies = (
+            currencies
+            if currencies is not None
+            else (self.settings.curated_currencies or None)
+        )
+        effective_statuses = (
+            statuses
+            if statuses is not None
+            else (self.settings.curated_statuses or None)
+        )
+        effective_importance = (
+            importance_min
+            if importance_min is not None
+            else self.settings.curated_importance_min
+        )
+        allow_all_day = (
+            self.settings.curated_include_all_day
+            if include_all_day is None
+            else include_all_day
+        )
 
         items = self.get_upcoming(
             hours=hours,
@@ -599,7 +652,9 @@ class EconomicCalendarService:
                 importance_min=imp_min,
             )
         except Exception:
-            logger.warning("compute_release_watch_interval: DB query failed, using idle interval")
+            logger.warning(
+                "compute_release_watch_interval: DB query failed, using idle interval"
+            )
             return idle
 
         if not events:
@@ -633,7 +688,9 @@ class EconomicCalendarService:
         attempts = max(1, int(self.settings.request_retries))
         retry_backoff = max(0.0, float(self.settings.retry_backoff_seconds))
         jitter_seconds = max(0.0, float(self.settings.refresh_jitter_seconds))
-        retry_budget = sum(retry_backoff * (2 ** step) for step in range(max(0, attempts - 1)))
+        retry_budget = sum(
+            retry_backoff * (2**step) for step in range(max(0, attempts - 1))
+        )
         request_budget = timeout_seconds * attempts
         # 首次全量同步会串行抓取多个日期与端点，不能只按单次 request timeout 估算。
         # 这里给出一个保守但受 stale_after 限制的启动缓冲，避免服务刚启动就被误判为 stale。
@@ -668,7 +725,9 @@ class EconomicCalendarService:
             return "refreshing"
         if self.is_stale():
             return "stale"
-        failure_threshold = max(0, int(self.settings.trade_guard_provider_failure_threshold))
+        failure_threshold = max(
+            0, int(self.settings.trade_guard_provider_failure_threshold)
+        )
         if failure_threshold > 0:
             for state in self._provider_status.values():
                 if not bool(state.get("enabled", True)):

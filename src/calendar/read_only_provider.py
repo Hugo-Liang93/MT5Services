@@ -114,21 +114,31 @@ class ReadOnlyEconomicCalendarProvider:
                 continue
             jobs[task_name] = {
                 "state": row.get("state"),
-                "updated_at": row["updated_at"].isoformat()
-                if row.get("updated_at") is not None
-                else None,
-                "started_at": row["started_at"].isoformat()
-                if row.get("started_at") is not None
-                else None,
-                "completed_at": row["completed_at"].isoformat()
-                if row.get("completed_at") is not None
-                else None,
-                "next_run_at": row["next_run_at"].isoformat()
-                if row.get("next_run_at") is not None
-                else None,
-                "duration_ms": str(row["duration_ms"])
-                if row.get("duration_ms") is not None
-                else None,
+                "updated_at": (
+                    row["updated_at"].isoformat()
+                    if row.get("updated_at") is not None
+                    else None
+                ),
+                "started_at": (
+                    row["started_at"].isoformat()
+                    if row.get("started_at") is not None
+                    else None
+                ),
+                "completed_at": (
+                    row["completed_at"].isoformat()
+                    if row.get("completed_at") is not None
+                    else None
+                ),
+                "next_run_at": (
+                    row["next_run_at"].isoformat()
+                    if row.get("next_run_at") is not None
+                    else None
+                ),
+                "duration_ms": (
+                    str(row["duration_ms"])
+                    if row.get("duration_ms") is not None
+                    else None
+                ),
                 "success_count": int(row.get("success_count") or 0),
                 "failure_count": int(row.get("failure_count") or 0),
                 "consecutive_failures": int(row.get("consecutive_failures") or 0),
@@ -242,7 +252,9 @@ class ReadOnlyEconomicCalendarProvider:
             else (self.settings.curated_currencies or None)
         )
         effective_statuses = (
-            statuses if statuses is not None else (self.settings.curated_statuses or None)
+            statuses
+            if statuses is not None
+            else (self.settings.curated_statuses or None)
         )
         effective_importance = (
             importance_min

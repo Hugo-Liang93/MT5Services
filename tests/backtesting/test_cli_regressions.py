@@ -33,6 +33,9 @@ def test_compare_tf_rebuilds_components_per_timeframe() -> None:
 def test_cli_loads_strategy_scope_overrides_from_signal_config() -> None:
     src = _cli_source()
     assert "def _load_strategy_scope_overrides()" in src
-    assert "strategy_timeframes, strategy_sessions = _load_strategy_scope_overrides()" in src
+    assert (
+        "strategy_timeframes, strategy_sessions = _load_strategy_scope_overrides()"
+        in src
+    )
     assert "strategy_timeframes=strategy_timeframes" in src
     assert "strategy_sessions=strategy_sessions" in src

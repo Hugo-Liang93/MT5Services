@@ -11,9 +11,7 @@ def _normalize_capability_row(
     if isinstance(raw, StrategyCapability):
         raw = raw.as_contract()
     elif not isinstance(raw, Mapping):
-        raise TypeError(
-            f"Unsupported capability row type: {type(raw).__name__}"
-        )
+        raise TypeError(f"Unsupported capability row type: {type(raw).__name__}")
 
     name = str(raw.get("name") or "").strip()
     if not name:
@@ -88,11 +86,7 @@ def _normalize_timeframes_policy(
         if not strategy_name:
             continue
         values = sorted(
-            {
-                str(tf).strip().upper()
-                for tf in (timeframes or ())
-                if str(tf).strip()
-            }
+            {str(tf).strip().upper() for tf in (timeframes or ()) if str(tf).strip()}
         )
         if values:
             normalized[strategy_name] = values
@@ -107,7 +101,9 @@ def build_strategy_capability_summary(
     strategy_timeframes_policy: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     normalized_rows = normalize_capability_contract(capability_contract)
-    capability_by_name = {row["name"]: row for row in normalized_rows if row.get("name")}
+    capability_by_name = {
+        row["name"]: row for row in normalized_rows if row.get("name")
+    }
     configured = _normalize_strategy_list(configured_strategies)
     scheduled = _normalize_strategy_list(scheduled_strategies)
     scheduled_set = set(scheduled)

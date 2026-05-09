@@ -72,9 +72,7 @@ def normalize_market_data_health_snapshot(
         lane for lane in relevant_required if _lane_blocking(lane, lanes.get(lane))
     }
     blocked_lanes.update(
-        lane
-        for lane in explicit_blocked_lanes
-        if _lane_matches_symbol(lane, symbol)
+        lane for lane in explicit_blocked_lanes if _lane_matches_symbol(lane, symbol)
     )
 
     mt5 = _safe_dict(raw.get("mt5"))

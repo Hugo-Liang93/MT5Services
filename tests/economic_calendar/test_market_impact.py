@@ -62,16 +62,18 @@ def _make_ohlc_bars(
             high = price + 1.5
             low = price - 0.5
         # 格式匹配 market_repo: (symbol, timeframe, open, high, low, close, volume, time)
-        bars.append((
-            "XAUUSD",     # [0] symbol
-            "M1",         # [1] timeframe
-            price - 0.1,  # [2] open
-            high,          # [3] high
-            low,           # [4] low
-            price,         # [5] close
-            100.0,         # [6] volume
-            bar_time,     # [7] time
-        ))
+        bars.append(
+            (
+                "XAUUSD",  # [0] symbol
+                "M1",  # [1] timeframe
+                price - 0.1,  # [2] open
+                high,  # [3] high
+                low,  # [4] low
+                price,  # [5] close
+                100.0,  # [6] volume
+                bar_time,  # [7] time
+            )
+        )
     return bars
 
 
@@ -134,9 +136,7 @@ class TestMarketImpactAnalyzer:
     def test_disabled_by_default(self):
         settings = MagicMock()
         settings.market_impact_enabled = False
-        analyzer = MarketImpactAnalyzer(
-            db_writer=MagicMock(), settings=settings
-        )
+        analyzer = MarketImpactAnalyzer(db_writer=MagicMock(), settings=settings)
         event = _make_event()
         # 不应注册任何 pending
         analyzer.on_event_released(event)
@@ -150,9 +150,7 @@ class TestMarketImpactAnalyzer:
         settings.market_impact_timeframes = ["M1"]
         settings.market_impact_post_windows = [5, 15, 30]
         settings.market_impact_final_collection_delay_minutes = 40
-        analyzer = MarketImpactAnalyzer(
-            db_writer=MagicMock(), settings=settings
-        )
+        analyzer = MarketImpactAnalyzer(db_writer=MagicMock(), settings=settings)
         event = _make_event(importance=3)
         analyzer.on_event_released(event)
         assert len(analyzer._pending) == 1
@@ -161,9 +159,7 @@ class TestMarketImpactAnalyzer:
         settings = MagicMock()
         settings.market_impact_enabled = True
         settings.market_impact_importance_min = 3
-        analyzer = MarketImpactAnalyzer(
-            db_writer=MagicMock(), settings=settings
-        )
+        analyzer = MarketImpactAnalyzer(db_writer=MagicMock(), settings=settings)
         event = _make_event(importance=1)
         analyzer.on_event_released(event)
         assert len(analyzer._pending) == 0
@@ -172,9 +168,7 @@ class TestMarketImpactAnalyzer:
         settings = MagicMock()
         settings.market_impact_enabled = True
         settings.market_impact_importance_min = 2
-        analyzer = MarketImpactAnalyzer(
-            db_writer=MagicMock(), settings=settings
-        )
+        analyzer = MarketImpactAnalyzer(db_writer=MagicMock(), settings=settings)
         event = _make_event(importance=3)
         event.all_day = True
         analyzer.on_event_released(event)
@@ -206,9 +200,7 @@ class TestMarketImpactAnalyzer:
         assert "surprise_pct" in result
 
     def test_collect_impact_no_repo(self):
-        analyzer = MarketImpactAnalyzer(
-            db_writer=MagicMock(), market_repo=None
-        )
+        analyzer = MarketImpactAnalyzer(db_writer=MagicMock(), market_repo=None)
         event = _make_event()
         assert analyzer.collect_impact(event, "XAUUSD", "M1") is None
 
@@ -218,9 +210,7 @@ class TestMarketImpactAnalyzer:
         settings.market_impact_symbols = ["XAUUSD"]
         settings.market_impact_timeframes = ["M1", "M5"]
         settings.market_impact_importance_min = 2
-        analyzer = MarketImpactAnalyzer(
-            db_writer=MagicMock(), settings=settings
-        )
+        analyzer = MarketImpactAnalyzer(db_writer=MagicMock(), settings=settings)
         s = analyzer.stats()
         assert s["enabled"] is True
         assert s["symbols"] == ["XAUUSD"]
@@ -231,7 +221,9 @@ class TestMarketImpactAnalyzer:
 class TestTradeGuardDynamicBuffer:
     @staticmethod
     def _make_mock_service(
-        pre_buffer: int = 30, post_buffer: int = 30, analyzer=None,
+        pre_buffer: int = 30,
+        post_buffer: int = 30,
+        analyzer=None,
     ):
         mock_service = MagicMock()
         mock_service.settings.pre_event_buffer_minutes = pre_buffer

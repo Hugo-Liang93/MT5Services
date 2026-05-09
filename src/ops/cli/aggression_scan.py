@@ -36,7 +36,6 @@ logging.disable(logging.CRITICAL)
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-
 # 2026-04-30 大清场：13 条策略物理删除；price_action 不用 chandelier α
 # (走 BARRIER mode)，所以 aggression scan 当前没有适用策略。新策略上线后回填。
 _STRATEGY_CLASS_MAP: dict[str, tuple[str, str]] = {}

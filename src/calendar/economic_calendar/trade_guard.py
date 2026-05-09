@@ -13,7 +13,9 @@ from .gold_relevance import (
 )
 
 
-def _build_relevance_matcher_from_settings(settings: Any) -> Optional[EventRelevanceMatcher]:
+def _build_relevance_matcher_from_settings(
+    settings: Any,
+) -> Optional[EventRelevanceMatcher]:
     """从 settings 契约构造相关性匹配器。
 
     settings 必须提供三个字段：
@@ -33,6 +35,7 @@ def _build_relevance_matcher_from_settings(settings: Any) -> Optional[EventRelev
         categories_csv=settings.gold_impact_categories,
     )
     return build_relevance_matcher(policy)
+
 
 _CURRENCY_TO_COUNTRY = {
     "AUD": "Australia",
@@ -64,7 +67,9 @@ def _utc_now() -> datetime:
     return _service_utc_now()
 
 
-def compute_window_bounds(service, event: EconomicCalendarEvent) -> tuple[datetime, datetime]:
+def compute_window_bounds(
+    service, event: EconomicCalendarEvent
+) -> tuple[datetime, datetime]:
     pre_buffer = service.settings.pre_event_buffer_minutes
     post_buffer = service.settings.post_event_buffer_minutes
 
@@ -72,10 +77,16 @@ def compute_window_bounds(service, event: EconomicCalendarEvent) -> tuple[dateti
     analyzer = getattr(service, "market_impact_analyzer", None)
     if analyzer is not None and event.event_name:
         # 阈值从 settings 读取，可通过 economic.ini [market_impact] 配置化
-        high_spike = getattr(service.settings, "market_impact_high_spike_threshold", 3.0)
+        high_spike = getattr(
+            service.settings, "market_impact_high_spike_threshold", 3.0
+        )
         med_spike = getattr(service.settings, "market_impact_med_spike_threshold", 2.0)
-        high_buffer = getattr(service.settings, "market_impact_high_spike_buffer_minutes", 60)
-        med_buffer = getattr(service.settings, "market_impact_med_spike_buffer_minutes", 45)
+        high_buffer = getattr(
+            service.settings, "market_impact_high_spike_buffer_minutes", 60
+        )
+        med_buffer = getattr(
+            service.settings, "market_impact_med_spike_buffer_minutes", 45
+        )
         try:
             forecast = analyzer.get_impact_forecast(event.event_name)
             if forecast:
@@ -108,8 +119,14 @@ def build_window(service, event: EconomicCalendarEvent) -> Dict[str, Any]:
         "window_start": window_start.isoformat(),
         "window_end": window_end.isoformat(),
         "scheduled_at": event.scheduled_at.isoformat(),
-        "scheduled_at_local": event.scheduled_at_local.isoformat() if event.scheduled_at_local else None,
-        "scheduled_at_release": event.scheduled_at_release.isoformat() if event.scheduled_at_release else None,
+        "scheduled_at_local": (
+            event.scheduled_at_local.isoformat() if event.scheduled_at_local else None
+        ),
+        "scheduled_at_release": (
+            event.scheduled_at_release.isoformat()
+            if event.scheduled_at_release
+            else None
+        ),
     }
 
 
@@ -155,7 +172,10 @@ def window_to_datetimes(window: Dict[str, Any]) -> Dict[str, Any]:
 def merge_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not windows:
         return []
-    normalized = sorted((window_to_datetimes(window) for window in windows), key=lambda item: item["window_start_dt"])
+    normalized = sorted(
+        (window_to_datetimes(window) for window in windows),
+        key=lambda item: item["window_start_dt"],
+    )
     merged: List[Dict[str, Any]] = []
     for window in normalized:
         if not merged or window["window_start_dt"] > merged[-1]["window_end_dt"]:
@@ -165,13 +185,23 @@ def merge_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "window_end_dt": window["window_end_dt"],
                     "event_uids": [window["event_uid"]],
                     "event_names": [window["event_name"]],
-                    "sources": sorted({window["source"]} if window["source"] else set()),
-                    "countries": sorted({window["country"]} if window["country"] else set()),
-                    "currencies": sorted({window["currency"]} if window["currency"] else set()),
+                    "sources": sorted(
+                        {window["source"]} if window["source"] else set()
+                    ),
+                    "countries": sorted(
+                        {window["country"]} if window["country"] else set()
+                    ),
+                    "currencies": sorted(
+                        {window["currency"]} if window["currency"] else set()
+                    ),
                     "categories": sorted(
                         {window.get("category")} if window.get("category") else set()
                     ),
-                    "sessions": sorted({window["session_bucket"]} if window["session_bucket"] else set()),
+                    "sessions": sorted(
+                        {window["session_bucket"]}
+                        if window["session_bucket"]
+                        else set()
+                    ),
                     "max_importance": window["importance"],
                 }
             )
@@ -184,15 +214,21 @@ def merge_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if window["source"]:
             current["sources"] = sorted(set(current["sources"]) | {window["source"]})
         if window["country"]:
-            current["countries"] = sorted(set(current["countries"]) | {window["country"]})
+            current["countries"] = sorted(
+                set(current["countries"]) | {window["country"]}
+            )
         if window["currency"]:
-            current["currencies"] = sorted(set(current["currencies"]) | {window["currency"]})
+            current["currencies"] = sorted(
+                set(current["currencies"]) | {window["currency"]}
+            )
         if window.get("category"):
             current["categories"] = sorted(
                 set(current.get("categories", [])) | {window["category"]}
             )
         if window["session_bucket"]:
-            current["sessions"] = sorted(set(current["sessions"]) | {window["session_bucket"]})
+            current["sessions"] = sorted(
+                set(current["sessions"]) | {window["session_bucket"]}
+            )
         if window["importance"] is not None:
             current["max_importance"] = (
                 window["importance"]
@@ -268,13 +304,19 @@ def get_trade_guard(
         countries=context["countries"] or None,
         currencies=context["currencies"] or None,
         statuses=["scheduled", "imminent", "pending_release", "released"],
-        importance_min=importance_min if importance_min is not None else service.settings.high_importance_threshold,
+        importance_min=(
+            importance_min
+            if importance_min is not None
+            else service.settings.high_importance_threshold
+        ),
     )
     merged_windows = merge_windows([build_window(service, event) for event in events])
     active_windows = [
         window
         for window in merged_windows
-        if datetime.fromisoformat(window["window_start"]) <= evaluation_time <= datetime.fromisoformat(window["window_end"])
+        if datetime.fromisoformat(window["window_start"])
+        <= evaluation_time
+        <= datetime.fromisoformat(window["window_end"])
     ]
     upcoming_windows = [
         window
@@ -313,7 +355,11 @@ def get_trade_guard(
     # 分级压制：区分 block 和 warn
     block_min: int = service.settings.trade_guard_block_importance_min
     block_windows = [w for w in active_windows if _effective_importance(w) >= block_min]
-    warn_windows = [w for w in active_windows if _effective_importance(w) < block_min and _effective_importance(w) >= 1]
+    warn_windows = [
+        w
+        for w in active_windows
+        if _effective_importance(w) < block_min and _effective_importance(w) >= 1
+    ]
     # 低 importance 事件使用更窄的保护窗口
     # block 窗口 = scheduled_at ± pre/post_event_buffer（已由 build_window 计算）
     # warn 窗口 = scheduled_at ± warn_pre/post_buffer（更窄，需要缩小已有窗口）
@@ -326,7 +372,8 @@ def get_trade_guard(
         shrink_start = timedelta(minutes=full_pre - warn_pre)
         shrink_end = timedelta(minutes=full_post - warn_post)
         warn_windows = [
-            w for w in warn_windows
+            w
+            for w in warn_windows
             if (datetime.fromisoformat(w["window_start"]) + shrink_start)
             <= evaluation_time
             <= (datetime.fromisoformat(w["window_end"]) - shrink_end)
@@ -343,6 +390,10 @@ def get_trade_guard(
         "block_windows": block_windows,
         "warn_windows": warn_windows,
         "upcoming_windows": upcoming_windows,
-        "importance_min": importance_min if importance_min is not None else service.settings.high_importance_threshold,
+        "importance_min": (
+            importance_min
+            if importance_min is not None
+            else service.settings.high_importance_threshold
+        ),
         "block_importance_min": block_min,
     }

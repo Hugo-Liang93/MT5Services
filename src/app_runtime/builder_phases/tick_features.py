@@ -13,7 +13,6 @@ from src.market.tick_features import (
 )
 from src.market.tick_features.models import TickFeatureSnapshot
 
-
 TickFeatureListener = Callable[[TickFeatureSnapshot], None]
 
 

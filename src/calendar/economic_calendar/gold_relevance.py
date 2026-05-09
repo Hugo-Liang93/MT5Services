@@ -43,9 +43,7 @@ class EventSummary:
         if self.category is not None and (
             not isinstance(self.category, str) or not self.category
         ):
-            raise ValueError(
-                "EventSummary.category must be None or a non-empty string"
-            )
+            raise ValueError("EventSummary.category must be None or a non-empty string")
 
 
 @dataclass(frozen=True)
@@ -81,8 +79,7 @@ class GoldRelevancePolicy:
 class EventRelevanceMatcher(Protocol):
     """事件相关性判定协议。"""
 
-    def is_relevant(self, event: EventSummary) -> bool:
-        ...
+    def is_relevant(self, event: EventSummary) -> bool: ...
 
 
 def build_relevance_matcher(

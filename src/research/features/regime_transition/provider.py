@@ -20,6 +20,7 @@ RegimeTransitionFeatureProvider — Regime 状态转换特征集。
 
 迁移自 engineer.py 中的 _batch_regime_entropy / _batch_bars_in_regime（Batch 版）。
 """
+
 from __future__ import annotations
 
 import math
@@ -27,8 +28,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from src.research.features.protocol import FeatureProvider, FeatureRole, ProviderDataRequirement
 from src.research.core.config import RegimeTransitionProviderConfig
+from src.research.features.protocol import (
+    FeatureProvider,
+    FeatureRole,
+    ProviderDataRequirement,
+)
 from src.signals.evaluation.regime import RegimeType
 
 # regime → float 编码
@@ -55,7 +60,9 @@ class RegimeTransitionFeatureProvider:
     ) -> None:
         self._cfg = config or RegimeTransitionProviderConfig()
         # 确定窗口列表：history_window + prob_delta_window
-        self._w = self._cfg.prob_delta_window  # 主窗口，用于 prob_delta / entropy_delta / transitions
+        self._w = (
+            self._cfg.prob_delta_window
+        )  # 主窗口，用于 prob_delta / entropy_delta / transitions
 
     # ------------------------------------------------------------------
     # FeatureProvider Protocol
@@ -118,32 +125,42 @@ class RegimeTransitionFeatureProvider:
         result[("regime_transition", "regime_entropy")] = entropy_series
 
         # 2. bars_in_regime
-        result[("regime_transition", "bars_in_regime")] = _batch_bars_in_regime(regimes, n)
+        result[("regime_transition", "bars_in_regime")] = _batch_bars_in_regime(
+            regimes, n
+        )
 
         # 3. bars_since_change
-        result[("regime_transition", "bars_since_change")] = _batch_bars_since_change(regimes, n)
+        result[("regime_transition", "bars_since_change")] = _batch_bars_since_change(
+            regimes, n
+        )
 
         # 4. prev_regime
         result[("regime_transition", "prev_regime")] = _batch_prev_regime(regimes, n)
 
         # 5. duration_vs_avg
-        result[("regime_transition", "duration_vs_avg")] = _batch_duration_vs_avg(regimes, n)
+        result[("regime_transition", "duration_vs_avg")] = _batch_duration_vs_avg(
+            regimes, n
+        )
 
         # 6. dominant_strength
-        result[("regime_transition", "dominant_strength")] = _batch_dominant_strength(soft_regimes)
+        result[("regime_transition", "dominant_strength")] = _batch_dominant_strength(
+            soft_regimes
+        )
 
         # 7. transitions_{w}
-        result[("regime_transition", f"transitions_{w}")] = _batch_transitions(regimes, n, w)
+        result[("regime_transition", f"transitions_{w}")] = _batch_transitions(
+            regimes, n, w
+        )
 
         # 8-10. prob_delta_{w} for each soft key
         for key in _SOFT_KEYS:
-            result[("regime_transition", f"{key}_prob_delta_{w}")] = (
-                _batch_prob_delta(soft_regimes, key, w)
+            result[("regime_transition", f"{key}_prob_delta_{w}")] = _batch_prob_delta(
+                soft_regimes, key, w
             )
 
         # 11. entropy_delta_{w}
-        result[("regime_transition", f"entropy_delta_{w}")] = (
-            _batch_series_delta(entropy_series, w)
+        result[("regime_transition", f"entropy_delta_{w}")] = _batch_series_delta(
+            entropy_series, w
         )
 
         return result

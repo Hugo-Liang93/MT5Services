@@ -84,8 +84,7 @@ def test_filter_for_unknown_environment_keeps_all_strategies(caplog) -> None:
 
     assert {s.name for s in filtered} == {s.name for s in strategies}
     assert any(
-        "environment=None" in record.getMessage()
-        or "未知" in record.getMessage()
+        "environment=None" in record.getMessage() or "未知" in record.getMessage()
         for record in caplog.records
     )
 
@@ -125,12 +124,14 @@ def test_demo_set_strict_superset_of_live_set() -> None:
     """不变量：demo 装配集合 ⊇ live 装配集合（demo = live + DEMO_VALIDATION 候选）。"""
     strategies, deployments = _build_full_set()
 
-    live_set = {s.name for s in _filter_strategies_for_environment(
-        strategies, deployments, "live"
-    )}
-    demo_set = {s.name for s in _filter_strategies_for_environment(
-        strategies, deployments, "demo"
-    )}
+    live_set = {
+        s.name
+        for s in _filter_strategies_for_environment(strategies, deployments, "live")
+    }
+    demo_set = {
+        s.name
+        for s in _filter_strategies_for_environment(strategies, deployments, "demo")
+    }
 
     assert live_set <= demo_set
     # demo - live 应该恰好是 DEMO_VALIDATION 候选
@@ -139,7 +140,9 @@ def test_demo_set_strict_superset_of_live_set() -> None:
 
 def test_strategy_deployment_helper_allows_demo_validation() -> None:
     """deployment.allows_demo_validation() helper 契约验证。"""
-    assert _make_deployment("a", StrategyDeploymentStatus.ACTIVE).allows_demo_validation()
+    assert _make_deployment(
+        "a", StrategyDeploymentStatus.ACTIVE
+    ).allows_demo_validation()
     assert _make_deployment(
         "a", StrategyDeploymentStatus.ACTIVE_GUARDED
     ).allows_demo_validation()

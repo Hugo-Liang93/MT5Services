@@ -13,10 +13,7 @@ from src.trading.commands.results import (
     build_operator_command_result,
 )
 from src.trading.runtime.lifecycle import OwnedThreadLifecycle
-from src.trading.runtime.progress_health import (
-    build_progress_health_snapshot,
-    utc_now,
-)
+from src.trading.runtime.progress_health import build_progress_health_snapshot, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +40,12 @@ class OperatorCommandConsumer:
         max_attempts: int = 5,
     ) -> None:
         # §0dn A1：所有 *_fn 必填，无 None default 补丁种子。
-        if claim_fn is None or complete_fn is None or heartbeat_fn is None or mark_dispatched_fn is None:
+        if (
+            claim_fn is None
+            or complete_fn is None
+            or heartbeat_fn is None
+            or mark_dispatched_fn is None
+        ):
             raise ValueError(
                 "OperatorCommandConsumer requires claim_fn / complete_fn / "
                 "heartbeat_fn / mark_dispatched_fn (no Optional default; "
@@ -144,7 +146,8 @@ class OperatorCommandConsumer:
                 item,
                 extra_payload={
                     "status": "dead_lettered",
-                    "error_code": item.get("last_error_code") or "command_attempts_exhausted",
+                    "error_code": item.get("last_error_code")
+                    or "command_attempts_exhausted",
                     "error_message": "operator command dead-lettered after retry exhaustion",
                 },
             )
@@ -196,7 +199,9 @@ class OperatorCommandConsumer:
             )
             self._total_processed += 1
             self._safe_project_risk_state()
-            self._safe_emit_event("command_completed", item, extra_payload=response_payload)
+            self._safe_emit_event(
+                "command_completed", item, extra_payload=response_payload
+            )
         except Exception as exc:
             logger.exception("Operator command processing failed: %s", command_id)
             self._total_processed += 1
@@ -310,7 +315,9 @@ class OperatorCommandConsumer:
                 "non-fatal, continuing"
             )
 
-    def _safe_emit_event(self, event_type: str, item: dict[str, Any], **kwargs: Any) -> None:
+    def _safe_emit_event(
+        self, event_type: str, item: dict[str, Any], **kwargs: Any
+    ) -> None:
         # §0dn A2：仅运行时降级 catch；编码错误 fail-fast 透传（ADR-011）。
         try:
             self._emit_event(event_type, item, **kwargs)
@@ -402,7 +409,9 @@ class OperatorCommandConsumer:
                 response_payload=response_payload,
                 status="success",
             )
-            response_payload["audit_id"] = str(audit_info.get("operation_id") or action_id)
+            response_payload["audit_id"] = str(
+                audit_info.get("operation_id") or action_id
+            )
             return response_payload
 
         if command_type == "set_runtime_mode":
@@ -437,7 +446,9 @@ class OperatorCommandConsumer:
                 status="partial_failure" if status == "partial_failure" else "success",
                 error_message=runtime_mode.get("last_error"),
             )
-            response_payload["audit_id"] = str(audit_info.get("operation_id") or action_id)
+            response_payload["audit_id"] = str(
+                audit_info.get("operation_id") or action_id
+            )
             return response_payload
 
         if command_type == "reset_circuit_breaker":
@@ -468,7 +479,9 @@ class OperatorCommandConsumer:
                 response_payload=response_payload,
                 status="success",
             )
-            response_payload["audit_id"] = str(audit_info.get("operation_id") or action_id)
+            response_payload["audit_id"] = str(
+                audit_info.get("operation_id") or action_id
+            )
             return response_payload
 
         if command_type == "close_position":
@@ -566,9 +579,11 @@ class OperatorCommandConsumer:
             response_payload = self._wrap_operator_result(
                 item=item,
                 status=str(closeout.get("status") or "completed"),
-                message="manual exposure closeout completed"
-                if str(closeout.get("status") or "") == "completed"
-                else "manual exposure closeout finished with remaining exposure",
+                message=(
+                    "manual exposure closeout completed"
+                    if str(closeout.get("status") or "") == "completed"
+                    else "manual exposure closeout finished with remaining exposure"
+                ),
                 effective_state={"closeout": closeout},
                 extra_fields={"closeout": closeout},
             )
@@ -576,11 +591,15 @@ class OperatorCommandConsumer:
                 command_type=command_type,
                 request_payload=self._request_payload(item),
                 response_payload=response_payload,
-                status="success"
-                if str(closeout.get("status") or "") == "completed"
-                else "partial_failure",
+                status=(
+                    "success"
+                    if str(closeout.get("status") or "") == "completed"
+                    else "partial_failure"
+                ),
             )
-            response_payload["audit_id"] = str(audit_info.get("operation_id") or action_id)
+            response_payload["audit_id"] = str(
+                audit_info.get("operation_id") or action_id
+            )
             return response_payload
 
         if command_type == "cancel_pending_entry":
@@ -593,7 +612,11 @@ class OperatorCommandConsumer:
             response_payload = self._wrap_operator_result(
                 item=item,
                 status="completed" if cancelled else "failed",
-                message="pending entry cancelled" if cancelled else "pending entry not found",
+                message=(
+                    "pending entry cancelled"
+                    if cancelled
+                    else "pending entry not found"
+                ),
                 effective_state={"pending_entry": {"cancelled": cancelled}},
             )
             audit_info = self._command_service.record_operator_action(
@@ -604,7 +627,9 @@ class OperatorCommandConsumer:
                 error_message=None if cancelled else "pending entry not found",
                 symbol=payload.get("symbol"),
             )
-            response_payload["audit_id"] = str(audit_info.get("operation_id") or action_id)
+            response_payload["audit_id"] = str(
+                audit_info.get("operation_id") or action_id
+            )
             return response_payload
 
         if command_type == "cancel_pending_entries_by_symbol":
@@ -633,7 +658,9 @@ class OperatorCommandConsumer:
                 status="success",
                 symbol=payload.get("symbol"),
             )
-            response_payload["audit_id"] = str(audit_info.get("operation_id") or action_id)
+            response_payload["audit_id"] = str(
+                audit_info.get("operation_id") or action_id
+            )
             return response_payload
 
         raise ValueError(f"unsupported operator command: {command_type}")

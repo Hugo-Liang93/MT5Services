@@ -16,7 +16,6 @@ from src.clients.economic_calendar import (
 )
 from src.clients.economic_calendar_registry import ProviderRegistry
 
-
 # ────────────────────────── Protocol 合规性 ──────────────────────────
 
 
@@ -121,12 +120,8 @@ class TestProviderRegistry:
 
     def test_release_watch_names(self):
         registry = ProviderRegistry()
-        registry.register(
-            _MockProvider("rw_yes", configured=True, release_watch=True)
-        )
-        registry.register(
-            _MockProvider("rw_no", configured=True, release_watch=False)
-        )
+        registry.register(_MockProvider("rw_yes", configured=True, release_watch=True))
+        registry.register(_MockProvider("rw_no", configured=True, release_watch=False))
         registry.register(
             _MockProvider("unconfigured", configured=False, release_watch=True)
         )

@@ -25,13 +25,11 @@ def _cycle(**overrides) -> RecoveryCycleState:
         "started_at": _now(),
         "updated_at": _now(),
         "last_step_at": _now(),
-        "strategy": "tick_martingale_probe",
+        "strategy": "tick_recovery_probe",
         "timeframe": "TICK",
         "source_signal_id": "cycle-ledger-signal",
         "metadata": {
-            "submitted_tickets": [
-                {"scope": "initial", "step_index": 0, "ticket": 7001}
-            ]
+            "submitted_tickets": [{"scope": "initial", "step_index": 0, "ticket": 7001}]
         },
     }
     values.update(overrides)

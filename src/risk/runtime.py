@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 from collections.abc import Mapping
 
 from src.config import get_merged_config

@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from typing_extensions import Protocol, runtime_checkable
 
-
 # ---------------------------------------------------------------------------
 # FeatureRole
 # ---------------------------------------------------------------------------
@@ -72,9 +71,7 @@ class FeatureComputeResult:
     @property
     def total_features(self) -> int:
         """所有 Provider 产出的特征总数。"""
-        return sum(
-            s.get("feature_count", 0) for s in self.provider_summaries.values()
-        )
+        return sum(s.get("feature_count", 0) for s in self.provider_summaries.values())
 
     def add(
         self,

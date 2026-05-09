@@ -23,6 +23,7 @@ from src.trading.execution.pending_orders import inspect_pending_mt5_order
 from src.trading.execution.reasons import (
     REASON_AUTO_TRADE_DISABLED,
     REASON_DUPLICATE_SIGNAL_ID,
+    REASON_ENTRY_POLICY_UNAVAILABLE,
     REASON_INTRABAR_POSITION_ALREADY_VALIDATED,
     REASON_INTRABAR_POSITION_HOLD,
     REASON_INTRABAR_SYNTHESIS_STALE,
@@ -39,7 +40,6 @@ from src.trading.execution.reasons import (
     REASON_STRATEGY_MAX_LIVE_POSITIONS,
     REASON_STRATEGY_NOT_INTRABAR_ENABLED,
     REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
-    REASON_ENTRY_POLICY_UNAVAILABLE,
     REASON_TRADE_PARAMS_UNAVAILABLE,
 )
 from src.trading.execution.sizing import TradeParameters
@@ -449,9 +449,7 @@ def test_trade_executor_blocks_when_required_market_data_health_is_critical() ->
         == REASON_MARKET_DATA_UNHEALTHY
     )
     blocked = _find_last_event(received, PIPELINE_EXECUTION_BLOCKED)
-    admission = _find_last_admission_with_reason(
-        received, REASON_MARKET_DATA_UNHEALTHY
-    )
+    admission = _find_last_admission_with_reason(received, REASON_MARKET_DATA_UNHEALTHY)
     skipped = _find_last_event(received, PIPELINE_EXECUTION_SKIPPED)
     assert blocked.payload["reason"] == REASON_MARKET_DATA_UNHEALTHY
     assert admission.payload["decision"] == "block"
@@ -821,7 +819,9 @@ def test_trade_executor_rejects_when_entry_policy_mapping_missing() -> None:
     )
 
 
-def test_trade_executor_rejects_pending_entry_when_pending_manager_unavailable() -> None:
+def test_trade_executor_rejects_pending_entry_when_pending_manager_unavailable() -> (
+    None
+):
     from src.trading.entry_policy import (
         EntrySpecGroup,
         EntrySpecMember,

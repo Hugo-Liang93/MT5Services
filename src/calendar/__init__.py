@@ -3,10 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .economic_calendar.trade_guard import (
-        get_trade_guard,
-        infer_symbol_context,
-    )
+    from .economic_calendar.trade_guard import get_trade_guard, infer_symbol_context
     from .economic_decay import EconomicDecayService
     from .read_only_provider import ReadOnlyEconomicCalendarProvider
     from .service import EconomicCalendarService

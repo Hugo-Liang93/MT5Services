@@ -86,7 +86,9 @@ def _train_sequence_artifact(
 
     labels = StateEdgeLabelBuilder().build(matrix)
     features = StateEdgeFeatureBuilder().build(matrix)
-    sequence = SequenceWindowBuilder(window=sequence_window).build(matrix, features, labels)
+    sequence = SequenceWindowBuilder(window=sequence_window).build(
+        matrix, features, labels
+    )
     y = np.asarray(sequence.labels, dtype=np.int64)
     train_samples = np.asarray(sequence.train_sample_indices, dtype=np.int64)
 
@@ -157,14 +159,23 @@ def _fit_sequence_model(
     learning_rate: float,
     architecture: str,
 ) -> tuple[np.ndarray, dict[str, Any], str]:
-    if len(train_samples) == 0 or windows.shape[0] == 0 or len(set(y[train_samples])) < 2:
+    if (
+        len(train_samples) == 0
+        or windows.shape[0] == 0
+        or len(set(y[train_samples])) < 2
+    ):
         prior = _class_prior(y[train_samples] if len(train_samples) else y)
-        return np.tile(prior, (windows.shape[0], 1)), {
-            "kind": "sequence_tcn",
-            "reason": "insufficient_training_classes",
-        }, "refit"
+        return (
+            np.tile(prior, (windows.shape[0], 1)),
+            {
+                "kind": "sequence_tcn",
+                "reason": "insufficient_training_classes",
+            },
+            "refit",
+        )
 
     import torch
+
     device = torch.device("cuda" if backend_name == "gpu" else "cpu")
     train_x = windows[train_samples]
     mean = train_x.mean(axis=(0, 1), keepdims=True)
@@ -180,10 +191,14 @@ def _fit_sequence_model(
             classes=len(CLASS_ORDER),
         ).to(device)
     elif architecture == "sequence_tcn":
-        model = _TinyTCN(input_features=windows.shape[2], classes=len(CLASS_ORDER)).to(device)
+        model = _TinyTCN(input_features=windows.shape[2], classes=len(CLASS_ORDER)).to(
+            device
+        )
     else:
         raise ValueError(f"Unsupported sequence architecture: {architecture}")
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=learning_rate, weight_decay=1e-4
+    )
     loss_fn = torch.nn.CrossEntropyLoss()
     x_all = torch.tensor(x_scaled, dtype=torch.float32, device=device)
     y_all = torch.tensor(y, dtype=torch.long, device=device)
@@ -208,12 +223,16 @@ def _fit_sequence_model(
             xb = x_all[start : start + batch]
             chunks.append(torch.softmax(model(xb), dim=1).detach().cpu().numpy())
     probs = _normalize_probs(np.vstack(chunks) if chunks else np.zeros((0, 3)))
-    return probs, {
-        "input_features": int(windows.shape[2]),
-        "architecture": architecture,
-        "mean": np.squeeze(mean, axis=(0, 1)).tolist(),
-        "std": np.squeeze(std, axis=(0, 1)).tolist(),
-    }, "trained"
+    return (
+        probs,
+        {
+            "input_features": int(windows.shape[2]),
+            "architecture": architecture,
+            "mean": np.squeeze(mean, axis=(0, 1)).tolist(),
+            "std": np.squeeze(std, axis=(0, 1)).tolist(),
+        },
+        "trained",
+    )
 
 
 class _TinyTCN:

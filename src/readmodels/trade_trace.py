@@ -86,7 +86,9 @@ class TradingFlowTraceReadModel:
         )
         trace_ids = self._collect_trace_ids(
             preview_signals=[preview_signal] if preview_signal is not None else [],
-            confirmed_signals=[confirmed_signal] if confirmed_signal is not None else [],
+            confirmed_signals=(
+                [confirmed_signal] if confirmed_signal is not None else []
+            ),
             operations=operations,
         )
         pipeline_events = self._pipeline_trace_repo.fetch_pipeline_trace_events(
@@ -98,7 +100,9 @@ class TradingFlowTraceReadModel:
             signal_id=normalized_signal_id,
             trace_id=trace_ids[0] if len(trace_ids) == 1 else None,
             preview_signals=[preview_signal] if preview_signal is not None else [],
-            confirmed_signals=[confirmed_signal] if confirmed_signal is not None else [],
+            confirmed_signals=(
+                [confirmed_signal] if confirmed_signal is not None else []
+            ),
             pipeline_events=pipeline_events,
             auto_executions=auto_executions,
             operations=operations,
@@ -385,7 +389,9 @@ class TradingFlowTraceReadModel:
             page_size=page_size,
             sort=sort,
         )
-        items = [self._build_trace_summary_item(row) for row in query_result.get("items", [])]
+        items = [
+            self._build_trace_summary_item(row) for row in query_result.get("items", [])
+        ]
         return {
             "items": items,
             "total": int(query_result.get("total") or 0),
@@ -449,7 +455,9 @@ class TradingFlowTraceReadModel:
         *,
         positions: Sequence[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        fetcher = getattr(self._trading_state_repo, "fetch_position_sl_tp_history", None)
+        fetcher = getattr(
+            self._trading_state_repo, "fetch_position_sl_tp_history", None
+        )
         if not callable(fetcher):
             return []
         tickets = sorted(
@@ -538,7 +546,9 @@ class TradingFlowTraceReadModel:
             for row in operations
             if str(row.get("command_type") or "").startswith("close")
         ]
-        outcome = self._latest_by_time(trade_outcomes, lambda row: row.get("recorded_at"))
+        outcome = self._latest_by_time(
+            trade_outcomes, lambda row: row.get("recorded_at")
+        )
 
         order_ticket = self._first_int(
             pending.get("order_ticket") if pending else None,
@@ -663,9 +673,7 @@ class TradingFlowTraceReadModel:
                     "status": str((pending or {}).get("status") or "submitted"),
                     "at": self._normalize_datetime(entry_time),
                     "source": (
-                        "pending_order_states"
-                        if pending
-                        else "trade_command_audits"
+                        "pending_order_states" if pending else "trade_command_audits"
                     ),
                     "details": self._json_safe(pending or entry_operation or {}),
                 }
@@ -707,9 +715,7 @@ class TradingFlowTraceReadModel:
                     "status": (
                         "won"
                         if outcome.get("won") is True
-                        else "lost"
-                        if outcome.get("won") is False
-                        else "unknown"
+                        else "lost" if outcome.get("won") is False else "unknown"
                     ),
                     "at": self._normalize_datetime(outcome.get("recorded_at")),
                     "source": "trade_outcomes",
@@ -771,7 +777,11 @@ class TradingFlowTraceReadModel:
         key: str,
     ) -> int | None:
         for row in rows:
-            for payload in (row, row.get("request_payload") or {}, row.get("response_payload") or {}):
+            for payload in (
+                row,
+                row.get("request_payload") or {},
+                row.get("response_payload") or {},
+            ):
                 value = self._int_or_none(payload.get(key))
                 if value is not None:
                     return value
@@ -943,7 +953,9 @@ class TradingFlowTraceReadModel:
                     )
                     for definition in PIPELINE_STAGE_DEFINITIONS
                 },
-                "preview_signal": "present" if facts.get("signal_preview") else "missing",
+                "preview_signal": (
+                    "present" if facts.get("signal_preview") else "missing"
+                ),
                 "confirmed_signal": (
                     "present" if facts.get("signal_confirmed") else "missing"
                 ),
@@ -1108,7 +1120,9 @@ class TradingFlowTraceReadModel:
 
         return {
             "signal_id": signal_id,
-            "signal_ids": sorted({str(item).strip() for item in signal_ids if str(item or "").strip()}),
+            "signal_ids": sorted(
+                {str(item).strip() for item in signal_ids if str(item or "").strip()}
+            ),
             "request_ids": sorted(request_ids),
             "trace_ids": sorted(normalized_trace_ids),
             "operation_ids": sorted(operation_ids),
@@ -1225,7 +1239,9 @@ class TradingFlowTraceReadModel:
                     event_id=f"{signal_id}:position:{row.get('position_ticket')}:{status}",
                     stage=f"position.{status}",
                     status=status,
-                    at=row.get("closed_at") or row.get("opened_at") or row.get("updated_at"),
+                    at=row.get("closed_at")
+                    or row.get("opened_at")
+                    or row.get("updated_at"),
                     source="position_runtime_states",
                     summary=f"持仓状态: {status}",
                     details=row,
@@ -1251,7 +1267,11 @@ class TradingFlowTraceReadModel:
                 self._timeline_event(
                     event_id=f"{signal_id}:signal_outcome:{self._datetime_key(row.get('recorded_at'))}",
                     stage="outcome.signal",
-                    status="won" if row.get("won") is True else "lost" if row.get("won") is False else "unknown",
+                    status=(
+                        "won"
+                        if row.get("won") is True
+                        else "lost" if row.get("won") is False else "unknown"
+                    ),
                     at=row.get("recorded_at"),
                     source="signal_outcomes",
                     summary="信号事后评估",
@@ -1263,7 +1283,11 @@ class TradingFlowTraceReadModel:
                 self._timeline_event(
                     event_id=f"{signal_id}:trade_outcome:{self._datetime_key(row.get('recorded_at'))}",
                     stage="outcome.trade",
-                    status="won" if row.get("won") is True else "lost" if row.get("won") is False else "unknown",
+                    status=(
+                        "won"
+                        if row.get("won") is True
+                        else "lost" if row.get("won") is False else "unknown"
+                    ),
                     at=row.get("recorded_at"),
                     source="trade_outcomes",
                     summary="真实交易结果",
@@ -1319,7 +1343,9 @@ class TradingFlowTraceReadModel:
             "started_at": self._normalize_datetime(row.get("started_at")),
             "last_event_at": self._normalize_datetime(row.get("last_event_at")),
             "event_count": int(row.get("event_count") or 0),
-            "last_stage": pipeline_stage_name(last_event_type) if last_event_type else None,
+            "last_stage": (
+                pipeline_stage_name(last_event_type) if last_event_type else None
+            ),
             "reason": self._str_or_none(row.get("reason")),
             "admission": self._build_admission_summary(
                 {
@@ -1351,16 +1377,24 @@ class TradingFlowTraceReadModel:
             status = "admission"
         elif last_stage in {"outcome.trade", "position.closed", "recovery.closed"}:
             status = "completed"
-        elif last_stage in {
-            "trade.close_position",
-            "trade.close_all_positions",
-            "trade.close_positions_by_tickets",
-            "trade.cancel_orders",
-            "trade.cancel_orders_by_tickets",
-            "trade.close_exposure",
-        } and last_status == "success":
+        elif (
+            last_stage
+            in {
+                "trade.close_position",
+                "trade.close_all_positions",
+                "trade.close_positions_by_tickets",
+                "trade.cancel_orders",
+                "trade.cancel_orders_by_tickets",
+                "trade.close_exposure",
+            }
+            and last_status == "success"
+        ):
             status = "completed"
-        elif last_stage in {"trade.execute_trade", "pipeline.execution_submitted", "pending.filled"}:
+        elif last_stage in {
+            "trade.execute_trade",
+            "pipeline.execution_submitted",
+            "pending.filled",
+        }:
             status = "submitted"
         elif last_stage == "signal.confirmed":
             status = "signal_confirmed"
@@ -1382,11 +1416,15 @@ class TradingFlowTraceReadModel:
     ) -> str | None:
         if last_event is not None:
             details = last_event.get("details") or {}
-            if extracted := TradingFlowTraceReadModel._extract_reason_from_mapping(details):
+            if extracted := TradingFlowTraceReadModel._extract_reason_from_mapping(
+                details
+            ):
                 return extracted
         for row in reversed(list(pipeline_events)):
             payload = row.get("payload") or {}
-            if extracted := TradingFlowTraceReadModel._extract_reason_from_mapping(payload):
+            if extracted := TradingFlowTraceReadModel._extract_reason_from_mapping(
+                payload
+            ):
                 return extracted
         return None
 
@@ -1421,7 +1459,10 @@ class TradingFlowTraceReadModel:
             if trace_id:
                 trace_ids.add(trace_id)
         for row in operations:
-            for payload in (row.get("request_payload") or {}, row.get("response_payload") or {}):
+            for payload in (
+                row.get("request_payload") or {},
+                row.get("response_payload") or {},
+            ):
                 trace_id = str(payload.get("trace_id") or "").strip()
                 if trace_id:
                     trace_ids.add(trace_id)
@@ -1447,7 +1488,10 @@ class TradingFlowTraceReadModel:
             if signal_id:
                 signal_ids.add(signal_id)
         for row in operations:
-            for payload in (row.get("request_payload") or {}, row.get("response_payload") or {}):
+            for payload in (
+                row.get("request_payload") or {},
+                row.get("response_payload") or {},
+            ):
                 metadata = payload.get("metadata") or {}
                 signal = metadata.get("signal") or {}
                 for candidate in (
@@ -1485,15 +1529,25 @@ class TradingFlowTraceReadModel:
                     "recorded_at": TradingFlowTraceReadModel._normalize_datetime(
                         row.get("recorded_at")
                     ),
-                    "trace_id": str(row.get("trace_id") or payload.get("trace_id") or "").strip()
+                    "trace_id": str(
+                        row.get("trace_id") or payload.get("trace_id") or ""
+                    ).strip()
                     or None,
-                    "signal_id": str(row.get("signal_id") or payload.get("signal_id") or "").strip()
+                    "signal_id": str(
+                        row.get("signal_id") or payload.get("signal_id") or ""
+                    ).strip()
                     or None,
-                    "intent_id": str(row.get("intent_id") or payload.get("intent_id") or "").strip()
+                    "intent_id": str(
+                        row.get("intent_id") or payload.get("intent_id") or ""
+                    ).strip()
                     or None,
-                    "command_id": str(row.get("command_id") or payload.get("command_id") or "").strip()
+                    "command_id": str(
+                        row.get("command_id") or payload.get("command_id") or ""
+                    ).strip()
                     or None,
-                    "action_id": str(row.get("action_id") or payload.get("action_id") or "").strip()
+                    "action_id": str(
+                        row.get("action_id") or payload.get("action_id") or ""
+                    ).strip()
                     or None,
                 }
             )

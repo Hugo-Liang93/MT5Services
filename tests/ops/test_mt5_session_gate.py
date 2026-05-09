@@ -3,6 +3,7 @@
 默认行为应该是"允许 mt5.initialize(path=...) 自动拉起 terminal"，
 避免强制要求用户先手动开 MT5 terminal 才能启动服务。
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -13,8 +14,13 @@ from src.ops import mt5_session_gate
 
 
 class _StubState:
-    def __init__(self, *, session_ready: bool, error_code: str | None = None,
-                 error_message: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        session_ready: bool,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
         self.session_ready = session_ready
         self.error_code = error_code
         self.error_message = error_message
@@ -25,6 +31,7 @@ class _StubState:
 
 class _StubClient:
     """记录 inspect_session_state 调用参数供测试断言。"""
+
     def __init__(self, state: _StubState) -> None:
         self._state = state
         self.inspect_calls: list[dict] = []
@@ -57,7 +64,10 @@ def _patch_gate(monkeypatch, state: _StubState) -> _StubClient:
     # patch 两处 import（src.ops.mt5_session_gate 模块内部延迟 import）
     import src.clients.base as base_mod
     import src.config.mt5 as mt5_cfg_mod
-    monkeypatch.setattr(base_mod, "MT5BaseClient", lambda settings: client, raising=False)
+
+    monkeypatch.setattr(
+        base_mod, "MT5BaseClient", lambda settings: client, raising=False
+    )
     monkeypatch.setattr(
         mt5_cfg_mod,
         "load_mt5_settings",
@@ -101,7 +111,9 @@ def test_probe_gate_strict_mode_disables_auto_launch(monkeypatch) -> None:
     assert client.inspect_calls[0]["require_terminal_process"] is True
 
 
-def test_ensure_gate_raises_with_clear_message_when_initialize_fails(monkeypatch) -> None:
+def test_ensure_gate_raises_with_clear_message_when_initialize_fails(
+    monkeypatch,
+) -> None:
     """auto_launch 开启但 initialize 失败（如 path 无效）仍应 fail-fast。"""
     _patch_gate(
         monkeypatch,

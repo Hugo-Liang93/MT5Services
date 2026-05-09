@@ -40,9 +40,7 @@ def cockpit_overview(
     requested_blocks: Optional[list[str]] = None
     if include:
         requested_blocks = [
-            token.strip()
-            for token in include.split(",")
-            if token.strip()
+            token.strip() for token in include.split(",") if token.strip()
         ] or None
     payload = read_model.build_overview(include=requested_blocks)
     return ApiResponse.success_response(

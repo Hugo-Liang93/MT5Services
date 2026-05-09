@@ -45,7 +45,9 @@ def test_calibration_guard_blocks_real_trade_when_samples_are_insufficient() -> 
     assert decision.metadata["min_samples"] == 5
 
 
-def test_calibration_guard_blocks_real_trade_when_cost_distribution_is_negative() -> None:
+def test_calibration_guard_blocks_real_trade_when_cost_distribution_is_negative() -> (
+    None
+):
     guard = RecoveryCostCalibrationGuard()
     settings = RecoveryCostCalibrationGuardSettings(
         min_samples=5,

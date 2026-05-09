@@ -341,7 +341,9 @@ class EntryMetaBacktestOverlay:
     def _normalize_time(value: datetime | str) -> str:
         if isinstance(value, datetime):
             normalized = (
-                value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+                value
+                if value.tzinfo is not None
+                else value.replace(tzinfo=timezone.utc)
             )
             return normalized.astimezone(timezone.utc).isoformat()
         raw = str(value)

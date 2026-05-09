@@ -105,7 +105,9 @@ def test_entry_meta_lab_run_rejects_unknown_feature_scope(tmp_path) -> None:
         )
 
 
-def test_entry_meta_lab_stdout_uses_wrapped_payload(monkeypatch, capsys, tmp_path) -> None:
+def test_entry_meta_lab_stdout_uses_wrapped_payload(
+    monkeypatch, capsys, tmp_path
+) -> None:
     import src.backtesting.component_factory as component_factory
     import src.config.instance_context as instance_context
     import src.ops.cli._coverage as coverage_module
@@ -147,28 +149,34 @@ def test_entry_meta_lab_stdout_uses_wrapped_payload(monkeypatch, capsys, tmp_pat
             run_calls.append(kwargs)
             return SimpleNamespace(to_dict=lambda: result_payload)
 
-    monkeypatch.setattr(sys, "argv", [
-        "entry_meta_lab.py",
-        "--environment",
-        "demo",
-        "--baseline",
-        str(tmp_path / "baseline.json"),
-        "--tf",
-        "h1",
-        "--start",
-        "2026-01-01T00:00:00Z",
-        "--end",
-        "2026-01-31T23:00:00Z",
-        "--backend",
-        "cpu",
-        "--artifact-dir",
-        str(tmp_path / "artifacts"),
-        "--symbol",
-        "XAUUSD",
-        "--feature-scope",
-        "research_full",
-    ])
-    monkeypatch.setattr(instance_context, "set_current_environment", lambda environment: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "entry_meta_lab.py",
+            "--environment",
+            "demo",
+            "--baseline",
+            str(tmp_path / "baseline.json"),
+            "--tf",
+            "h1",
+            "--start",
+            "2026-01-01T00:00:00Z",
+            "--end",
+            "2026-01-31T23:00:00Z",
+            "--backend",
+            "cpu",
+            "--artifact-dir",
+            str(tmp_path / "artifacts"),
+            "--symbol",
+            "XAUUSD",
+            "--feature-scope",
+            "research_full",
+        ],
+    )
+    monkeypatch.setattr(
+        instance_context, "set_current_environment", lambda environment: None
+    )
     monkeypatch.setattr(
         backends,
         "resolve_backend",
@@ -182,7 +190,9 @@ def test_entry_meta_lab_stdout_uses_wrapped_payload(monkeypatch, capsys, tmp_pat
         "ensure_ohlc_data_coverage",
         lambda **kwargs: coverage,
     )
-    monkeypatch.setattr(component_factory, "build_research_data_deps", lambda: FakeDeps())
+    monkeypatch.setattr(
+        component_factory, "build_research_data_deps", lambda: FakeDeps()
+    )
     monkeypatch.setattr(research_config, "load_research_config", lambda: object())
     monkeypatch.setattr(lab_module, "EntryMetaLab", FakeEntryMetaLab)
 

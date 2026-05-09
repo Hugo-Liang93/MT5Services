@@ -4,9 +4,16 @@ from typing import Any, Dict, Iterable, List
 
 import numpy as np
 
-from .base import get_closes, get_closes_array, get_float, get_hlc_arrays, get_int, tail_bars
+from ..cache.incremental import IncrementalIndicator, IndicatorState
+from .base import (
+    get_closes,
+    get_closes_array,
+    get_float,
+    get_hlc_arrays,
+    get_int,
+    tail_bars,
+)
 from .mean import _ema_sequence
-from ..cache.incremental import IndicatorState, IncrementalIndicator
 
 
 def rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
@@ -57,7 +64,9 @@ class RsiIncremental(IncrementalIndicator):
 
     def __init__(self, name: str, params: Dict[str, Any]) -> None:
         super().__init__(name, params)
-        self.min_data_points = get_int(params, "period", default=14, aliases=("window",)) + 1
+        self.min_data_points = (
+            get_int(params, "period", default=14, aliases=("window",)) + 1
+        )
 
     def _compute_full(self, bars: list) -> Dict[str, float]:
         return rsi(bars, self.params)
@@ -73,7 +82,9 @@ class RsiIncremental(IncrementalIndicator):
             and "prev_close" in ir
         )
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
         period = get_int(self.params, "period", default=14, aliases=("window",))
         avg_gain = float(state.intermediate_results["avg_gain"])  # type: ignore[index]
         avg_loss = float(state.intermediate_results["avg_loss"])  # type: ignore[index]
@@ -133,7 +144,7 @@ def macd(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     if len(macd_series) < signal:
         return {}
 
-    signal_val = _ema_sequence(macd_series[-(signal * 3):], signal)
+    signal_val = _ema_sequence(macd_series[-(signal * 3) :], signal)
     macd_val = macd_series[-1]
     hist_val = macd_val - signal_val
     return {"macd": macd_val, "signal": signal_val, "hist": hist_val}
@@ -167,7 +178,9 @@ class MacdIncremental(IncrementalIndicator):
             and "ema_signal" in ir
         )
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
         fast = get_int(self.params, "fast", default=12)
         slow = get_int(self.params, "slow", default=26)
         signal = get_int(self.params, "signal", default=9)
@@ -196,6 +209,7 @@ class MacdIncremental(IncrementalIndicator):
         signal = get_int(self.params, "signal", default=9)
 
         from .base import get_closes
+
         closes = get_closes(bars, slow + signal + 5)
         if len(closes) < slow + signal:
             return state
@@ -210,7 +224,7 @@ class MacdIncremental(IncrementalIndicator):
             ema_s = price if ema_s is None else ema_s + k_slow * (price - ema_s)
             macd_series.append(ema_f - ema_s)
 
-        ema_signal_val = _ema_sequence(macd_series[-(signal * 3):], signal)
+        ema_signal_val = _ema_sequence(macd_series[-(signal * 3) :], signal)
 
         state.intermediate_results = {
             "ema_fast": ema_f,
@@ -262,14 +276,18 @@ def stochastic(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     # 滑动窗口计算 %K
     k_values: List[float] = []
     for end_idx in range(k_period, len(window) + 1):
-        h_slice = highs[end_idx - k_period:end_idx]
-        l_slice = lows[end_idx - k_period:end_idx]
+        h_slice = highs[end_idx - k_period : end_idx]
+        l_slice = lows[end_idx - k_period : end_idx]
         highest_high = float(np.max(h_slice))
         lowest_low = float(np.min(l_slice))
         if highest_high == lowest_low:
             k_values.append(50.0)
             continue
-        k_values.append((float(closes[end_idx - 1]) - lowest_low) / (highest_high - lowest_low) * 100.0)
+        k_values.append(
+            (float(closes[end_idx - 1]) - lowest_low)
+            / (highest_high - lowest_low)
+            * 100.0
+        )
 
     if not k_values:
         return {}
@@ -317,7 +335,9 @@ def supertrend(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     prev_closes = closes[:-1]
     h = highs[1:]
     l = lows[1:]
-    trs = np.maximum(h - l, np.maximum(np.abs(h - prev_closes), np.abs(l - prev_closes)))
+    trs = np.maximum(
+        h - l, np.maximum(np.abs(h - prev_closes), np.abs(l - prev_closes))
+    )
 
     # Wilder 平滑 ATR
     n_tr = len(trs)
@@ -421,9 +441,15 @@ class SupertrendIncremental(IncrementalIndicator):
             and "prev_close" in ir
         )
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
-        period = get_int(self.params, "period", default=14, aliases=("atr_period", "window"))
-        multiplier = get_float(self.params, "multiplier", default=3.0, aliases=("mult",))
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
+        period = get_int(
+            self.params, "period", default=14, aliases=("atr_period", "window")
+        )
+        multiplier = get_float(
+            self.params, "multiplier", default=3.0, aliases=("mult",)
+        )
 
         ir = state.intermediate_results
         prev_atr = float(ir["atr_val"])  # type: ignore[index]
@@ -433,7 +459,9 @@ class SupertrendIncremental(IncrementalIndicator):
         prev_close = float(ir["prev_close"])  # type: ignore[index]
 
         bar = bars[-1]
-        tr = max(bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close))
+        tr = max(
+            bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close)
+        )
         atr_val = (prev_atr * (period - 1) + tr) / period
 
         hl2 = (bar.high + bar.low) / 2.0
@@ -469,10 +497,13 @@ class SupertrendIncremental(IncrementalIndicator):
         state = super()._create_new_state(bars, result)
         full_result = self._compute_full(bars)
         if full_result:
-            period = get_int(self.params, "period", default=14, aliases=("atr_period", "window"))
+            period = get_int(
+                self.params, "period", default=14, aliases=("atr_period", "window")
+            )
             window = tail_bars(bars, period * 2 + 2)
             highs, lows, closes = get_hlc_arrays(window)
             from .volatility import _compute_tr_array
+
             trs = _compute_tr_array(highs, lows, closes)
             if len(trs) >= period:
                 atr_val = float(np.mean(trs[:period]))
@@ -560,13 +591,15 @@ def stoch_rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     rsi_arr = np.array(rsi_series, dtype=np.float64)
     raw_k_series: List[float] = []
     for end in range(stoch_period, len(rsi_arr) + 1):
-        window_rsi = rsi_arr[end - stoch_period:end]
+        window_rsi = rsi_arr[end - stoch_period : end]
         lowest = float(np.min(window_rsi))
         highest = float(np.max(window_rsi))
         if highest == lowest:
             raw_k_series.append(50.0)
         else:
-            raw_k_series.append((float(rsi_arr[end - 1]) - lowest) / (highest - lowest) * 100.0)
+            raw_k_series.append(
+                (float(rsi_arr[end - 1]) - lowest) / (highest - lowest) * 100.0
+            )
 
     if not raw_k_series:
         return {}
@@ -575,7 +608,7 @@ def stoch_rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     k_arr = np.array(raw_k_series, dtype=np.float64)
     k_series: List[float] = []
     for end in range(smooth_k, len(k_arr) + 1):
-        k_series.append(float(np.mean(k_arr[end - smooth_k:end])))
+        k_series.append(float(np.mean(k_arr[end - smooth_k : end])))
 
     if not k_series:
         return {}

@@ -121,7 +121,9 @@ def _simulate_single_long(
         hit_sl = lows[j] <= sl_price
         hit_tp = highs[j] >= tp_price
         if hit_sl and hit_tp:
-            return BarrierOutcome("sl", -config.sl_atr * atr / entry_price - cost, j - entry_idx)
+            return BarrierOutcome(
+                "sl", -config.sl_atr * atr / entry_price - cost, j - entry_idx
+            )
         if hit_sl:
             return BarrierOutcome(
                 "sl", (sl_price - entry_price) / entry_price - cost, j - entry_idx
@@ -161,7 +163,9 @@ def _simulate_single_short(
         hit_sl = highs[j] >= sl_price
         hit_tp = lows[j] <= tp_price
         if hit_sl and hit_tp:
-            return BarrierOutcome("sl", -config.sl_atr * atr / entry_price - cost, j - entry_idx)
+            return BarrierOutcome(
+                "sl", -config.sl_atr * atr / entry_price - cost, j - entry_idx
+            )
         if hit_sl:
             return BarrierOutcome(
                 "sl", (entry_price - sl_price) / entry_price - cost, j - entry_idx
@@ -225,7 +229,8 @@ def compute_barrier_returns(
     lows_arr = np.asarray(lows, dtype=np.float64)
     closes_arr = np.asarray(closes, dtype=np.float64)
     atrs_arr = np.asarray(
-        [a if a is not None else np.nan for a in atrs], dtype=np.float64,
+        [a if a is not None else np.nan for a in atrs],
+        dtype=np.float64,
     )
 
     result: dict[tuple, List[Optional[BarrierOutcome]]] = {
@@ -287,14 +292,14 @@ def _vectorized_barrier_scan(
     pad_c = np.concatenate([closes, np.full(time_bars + 1, np.nan)])
 
     # 窗口矩阵：shape (n-1, time_bars)。row i 对应扫描 bar [i+2 .. i+1+time_bars]
-    idx_matrix = (np.arange(n - 1)[:, None] + 2 + np.arange(time_bars)[None, :])
+    idx_matrix = np.arange(n - 1)[:, None] + 2 + np.arange(time_bars)[None, :]
     # 越界位置由 pad 的 NaN 填充
     win_h = pad_h[idx_matrix]
     win_l = pad_l[idx_matrix]
     win_c = pad_c[idx_matrix]
 
     entry_prices = opens[1:]  # shape (n-1,)
-    entry_atrs = atrs[:-1]    # 信号 bar 的 ATR（与 per-bar 实现一致）
+    entry_atrs = atrs[:-1]  # 信号 bar 的 ATR（与 per-bar 实现一致）
 
     valid = (entry_prices > 0) & np.isfinite(entry_atrs)
 

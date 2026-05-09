@@ -183,9 +183,7 @@ def _load_baseline_input(path: Path) -> EntryMetaBaselineInput:
     raw_results = payload.get("raw_results")
     if isinstance(raw_results, list):
         first_raw_result = (
-            raw_results[0]
-            if raw_results and isinstance(raw_results[0], dict)
-            else None
+            raw_results[0] if raw_results and isinstance(raw_results[0], dict) else None
         )
         runtime_indicator_names = (
             _extract_required_indicators(first_raw_result)

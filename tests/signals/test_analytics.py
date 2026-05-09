@@ -50,7 +50,9 @@ def test_signal_diagnostics_analyzer_builds_expected_report() -> None:
     assert report["dominant_regime"] == "trending"
     assert report["session_distribution"]["london"] == 3
     assert report["strategy_session_breakdown"]["rsi_reversion"]["london"] == 2
-    assert any(item["strategy"] == "rsi_reversion" for item in report["strategy_health"])
+    assert any(
+        item["strategy"] == "rsi_reversion" for item in report["strategy_health"]
+    )
     assert len(report["recommendations"]) >= 1
 
 
@@ -94,12 +96,24 @@ def test_signal_diagnostics_analyzer_supports_extensions_plugin() -> None:
     plugins = AnalyticsPluginRegistry()
     plugins.register(
         "action_entropy",
-        lambda rows, _report: {"unique_actions": len({str(r.get("direction", "")) for r in rows})},
+        lambda rows, _report: {
+            "unique_actions": len({str(r.get("direction", "")) for r in rows})
+        },
     )
     analyzer = SignalDiagnosticsAnalyzer(plugin_registry=plugins)
     rows = [
-        {"generated_at": "2026-03-19T10:00:00+00:00", "strategy": "a", "direction": "buy", "confidence": 0.9},
-        {"generated_at": "2026-03-19T10:01:00+00:00", "strategy": "b", "direction": "sell", "confidence": 0.8},
+        {
+            "generated_at": "2026-03-19T10:00:00+00:00",
+            "strategy": "a",
+            "direction": "buy",
+            "confidence": 0.9,
+        },
+        {
+            "generated_at": "2026-03-19T10:01:00+00:00",
+            "strategy": "b",
+            "direction": "sell",
+            "confidence": 0.8,
+        },
     ]
 
     report = analyzer.build_report(
@@ -116,8 +130,18 @@ def test_signal_diagnostics_analyzer_supports_extensions_plugin() -> None:
 def test_daily_quality_report_counts_invalid_time_rows() -> None:
     analyzer = SignalDiagnosticsAnalyzer()
     rows = [
-        {"generated_at": "bad_time", "strategy": "a", "direction": "buy", "confidence": 0.9},
-        {"generated_at": "2026-03-19T10:00:00+00:00", "strategy": "b", "direction": "sell", "confidence": 0.8},
+        {
+            "generated_at": "bad_time",
+            "strategy": "a",
+            "direction": "buy",
+            "confidence": 0.9,
+        },
+        {
+            "generated_at": "2026-03-19T10:00:00+00:00",
+            "strategy": "b",
+            "direction": "sell",
+            "confidence": 0.8,
+        },
     ]
     report = analyzer.build_daily_quality_report(
         rows,

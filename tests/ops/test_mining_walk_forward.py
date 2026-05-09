@@ -16,9 +16,9 @@ import pytest
 from src.ops.cli.mining_walk_forward import _mine_window
 from src.research.orchestration.walk_forward import (
     aggregate_rules_across_windows as _aggregate_rules_across_windows,
-    rule_key as _rule_key,
-    split_windows as _split_windows,
 )
+from src.research.orchestration.walk_forward import rule_key as _rule_key
+from src.research.orchestration.walk_forward import split_windows as _split_windows
 
 
 def test_split_windows_equal_length():
@@ -90,7 +90,10 @@ def test_aggregate_rule_only_in_some_windows():
     c1 = NS(indicator="rsi14", field="rsi", operator="<=", threshold=30.0)
     c2 = NS(indicator="adx14", field="adx", operator=">", threshold=25.0)
     per_window = [
-        [_mock_rule("buy", [c1], 0.70, 0.65, 100), _mock_rule("sell", [c2], 0.55, 0.50, 80)],
+        [
+            _mock_rule("buy", [c1], 0.70, 0.65, 100),
+            _mock_rule("sell", [c2], 0.55, 0.50, 80),
+        ],
         [_mock_rule("buy", [c1], 0.72, 0.60, 120)],  # c2 不出现
         [_mock_rule("sell", [c2], 0.56, 0.52, 85)],  # c1 不出现
     ]
@@ -134,6 +137,6 @@ def test_mine_window_uses_with_build_research_data_deps() -> None:
         "_mine_window 必须用 with build_research_data_deps() 包裹（§0di P2）；"
         f"当前实现:\n{src}"
     )
-    assert "with " in src.split("build_research_data_deps()")[0].splitlines()[-1], (
-        "build_research_data_deps() 必须在 with 语句中调用，而不是裸赋值"
-    )
+    assert (
+        "with " in src.split("build_research_data_deps()")[0].splitlines()[-1]
+    ), "build_research_data_deps() 必须在 with 语句中调用，而不是裸赋值"

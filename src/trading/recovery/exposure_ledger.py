@@ -58,9 +58,8 @@ class RecoveryExposureLedger:
                 last_reconcile_at=last_reconcile_at,
             )
 
-        fresh = (
-            last_reconcile_at is not None
-            and _datetime_after_or_equal(last_reconcile_at, cycle.updated_at)
+        fresh = last_reconcile_at is not None and _datetime_after_or_equal(
+            last_reconcile_at, cycle.updated_at
         )
         matches = _matching_recovery_positions(cycle, list(positions))
         live_tickets = _unique_positive_ints(
@@ -242,7 +241,9 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 def _datetime_after_or_equal(left: datetime, right: datetime) -> bool:
     left_aware = left if left.tzinfo is not None else left.replace(tzinfo=timezone.utc)
-    right_aware = right if right.tzinfo is not None else right.replace(tzinfo=timezone.utc)
+    right_aware = (
+        right if right.tzinfo is not None else right.replace(tzinfo=timezone.utc)
+    )
     return left_aware >= right_aware
 
 

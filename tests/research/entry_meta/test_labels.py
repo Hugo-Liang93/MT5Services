@@ -53,7 +53,9 @@ def test_sample_weights_are_capped_at_max_weight() -> None:
         {"pnl": "not-a-number"},
     ],
 )
-def test_labels_reject_invalid_pnl_values_with_sample_index(trade: dict[str, object]) -> None:
+def test_labels_reject_invalid_pnl_values_with_sample_index(
+    trade: dict[str, object]
+) -> None:
     with pytest.raises(ValueError, match="sample 0.*pnl"):
         EntryMetaLabelBuilder().build([trade])
 

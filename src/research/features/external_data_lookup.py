@@ -8,14 +8,13 @@ Future intraday extension: add `make_intraday_field_lookup(symbol, field)`
 returning callable(datetime) → Optional[float] from a future
 intraday_external_ohlc table. Same caching pattern.
 """
+
 from __future__ import annotations
 
 from datetime import date
 from typing import Any, Callable, Dict, Optional
 
-SUPPORTED_FIELDS: frozenset[str] = frozenset(
-    {"open", "high", "low", "close", "volume"}
-)
+SUPPORTED_FIELDS: frozenset[str] = frozenset({"open", "high", "low", "close", "volume"})
 
 
 def _default_writer_factory() -> Any:

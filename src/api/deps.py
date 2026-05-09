@@ -129,9 +129,13 @@ def resolve_runtime_task_scope(
     }
     if any(value is not None for value in resolved.values()):
         return resolved
-    runtime_identity = getattr(_container, "runtime_identity", None)
+    # T14 / ADR-006: 装配阶段必填 runtime_identity，移除 getattr 兜底。
+    # _ensure_initialized() 已保证 _container 装配完成。
+    runtime_identity = _container.runtime_identity
     if runtime_identity is None:
-        return resolved
+        raise RuntimeError(
+            "runtime_identity not assembled — 装配阶段失败 (ADR-006 边界裂缝)"
+        )
     resolved["instance_id"] = runtime_identity.instance_id
     return resolved
 

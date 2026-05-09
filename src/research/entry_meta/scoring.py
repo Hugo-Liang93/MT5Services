@@ -54,7 +54,9 @@ class EntryMetaScorer:
         if estimator == "constant_prior":
             probs = payload.get("class_probs")
             if not isinstance(probs, dict):
-                raise EntryMetaScoringError("constant_prior class_probs must be an object")
+                raise EntryMetaScoringError(
+                    "constant_prior class_probs must be an object"
+                )
             block = _probability(probs.get("block_entry"), "block_entry")
             take = _probability(probs.get("take_entry"), "take_entry")
             _validate_prob_pair(block, take)
@@ -66,7 +68,9 @@ class EntryMetaScorer:
             )
 
         if estimator != "logistic_regression_v1":
-            raise EntryMetaScoringError(f"unsupported entry meta scorer estimator {estimator}")
+            raise EntryMetaScoringError(
+                f"unsupported entry meta scorer estimator {estimator}"
+            )
 
         classes = payload.get("classes")
         if (
@@ -78,10 +82,14 @@ class EntryMetaScorer:
 
         feature_order_raw = payload.get("feature_order")
         if not isinstance(feature_order_raw, list):
-            raise EntryMetaScoringError("entry meta scorer feature_order must be a list")
+            raise EntryMetaScoringError(
+                "entry meta scorer feature_order must be a list"
+            )
         feature_order = [str(item) for item in feature_order_raw]
         if feature_order != artifact_feature_keys:
-            raise EntryMetaScoringError("entry meta scorer feature_order must match artifact feature_keys")
+            raise EntryMetaScoringError(
+                "entry meta scorer feature_order must match artifact feature_keys"
+            )
 
         n_features = len(feature_order)
         coef = _float_array(payload.get("coef"), "coef")
@@ -92,17 +100,25 @@ class EntryMetaScorer:
 
         intercept_values = _float_array(payload.get("intercept"), "intercept")
         if intercept_values.shape != (1,):
-            raise EntryMetaScoringError("entry meta scorer intercept must contain one value")
+            raise EntryMetaScoringError(
+                "entry meta scorer intercept must contain one value"
+            )
 
         normalization = payload.get("normalization")
         if not isinstance(normalization, dict):
-            raise EntryMetaScoringError("entry meta scorer normalization must be an object")
+            raise EntryMetaScoringError(
+                "entry meta scorer normalization must be an object"
+            )
         mean = _float_array(normalization.get("mean"), "normalization.mean")
         scale = _float_array(normalization.get("scale"), "normalization.scale")
         if mean.shape != (n_features,) or scale.shape != (n_features,):
-            raise EntryMetaScoringError("entry meta scorer normalization must match feature_order")
+            raise EntryMetaScoringError(
+                "entry meta scorer normalization must match feature_order"
+            )
         if np.any(scale == 0.0):
-            raise EntryMetaScoringError("entry meta scorer scale values must be non-zero")
+            raise EntryMetaScoringError(
+                "entry meta scorer scale values must be non-zero"
+            )
 
         return cls(
             estimator=estimator,
@@ -131,7 +147,9 @@ class EntryMetaScorer:
             )
 
         if self._coef is None or self._mean is None or self._scale is None:
-            raise EntryMetaScoringError("entry meta logistic scorer parameters are incomplete")
+            raise EntryMetaScoringError(
+                "entry meta logistic scorer parameters are incomplete"
+            )
         z = (values - self._mean) / self._scale
         logit = float(np.dot(z, self._coef) + self._intercept)
         take = _sigmoid(logit)
@@ -148,7 +166,9 @@ def _float_array(value: Any, name: str) -> np.ndarray:
     try:
         result = np.asarray(value, dtype=float)
     except (TypeError, ValueError) as exc:
-        raise EntryMetaScoringError(f"entry meta scorer {name} values must be numeric") from exc
+        raise EntryMetaScoringError(
+            f"entry meta scorer {name} values must be numeric"
+        ) from exc
     if not np.all(np.isfinite(result)):
         raise EntryMetaScoringError(f"entry meta scorer {name} values must be finite")
     return result
@@ -166,7 +186,9 @@ def _probability(value: Any, name: str) -> float:
     try:
         result = float(value)
     except (TypeError, ValueError) as exc:
-        raise EntryMetaScoringError(f"entry meta probability {name} must be finite") from exc
+        raise EntryMetaScoringError(
+            f"entry meta probability {name} must be finite"
+        ) from exc
     if not np.isfinite(result) or result < 0.0 or result > 1.0:
         raise EntryMetaScoringError(f"entry meta probability {name} must be in [0, 1]")
     return result

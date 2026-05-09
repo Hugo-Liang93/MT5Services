@@ -46,9 +46,9 @@ def _sample_result() -> dict:
 @pytest.fixture()
 def backtest_api():
     import src.api  # noqa: F401
-    from src.api.backtest_routes import schemas as api_config
     from src.api.backtest_routes import config as config_routes
     from src.api.backtest_routes import jobs as jobs_routes
+    from src.api.backtest_routes import schemas as api_config
     from src.backtesting.data import store as runtime_store
 
     return SimpleNamespace(
@@ -286,7 +286,9 @@ def test_run_backtest_job_summary_uses_effective_simulation_mode(
             request_context={"panel": "backtest"},
         )
 
-        response = _run(backtest_api.jobs_routes.run_backtest(request, BackgroundTasks()))
+        response = _run(
+            backtest_api.jobs_routes.run_backtest(request, BackgroundTasks())
+        )
 
         assert response.success is True
         assert response.data["accepted"] is True
@@ -431,8 +433,20 @@ def test_get_param_space_template_uses_effective_timeframe_params(
     assert data["baseline_strategy_params"]["rsi_reversion__overbought"] == 72.0
     assert data["baseline_strategy_params"]["rsi_reversion__oversold"] == 25.0
     assert data["baseline_strategy_params"]["supertrend__adx_threshold"] == 21.0
-    assert data["param_space"]["rsi_reversion__overbought"] == [66.0, 69.0, 72.0, 75.0, 78.0]
-    assert data["param_space"]["supertrend__adx_threshold"] == [18.0, 19.0, 21.0, 23.0, 25.0]
+    assert data["param_space"]["rsi_reversion__overbought"] == [
+        66.0,
+        69.0,
+        72.0,
+        75.0,
+        78.0,
+    ]
+    assert data["param_space"]["supertrend__adx_threshold"] == [
+        18.0,
+        19.0,
+        21.0,
+        23.0,
+        25.0,
+    ]
 
 
 def test_get_param_space_template_auto_filters_by_timeframe(
@@ -467,6 +481,9 @@ def test_get_param_space_template_auto_filters_by_timeframe(
 
     assert response.success is True
     data = response.data
-    assert data["resolved_strategies"] == ["session_momentum", "multi_timeframe_confirm"]
+    assert data["resolved_strategies"] == [
+        "session_momentum",
+        "multi_timeframe_confirm",
+    ]
     assert "session_momentum__london_min_atr_pct" in data["param_space"]
     assert "rsi_reversion__overbought" not in data["param_space"]

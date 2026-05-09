@@ -10,7 +10,9 @@ from src.signals.contracts import (
 
 
 def test_validate_strategy_deployments_rejects_tf_specific_active_status() -> None:
-    with pytest.raises(ValueError, match="tf_specific strategy cannot use status=active"):
+    with pytest.raises(
+        ValueError, match="tf_specific strategy cannot use status=active"
+    ):
         validate_strategy_deployments(
             deployments={
                 "structured_session_breakout": StrategyDeployment(

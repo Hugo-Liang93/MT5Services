@@ -100,7 +100,25 @@ def test_write_runtime_task_status_normalizes_missing_details() -> None:
 
 
 def test_fetch_runtime_task_status_applies_filters_and_ordering() -> None:
-    cursor = _Cursor(rows=[("startup", "monitoring", "ts", "ready", None, None, None, 123, 1, 0, 0, None, {})])
+    cursor = _Cursor(
+        rows=[
+            (
+                "startup",
+                "monitoring",
+                "ts",
+                "ready",
+                None,
+                None,
+                None,
+                123,
+                1,
+                0,
+                0,
+                None,
+                {},
+            )
+        ]
+    )
 
     class _Writer:
         def connection(self):
@@ -115,7 +133,23 @@ def test_fetch_runtime_task_status_applies_filters_and_ordering() -> None:
         account_key="live:broker-live:1001",
     )
 
-    assert rows == [("startup", "monitoring", "ts", "ready", None, None, None, 123, 1, 0, 0, None, {})]
+    assert rows == [
+        (
+            "startup",
+            "monitoring",
+            "ts",
+            "ready",
+            None,
+            None,
+            None,
+            123,
+            1,
+            0,
+            0,
+            None,
+            {},
+        )
+    ]
     assert len(cursor.executed) == 1
     sql, params = cursor.executed[0]
     assert "FROM runtime_task_status WHERE 1=1" in sql

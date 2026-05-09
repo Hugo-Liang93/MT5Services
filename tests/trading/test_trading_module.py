@@ -50,12 +50,28 @@ class DummyTradingService:
 
     def precheck_trade(self, **kwargs):
         if kwargs.get("symbol") == "BLOCKED":
-            return {"verdict": "block", "symbol": kwargs["symbol"], "checks": [], "warnings": [], "blocked": True, "reason": "blocked"}
-        return {"verdict": "allow", "symbol": kwargs["symbol"], "checks": [], "warnings": [], "blocked": False}
+            return {
+                "verdict": "block",
+                "symbol": kwargs["symbol"],
+                "checks": [],
+                "warnings": [],
+                "blocked": True,
+                "reason": "blocked",
+            }
+        return {
+            "verdict": "allow",
+            "symbol": kwargs["symbol"],
+            "checks": [],
+            "warnings": [],
+            "blocked": False,
+        }
 
     def execute_trade_batch(self, trades, stop_on_error=False):
         return {
-            "results": [{"index": idx, "success": True, "result": {"ticket": idx + 1}} for idx, _ in enumerate(trades)],
+            "results": [
+                {"index": idx, "success": True, "result": {"ticket": idx + 1}}
+                for idx, _ in enumerate(trades)
+            ],
             "success_count": len(trades),
             "failure_count": 0,
             "stop_on_error": stop_on_error,
@@ -188,7 +204,9 @@ class DummyDBWriter:
 def test_trading_module_records_account_aware_trade_operations():
     module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
 
-    result = module.execute_trade(symbol="XAUUSD", volume=0.2, side="buy", order_kind="limit")
+    result = module.execute_trade(
+        symbol="XAUUSD", volume=0.2, side="buy", order_kind="limit"
+    )
 
     assert result["ticket"] == 123
     assert result["trace_id"]
@@ -257,7 +275,9 @@ def test_trading_module_generates_daily_summary_after_trade():
 def test_trading_module_dispatch_operation_routes_to_handler():
     module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
 
-    result = module.dispatch_operation("trade", {"symbol": "XAUUSD", "volume": 0.2, "side": "buy"})
+    result = module.dispatch_operation(
+        "trade", {"symbol": "XAUUSD", "volume": 0.2, "side": "buy"}
+    )
 
     assert result["ticket"] == 123
 
@@ -367,7 +387,9 @@ def test_trading_module_dispatch_trade_respects_risk_block():
     module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
 
     try:
-        module.dispatch_operation("trade", {"symbol": "BLOCKED", "volume": 0.1, "side": "buy"})
+        module.dispatch_operation(
+            "trade", {"symbol": "BLOCKED", "volume": 0.1, "side": "buy"}
+        )
         assert False, "expected risk block"
     except Exception as exc:
         assert "blocked" in str(exc)
@@ -414,7 +436,9 @@ def test_trading_module_can_apply_persisted_trade_control_state() -> None:
     assert state["reason"] == "restored"
 
 
-def test_trading_module_resolve_position_context_matches_by_comment_request_tag() -> None:
+def test_trading_module_resolve_position_context_matches_by_comment_request_tag() -> (
+    None
+):
     db = DummyDBWriter()
     module = TradingModule(registry=DummyRegistry(), db_writer=db)
     request_comment = build_trade_comment(
@@ -475,7 +499,9 @@ def test_trading_module_replays_successful_trade_when_request_id_reused() -> Non
     assert len(registry.trading_service.execute_calls) == 1
 
 
-def test_trading_module_replays_operator_action_by_idempotency_key_after_restart() -> None:
+def test_trading_module_replays_operator_action_by_idempotency_key_after_restart() -> (
+    None
+):
     db = DummyDBWriter()
     module = TradingModule(registry=DummyRegistry(), db_writer=db)
     request_payload = {
@@ -560,7 +586,9 @@ def test_trading_module_rejects_conflicting_operator_action_idempotency_reuse() 
     assert "different update_runtime_mode request" in str(exc_info.value)
 
 
-def test_trading_module_logs_operator_action_record(caplog: pytest.LogCaptureFixture) -> None:
+def test_trading_module_logs_operator_action_record(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
 
     with caplog.at_level("INFO"):
@@ -585,7 +613,9 @@ def test_trading_module_logs_operator_action_record(caplog: pytest.LogCaptureFix
     assert "action_id=act_log_1" in caplog.text
 
 
-def test_trading_module_caches_close_position_operator_action_for_memory_replay() -> None:
+def test_trading_module_caches_close_position_operator_action_for_memory_replay() -> (
+    None
+):
     module = TradingModule(registry=DummyRegistry(), db_writer=None)
 
     result = module.close_position(

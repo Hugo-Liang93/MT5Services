@@ -19,7 +19,7 @@ def test_risk_profile_sections_are_loaded_into_risk_config() -> None:
     payload = normalize_risk_config_payload(
         {"enabled": "true"},
         risk_profile_bindings_section={
-            "tick_martingale_probe": "recovery_budgeted",
+            "tick_recovery_probe": "recovery_budgeted",
             "structured_pa_breakout": "standard_kline",
         },
         risk_profile_sections={
@@ -38,7 +38,7 @@ def test_risk_profile_sections_are_loaded_into_risk_config() -> None:
     cfg = RiskConfig.model_validate(payload)
 
     assert cfg.risk_profile_bindings == {
-        "tick_martingale_probe": "recovery_budgeted",
+        "tick_recovery_probe": "recovery_budgeted",
         "structured_pa_breakout": "standard_kline",
     }
     profile = cfg.risk_profiles["recovery_budgeted"]
@@ -59,9 +59,7 @@ def test_risk_profile_pre_trade_rules_are_loaded() -> None:
         risk_profile_sections={
             "recovery_budgeted": {
                 "policy": "recovery_budgeted",
-                "pre_trade_rules": (
-                    "account_snapshot,margin_availability,protection"
-                ),
+                "pre_trade_rules": ("account_snapshot,margin_availability,protection"),
             }
         },
     )
@@ -169,7 +167,7 @@ def test_recovery_runtime_runner_section_is_loaded_into_risk_config() -> None:
             "demo_only": "true",
             "symbol": "XAUUSD",
             "direction": "buy",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "timeframe": "TICK",
             "base_volume": "0.01",
             "multiplier": "2.0",
@@ -212,7 +210,7 @@ def test_recovery_runtime_runner_section_is_loaded_into_risk_config() -> None:
     assert runner.demo_only is True
     assert runner.symbol == "XAUUSD"
     assert runner.direction == "buy"
-    assert runner.strategy == "tick_martingale_probe"
+    assert runner.strategy == "tick_recovery_probe"
     assert runner.max_steps == 1
     assert runner.max_total_volume == 0.03
     assert runner.max_next_volume == 0.02
@@ -252,3 +250,60 @@ def test_recovery_runtime_runner_rejects_profile_budget_fields() -> None:
                 "max_daily_recovery_loss_amount": "12.5",
             },
         )
+
+
+def test_recovery_runtime_runner_enforces_adr_014_cycle_caps_when_live_dispatch() -> (
+    None
+):
+    """ADR-014: enabled=true + dry_run=false 时 cycle 限流字段必须非 0。"""
+    base_payload = {
+        "enabled": "true",
+        "dry_run": "false",
+        "demo_only": "true",
+        "base_volume": "0.01",
+        "max_steps": "1",
+        "max_total_volume": "0.03",
+        "step_distance_points": "80",
+        "recovery_target_points": "5",
+    }
+
+    payload = normalize_risk_config_payload({"enabled": "true"}, {}, {}, base_payload)
+    with pytest.raises(ValueError, match="ADR-014"):
+        RiskConfig.model_validate(payload)
+
+    full_caps = {
+        **base_payload,
+        "max_cycles_per_day": "20",
+        "max_cycles_per_hour": "3",
+        "cooldown_after_cycle_close_seconds": "180",
+        "min_cycle_interval_seconds": "60",
+        "real_trade_calibration_min_samples": "50",
+    }
+    payload = normalize_risk_config_payload({"enabled": "true"}, {}, {}, full_caps)
+    cfg = RiskConfig.model_validate(payload)
+    assert cfg.recovery_runtime_runner.max_cycles_per_day == 20
+    assert cfg.recovery_runtime_runner.max_cycles_per_hour == 3
+    assert cfg.recovery_runtime_runner.cooldown_after_cycle_close_seconds == 180
+    assert cfg.recovery_runtime_runner.min_cycle_interval_seconds == 60
+    assert cfg.recovery_runtime_runner.real_trade_calibration_min_samples == 50
+
+
+def test_recovery_runtime_runner_skips_adr_014_caps_when_dry_run() -> None:
+    """ADR-014: dry_run=true 或 enabled=false 时不强制 cycle 限流（允许测试桩）。"""
+    payload = normalize_risk_config_payload(
+        {"enabled": "true"},
+        {},
+        {},
+        {"enabled": "true", "dry_run": "true"},
+    )
+    cfg = RiskConfig.model_validate(payload)
+    assert cfg.recovery_runtime_runner.dry_run is True
+    assert (
+        cfg.recovery_runtime_runner.max_cycles_per_day == 0
+    )  # 默认 0 允许，因为是 dry run
+
+    payload = normalize_risk_config_payload(
+        {"enabled": "true"}, {}, {}, {"enabled": "false"}
+    )
+    cfg = RiskConfig.model_validate(payload)
+    assert cfg.recovery_runtime_runner.enabled is False

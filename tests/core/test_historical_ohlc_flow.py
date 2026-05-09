@@ -9,11 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.clients.mt5_market import OHLC
-from src.market import MarketDataService
-from src.indicators.manager import UnifiedIndicatorManager
+from src.config.indicator_config import CacheStrategy
+from src.config.indicator_config import PipelineConfig as IndicatorPipelineConfig
 from src.indicators.engine.parallel_executor import ParallelExecutor
 from src.indicators.engine.pipeline import OptimizedPipeline
-from src.config.indicator_config import CacheStrategy, PipelineConfig as IndicatorPipelineConfig
+from src.indicators.manager import UnifiedIndicatorManager
+from src.market import MarketDataService
 from src.utils.event_store import ClaimedEvent
 
 
@@ -103,7 +104,9 @@ def _init_scope_stats(manager: UnifiedIndicatorManager) -> None:
     manager.state.scope_stats_lock = threading.Lock()
 
 
-def _set_min_bars_config(manager: UnifiedIndicatorManager, names: list[str], min_bars: int = 1) -> None:
+def _set_min_bars_config(
+    manager: UnifiedIndicatorManager, names: list[str], min_bars: int = 1
+) -> None:
     manager.config = SimpleNamespace(
         indicators=[
             SimpleNamespace(name=name, enabled=True, params={"min_bars": min_bars})
@@ -129,7 +132,9 @@ def test_market_service_loads_historical_window_from_storage() -> None:
         )
         for bar in bars
     ]
-    storage = SimpleNamespace(db=SimpleNamespace(fetch_ohlc_before=lambda *args, **kwargs: rows))
+    storage = SimpleNamespace(
+        db=SimpleNamespace(fetch_ohlc_before=lambda *args, **kwargs: rows)
+    )
     service.attach_storage(storage)
 
     result = service.get_ohlc_window("XAUUSD", "M1", bars[-1].time, limit=3)
@@ -178,8 +183,12 @@ def test_backfill_writes_closed_bars_into_cache_and_event_flow() -> None:
 
     service = SimpleNamespace(
         client=ClientStub(),
-        set_ohlc_closed=lambda symbol, timeframe, bars: cached_batches.append((symbol, timeframe, list(bars))),
-        enqueue_ohlc_closed_event=lambda symbol, timeframe, bar_time: events.append((symbol, timeframe, bar_time)),
+        set_ohlc_closed=lambda symbol, timeframe, bars: cached_batches.append(
+            (symbol, timeframe, list(bars))
+        ),
+        enqueue_ohlc_closed_event=lambda symbol, timeframe, bar_time: events.append(
+            (symbol, timeframe, bar_time)
+        ),
     )
     storage = SimpleNamespace(
         db=SimpleNamespace(
@@ -223,7 +232,9 @@ def test_backfill_writes_closed_bars_into_cache_and_event_flow() -> None:
     ):
         from src.ingestion.ingestor import BackgroundIngestor
 
-    ingestor = BackgroundIngestor(service=service, storage=storage, ingest_settings=settings)
+    ingestor = BackgroundIngestor(
+        service=service, storage=storage, ingest_settings=settings
+    )
     key = "XAUUSD:M1"
     ingestor._stop = threading.Event()
     ingestor._backfill_progress = {key: initial_time}
@@ -321,7 +332,9 @@ def test_write_back_results_publishes_confirmed_snapshot_for_m15() -> None:
     ]
 
 
-def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persisting_ohlc() -> None:
+def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persisting_ohlc() -> (
+    None
+):
     preview_events = []
     intrabar_bar = OHLC(
         symbol="XAUUSD",
@@ -344,9 +357,13 @@ def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persistin
 
     manager = _new_manager_stub()
     manager.market_service = ServiceStub()
-    manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 55.0}})
+    manager.pipeline = SimpleNamespace(
+        compute=lambda *args, **kwargs: {"rsi14": {"rsi": 55.0}}
+    )
     manager._get_max_lookback = lambda: 5
-    manager._select_indicator_names_for_history = lambda available_bars, indicator_names=None: ["rsi14"]
+    manager._select_indicator_names_for_history = (
+        lambda available_bars, indicator_names=None: ["rsi14"]
+    )
     manager.state.snapshot_listeners = [
         lambda symbol, timeframe, bar_time, indicators, scope: preview_events.append(
             (symbol, timeframe, bar_time, indicators, scope)
@@ -378,7 +395,9 @@ def test_indicator_manager_priority_indicator_names_are_deduplicated() -> None:
     assert manager.state.priority_indicator_groups == (("rsi14", "sma20"),)
 
 
-def test_indicator_manager_priority_indicator_groups_are_deduplicated_and_ordered() -> None:
+def test_indicator_manager_priority_indicator_groups_are_deduplicated_and_ordered() -> (
+    None
+):
     manager = _new_manager_stub()
 
     manager.set_priority_indicator_groups(
@@ -422,11 +441,15 @@ def test_indicator_manager_publishes_priority_confirmed_snapshots_per_group() ->
     manager.pipeline = SimpleNamespace(compute_staged=compute_staged)
     manager.state.priority_indicator_groups = (("rsi14",), ("sma20", "ema50"))
     manager._select_indicator_names_for_history = (
-        lambda available_bars, indicator_names=None: list(indicator_names) if indicator_names else ["rsi14", "sma20", "ema50"]
+        lambda available_bars, indicator_names=None: (
+            list(indicator_names) if indicator_names else ["rsi14", "sma20", "ema50"]
+        )
     )
     manager._group_indicator_values = lambda results: results
-    manager._publish_intrabar_snapshot = lambda symbol, timeframe, bar_time, indicators: published.append(
-        (symbol, timeframe, bar_time, indicators, "intrabar")
+    manager._publish_intrabar_snapshot = (
+        lambda symbol, timeframe, bar_time, indicators: published.append(
+            (symbol, timeframe, bar_time, indicators, "intrabar")
+        )
     )
 
     # Confirmed scope: no partial publishing
@@ -459,11 +482,15 @@ def test_indicator_manager_publishes_priority_confirmed_snapshots_per_group() ->
     assert published == []
 
 
-def test_indicator_manager_avoids_recomputing_priority_indicators_in_full_confirmed_batch() -> None:
+def test_indicator_manager_avoids_recomputing_priority_indicators_in_full_confirmed_batch() -> (
+    None
+):
     compute_calls = []
     bar_time = _bar(4).time
 
-    def compute_staged(symbol, timeframe, bars, indicators=None, on_level_complete=None):
+    def compute_staged(
+        symbol, timeframe, bars, indicators=None, on_level_complete=None
+    ):
         compute_calls.append(tuple(indicators or ()))
         payload = {}
         for indicator_name in indicators or ():
@@ -492,7 +519,9 @@ def test_indicator_manager_avoids_recomputing_priority_indicators_in_full_confir
     manager.state.priority_indicator_groups = (("rsi14",),)
     manager.market_service = _BarService()
     manager._select_indicator_names_for_history = (
-        lambda available_bars, indicator_names=None: list(indicator_names) if indicator_names else ["rsi14", "ema50"]
+        lambda available_bars, indicator_names=None: (
+            list(indicator_names) if indicator_names else ["rsi14", "ema50"]
+        )
     )
     manager._group_indicator_values = lambda results: results
     manager._write_back_results = lambda *args, **kwargs: None
@@ -517,10 +546,14 @@ def test_indicator_manager_batches_same_scope_events_into_single_window_load() -
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
         mark_event_completed_by_id=lambda event_id: completed.append(event_id),
-        mark_event_skipped_by_id=lambda event_id, reason: completed.append(("skipped", event_id, reason)),
+        mark_event_skipped_by_id=lambda event_id, reason: completed.append(
+            ("skipped", event_id, reason)
+        ),
         mark_event_failed_by_id=lambda *args, **kwargs: None,
     )
-    manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
+    manager.pipeline = SimpleNamespace(
+        compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}}
+    )
     manager._get_max_lookback = lambda: 5
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
     _set_min_bars_config(manager, ["rsi14"], min_bars=1)
@@ -529,8 +562,12 @@ def test_indicator_manager_batches_same_scope_events_into_single_window_load() -
 
     manager._process_closed_bar_events_batch(
         [
-            ClaimedEvent(event_id=11, symbol="XAUUSD", timeframe="M1", bar_time=bars[1].time),
-            ClaimedEvent(event_id=12, symbol="XAUUSD", timeframe="M1", bar_time=bars[2].time),
+            ClaimedEvent(
+                event_id=11, symbol="XAUUSD", timeframe="M1", bar_time=bars[1].time
+            ),
+            ClaimedEvent(
+                event_id=12, symbol="XAUUSD", timeframe="M1", bar_time=bars[2].time
+            ),
         ],
         durable_event=True,
     )
@@ -551,10 +588,14 @@ def test_indicator_manager_prefers_event_id_completion_for_claimed_events() -> N
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
         mark_event_completed_by_id=lambda event_id: completed_ids.append(event_id),
-        mark_event_skipped_by_id=lambda event_id, reason: completed_ids.append(("skipped", event_id, reason)),
+        mark_event_skipped_by_id=lambda event_id, reason: completed_ids.append(
+            ("skipped", event_id, reason)
+        ),
         mark_event_failed_by_id=lambda *args, **kwargs: None,
     )
-    manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
+    manager.pipeline = SimpleNamespace(
+        compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}}
+    )
     manager._get_max_lookback = lambda: 5
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
     _set_min_bars_config(manager, ["rsi14"], min_bars=1)
@@ -562,7 +603,11 @@ def test_indicator_manager_prefers_event_id_completion_for_claimed_events() -> N
     _init_scope_stats(manager)
 
     manager._process_closed_bar_events_batch(
-        [ClaimedEvent(event_id=99, symbol="XAUUSD", timeframe="M1", bar_time=bars[1].time)],
+        [
+            ClaimedEvent(
+                event_id=99, symbol="XAUUSD", timeframe="M1", bar_time=bars[1].time
+            )
+        ],
         durable_event=True,
     )
 
@@ -582,16 +627,26 @@ def test_indicator_manager_completes_early_history_event_without_retry() -> None
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
         mark_event_completed_by_id=lambda event_id: completed.append(event_id),
-        mark_event_failed_by_id=lambda event_id, error: failed.append((event_id, error)),
-        mark_event_skipped_by_id=lambda event_id, reason: completed.append(("skipped", event_id, reason)),
+        mark_event_failed_by_id=lambda event_id, error: failed.append(
+            (event_id, error)
+        ),
+        mark_event_skipped_by_id=lambda event_id, reason: completed.append(
+            ("skipped", event_id, reason)
+        ),
     )
-    manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
+    manager.pipeline = SimpleNamespace(
+        compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}}
+    )
     manager._get_max_lookback = lambda: 5
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
     manager._write_back_results = lambda *args, **kwargs: None
 
     manager._process_closed_bar_events_batch(
-        [ClaimedEvent(event_id=21, symbol="XAUUSD", timeframe="M1", bar_time=early_bar.time)],
+        [
+            ClaimedEvent(
+                event_id=21, symbol="XAUUSD", timeframe="M1", bar_time=early_bar.time
+            )
+        ],
         durable_event=True,
     )
 
@@ -599,7 +654,9 @@ def test_indicator_manager_completes_early_history_event_without_retry() -> None
     assert failed == []
 
 
-def test_indicator_manager_falls_back_to_per_event_window_when_batch_window_misses_bar() -> None:
+def test_indicator_manager_falls_back_to_per_event_window_when_batch_window_misses_bar() -> (
+    None
+):
     missing_from_batch = _bar(3)
     newer_bars = [_bar(20), _bar(21), _bar(22)]
     completed = []
@@ -619,10 +676,16 @@ def test_indicator_manager_falls_back_to_per_event_window_when_batch_window_miss
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
         mark_event_completed_by_id=lambda event_id: completed.append(event_id),
-        mark_event_skipped_by_id=lambda event_id, reason: completed.append(("skipped", event_id, reason)),
-        mark_event_failed_by_id=lambda event_id, error: failed.append((event_id, error)),
+        mark_event_skipped_by_id=lambda event_id, reason: completed.append(
+            ("skipped", event_id, reason)
+        ),
+        mark_event_failed_by_id=lambda event_id, error: failed.append(
+            (event_id, error)
+        ),
     )
-    manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
+    manager.pipeline = SimpleNamespace(
+        compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}}
+    )
     manager._get_max_lookback = lambda: 3
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
     _set_min_bars_config(manager, ["rsi14"], min_bars=1)
@@ -631,8 +694,18 @@ def test_indicator_manager_falls_back_to_per_event_window_when_batch_window_miss
 
     manager._process_closed_bar_events_batch(
         [
-            ClaimedEvent(event_id=31, symbol="XAUUSD", timeframe="M1", bar_time=missing_from_batch.time),
-            ClaimedEvent(event_id=32, symbol="XAUUSD", timeframe="M1", bar_time=newer_bars[-1].time),
+            ClaimedEvent(
+                event_id=31,
+                symbol="XAUUSD",
+                timeframe="M1",
+                bar_time=missing_from_batch.time,
+            ),
+            ClaimedEvent(
+                event_id=32,
+                symbol="XAUUSD",
+                timeframe="M1",
+                bar_time=newer_bars[-1].time,
+            ),
         ],
         durable_event=True,
     )
@@ -643,7 +716,9 @@ def test_indicator_manager_falls_back_to_per_event_window_when_batch_window_miss
     assert fallback_calls[1][2] == missing_from_batch.time
 
 
-def test_parallel_executor_wait_for_tasks_does_not_emit_false_timeout_warning(caplog) -> None:
+def test_parallel_executor_wait_for_tasks_does_not_emit_false_timeout_warning(
+    caplog,
+) -> None:
     executor = ParallelExecutor(max_workers=1, enable_cache=False)
     caplog.set_level(logging.WARNING)
 
@@ -701,10 +776,16 @@ def test_pipeline_logs_regular_completions_at_debug(caplog) -> None:
 
     assert result == {"rsi14": {"rsi": 50.0}}
     assert "Pipeline computation completed" in caplog.text
-    assert not any(record.levelname == "INFO" and "Pipeline computation completed" in record.message for record in caplog.records)
+    assert not any(
+        record.levelname == "INFO"
+        and "Pipeline computation completed" in record.message
+        for record in caplog.records
+    )
 
 
-def test_indicator_manager_computes_only_eligible_indicators_for_short_history() -> None:
+def test_indicator_manager_computes_only_eligible_indicators_for_short_history() -> (
+    None
+):
     manager = _new_manager_stub()
     manager.config = SimpleNamespace(
         indicators=[
@@ -716,5 +797,3 @@ def test_indicator_manager_computes_only_eligible_indicators_for_short_history()
     selected = manager._select_indicator_names_for_history(available_bars=20)
 
     assert selected == ["rsi14"]
-
-

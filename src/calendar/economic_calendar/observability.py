@@ -54,31 +54,75 @@ def stats(service) -> Dict[str, object]:
         "health_state": service.health_state(),
         "warming_up": str(service.is_warming_up()).lower(),
         "local_timezone": service.settings.local_timezone,
-        "refresh_interval_seconds": str(service.settings.near_term_refresh_interval_seconds),
-        "calendar_sync_interval_seconds": str(service.settings.calendar_sync_interval_seconds),
-        "near_term_refresh_interval_seconds": str(service.settings.near_term_refresh_interval_seconds),
-        "release_watch_interval_seconds": str(service.settings.release_watch_interval_seconds),
+        "refresh_interval_seconds": str(
+            service.settings.near_term_refresh_interval_seconds
+        ),
+        "calendar_sync_interval_seconds": str(
+            service.settings.calendar_sync_interval_seconds
+        ),
+        "near_term_refresh_interval_seconds": str(
+            service.settings.near_term_refresh_interval_seconds
+        ),
+        "release_watch_interval_seconds": str(
+            service.settings.release_watch_interval_seconds
+        ),
         "near_term_window_hours": str(service.settings.near_term_window_hours),
-        "release_watch_lookback_minutes": str(service.settings.release_watch_lookback_minutes),
-        "release_watch_lookahead_minutes": str(service.settings.release_watch_lookahead_minutes),
-        "bootstrap_started_at": service._scheduler_started_at.isoformat() if service._scheduler_started_at else None,
-        "bootstrap_deadline_at": service._bootstrap_deadline_at.isoformat() if service._bootstrap_deadline_at else None,
-        "last_refresh_at": service._last_refresh_at.isoformat() if service._last_refresh_at else None,
-        "last_refresh_started_at": service._last_refresh_started_at.isoformat() if service._last_refresh_started_at else None,
-        "last_refresh_completed_at": service._last_refresh_completed_at.isoformat() if service._last_refresh_completed_at else None,
+        "release_watch_lookback_minutes": str(
+            service.settings.release_watch_lookback_minutes
+        ),
+        "release_watch_lookahead_minutes": str(
+            service.settings.release_watch_lookahead_minutes
+        ),
+        "bootstrap_started_at": (
+            service._scheduler_started_at.isoformat()
+            if service._scheduler_started_at
+            else None
+        ),
+        "bootstrap_deadline_at": (
+            service._bootstrap_deadline_at.isoformat()
+            if service._bootstrap_deadline_at
+            else None
+        ),
+        "last_refresh_at": (
+            service._last_refresh_at.isoformat() if service._last_refresh_at else None
+        ),
+        "last_refresh_started_at": (
+            service._last_refresh_started_at.isoformat()
+            if service._last_refresh_started_at
+            else None
+        ),
+        "last_refresh_completed_at": (
+            service._last_refresh_completed_at.isoformat()
+            if service._last_refresh_completed_at
+            else None
+        ),
         "last_refresh_error": service._last_refresh_error,
-        "last_refresh_status": (service._last_refresh_summary or {}).get("status") if service._last_refresh_summary else None,
+        "last_refresh_status": (
+            (service._last_refresh_summary or {}).get("status")
+            if service._last_refresh_summary
+            else None
+        ),
         "refresh_in_progress": str(service._refresh_in_progress).lower(),
-        "last_refresh_duration_ms": str(service._last_refresh_duration_ms) if service._last_refresh_duration_ms is not None else None,
+        "last_refresh_duration_ms": (
+            str(service._last_refresh_duration_ms)
+            if service._last_refresh_duration_ms is not None
+            else None
+        ),
         "consecutive_failures": str(service._consecutive_failures),
-        "staleness_seconds": str(staleness_seconds) if staleness_seconds is not None else None,
+        "staleness_seconds": (
+            str(staleness_seconds) if staleness_seconds is not None else None
+        ),
         "stale": str(service.is_stale()).lower(),
         "default_countries": ",".join(service.settings.default_countries),
         "provider_status": service._provider_status,
         "job_status": {
             job_type: {
                 **state,
-                "next_run_at": service._next_run_at[job_type].isoformat() if service._next_run_at[job_type] else None,
+                "next_run_at": (
+                    service._next_run_at[job_type].isoformat()
+                    if service._next_run_at[job_type]
+                    else None
+                ),
                 "interval_seconds": str(service._job_interval(job_type)),
             }
             for job_type, state in service._job_state.items()

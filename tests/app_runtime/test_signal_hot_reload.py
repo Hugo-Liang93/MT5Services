@@ -17,7 +17,9 @@ class DummyConfigManager:
             self.callback = None
 
 
-def test_signal_hot_reload_refreshes_ingestor_market_data_dependencies(monkeypatch) -> None:
+def test_signal_hot_reload_refreshes_ingestor_market_data_dependencies(
+    monkeypatch,
+) -> None:
     manager = DummyConfigManager()
     monkeypatch.setattr(
         "src.app_runtime.factories.signals.get_file_config_manager",

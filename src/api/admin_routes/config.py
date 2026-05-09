@@ -32,13 +32,19 @@ def _normalize_indicator_items(payload: Any) -> List[Dict[str, Any]]:
 
 
 @router.get("/config", response_model=ApiResponse[ConfigView])
-def admin_config(section: Optional[str] = Query(default=None, description="按 section 过滤，例如 trading、signal、risk、api。")) -> ApiResponse[ConfigView]:
+def admin_config(
+    section: Optional[str] = Query(
+        default=None, description="按 section 过滤，例如 trading、signal、risk、api。"
+    )
+) -> ApiResponse[ConfigView]:
     effective = get_effective_config_snapshot()
     provenance = get_config_provenance_snapshot()
     if section:
         effective = {key: value for key, value in effective.items() if key == section}
         provenance = {key: value for key, value in provenance.items() if key == section}
-    return ApiResponse.success_response(ConfigView(effective=effective, provenance=provenance, files=list(CONFIG_FILES)))
+    return ApiResponse.success_response(
+        ConfigView(effective=effective, provenance=provenance, files=list(CONFIG_FILES))
+    )
 
 
 @router.get("/config/signal", response_model=ApiResponse[Dict[str, Any]])
@@ -53,7 +59,9 @@ def admin_config_risk() -> ApiResponse[Dict[str, Any]]:
 
 @router.get("/config/indicators", response_model=ApiResponse[IndicatorsConfigView])
 def admin_config_indicators(
-    display_only: bool = Query(default=False, description="仅返回 display 标记的指标。"),
+    display_only: bool = Query(
+        default=False, description="仅返回 display 标记的指标。"
+    ),
     indicator_mgr: UnifiedIndicatorManager = Depends(deps.get_indicator_manager),
 ) -> ApiResponse[IndicatorsConfigView]:
     indicators = _normalize_indicator_items(load_json_config("indicators.json"))

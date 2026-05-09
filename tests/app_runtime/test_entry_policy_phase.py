@@ -40,7 +40,10 @@ class TestEntryPolicyPhase:
     def test_price_action_resolves_to_configured_policy(self):
         reset_entry_policy_config_cache()
         registry = build_entry_policy_registry(get_entry_policy_config())
-        assert registry.resolve("structured_price_action", "M15").name == "oco_pullback_breakout"
+        assert (
+            registry.resolve("structured_price_action", "M15").name
+            == "oco_pullback_breakout"
+        )
         assert registry.resolve("structured_price_action", "M5").name == "pullback"
 
     def test_describe_includes_registered_policies(self):

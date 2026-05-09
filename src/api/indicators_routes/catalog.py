@@ -23,7 +23,10 @@ async def list_available_indicators(
         indicators = [info["name"] for info in manager.list_indicators()]
         return ApiResponse.success_response(
             data=indicators,
-            metadata={"count": len(indicators), "source": "optimized_indicator_service"},
+            metadata={
+                "count": len(indicators),
+                "source": "optimized_indicator_service",
+            },
         )
     except Exception as exc:
         logger.error("Failed to list indicators: %s", exc)
@@ -43,7 +46,10 @@ async def get_performance_stats(
         stats = manager.get_performance_stats()
         return ApiResponse.success_response(
             data=stats,
-            metadata={"source": "optimized_indicator_service", "timestamp": datetime.now().isoformat()},
+            metadata={
+                "source": "optimized_indicator_service",
+                "timestamp": datetime.now().isoformat(),
+            },
         )
     except Exception as exc:
         logger.error("Failed to get performance stats: %s", exc)
@@ -84,7 +90,11 @@ async def get_dependency_graph(
         graph = manager.get_dependency_graph(format)
         return ApiResponse.success_response(
             data={"graph": graph, "format": format},
-            metadata={"source": "dependency_manager", "format": format, "timestamp": datetime.now().isoformat()},
+            metadata={
+                "source": "dependency_manager",
+                "format": format,
+                "timestamp": datetime.now().isoformat(),
+            },
         )
     except Exception as exc:
         logger.error("Failed to get dependency graph: %s", exc)

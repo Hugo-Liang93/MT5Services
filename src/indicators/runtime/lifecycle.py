@@ -5,9 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from . import event_io
-from . import event_loops
-from . import intrabar_queue
+from . import event_io, event_loops, intrabar_queue
 
 if False:  # pragma: no cover
     from ..manager import UnifiedIndicatorManager

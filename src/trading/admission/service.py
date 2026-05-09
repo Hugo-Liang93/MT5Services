@@ -316,9 +316,10 @@ class TradeAdmissionService:
                     details=quote_health,
                 )
             )
-        if bool(market_data_health.get("blocking", False)) or str(
-            market_data_health.get("status") or ""
-        ).lower() == "critical":
+        if (
+            bool(market_data_health.get("blocking", False))
+            or str(market_data_health.get("status") or "").lower() == "critical"
+        ):
             reasons.append(
                 _build_reason(
                     code=REASON_MARKET_DATA_UNHEALTHY,
@@ -376,6 +377,14 @@ class TradeAdmissionService:
                     },
                 )
             )
+
+        # ADR-014: combined_exposure 双轨预算检查 — 让信号轨提前感知恢复轨占用，
+        # 避免 broker 端被 max_volume_per_symbol 拒后才回滚 trace。
+        combined_exposure = self._evaluate_combined_exposure(
+            payload, requested_operation
+        )
+        if combined_exposure is not None:
+            reasons.append(combined_exposure)
 
         decision = str(assessment_dict.get("verdict") or "allow").lower()
         if any(reason["stage"] == "market_tradability" for reason in reasons) and (
@@ -472,3 +481,71 @@ class TradeAdmissionService:
             "scope": scope,
             "source_assessment": assessment_dict,
         }
+
+    def _evaluate_combined_exposure(
+        self,
+        payload: Mapping[str, Any],
+        requested_operation: str,
+    ) -> dict[str, Any] | None:
+        """ADR-014: 检查信号轨新单与恢复轨已占用的合并 lots 是否超额。
+
+        仅对开仓类操作（execute_trade / open_position / signal_*）做检查；
+        平仓 / 修改类操作不检查。返回 reason dict 表示阻断，None 表示通过。
+        """
+        op_lower = str(requested_operation or "").strip().lower()
+        is_open_op = (
+            "open" in op_lower or "execute_trade" in op_lower or "signal" in op_lower
+        )
+        if not is_open_op:
+            return None
+        try:
+            new_volume = float(payload.get("volume") or 0.0)
+        except (TypeError, ValueError):
+            new_volume = 0.0
+        if new_volume <= 0:
+            return None
+        symbol = str(payload.get("symbol") or "").strip()
+        if not symbol:
+            return None
+        # 通过 runtime_views 拿投影 + limits（risk_config 已注入）
+        getter = getattr(self._runtime_views, "combined_exposure_payload", None)
+        if not callable(getter):
+            return None
+        exposure = _safe_dict(getter())
+        if exposure.get("source_status") != "ok":
+            return None  # position_manager 不可用时不强制 deny（透明降级）
+        limits = _safe_dict(exposure.get("limits"))
+        max_per_symbol = limits.get("max_volume_per_symbol")
+        max_net_per_symbol = limits.get("max_net_lots_per_symbol")
+        by_symbol = _safe_dict(exposure.get("by_symbol")).get(symbol, {})
+        try:
+            current_total = float(by_symbol.get("total_lots") or 0.0)
+        except (TypeError, ValueError):
+            current_total = 0.0
+        future_total = current_total + new_volume
+        breached: list[str] = []
+        if max_per_symbol is not None and future_total > float(max_per_symbol):
+            breached.append("max_volume_per_symbol")
+        if max_net_per_symbol is not None and future_total > float(max_net_per_symbol):
+            breached.append("max_net_lots_per_symbol")
+        if not breached:
+            return None
+        return _build_reason(
+            code="combined_exposure_exceeded",
+            stage="account_risk",
+            message=(
+                "combined recovery+signal exposure would breach limits: "
+                + ",".join(breached)
+            ),
+            details={
+                "symbol": symbol,
+                "new_volume": round(new_volume, 6),
+                "current_total_lots": round(current_total, 6),
+                "future_total_lots": round(future_total, 6),
+                "recovery_lots": exposure.get("recovery_lots"),
+                "signal_lots": exposure.get("signal_lots"),
+                "limits": limits,
+                "breached_limits": breached,
+                "recovery_active_cycle_id": exposure.get("recovery_active_cycle_id"),
+            },
+        )

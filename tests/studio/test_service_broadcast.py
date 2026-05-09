@@ -5,7 +5,9 @@ import asyncio
 from src.studio.service import StudioService
 
 
-def test_broadcast_drops_message_when_subscriber_queue_is_full_without_loop_error() -> None:
+def test_broadcast_drops_message_when_subscriber_queue_is_full_without_loop_error() -> (
+    None
+):
     studio = StudioService()
     loop = asyncio.new_event_loop()
     errors: list[dict[str, object]] = []

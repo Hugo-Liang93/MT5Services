@@ -71,4 +71,3 @@ class OwnedThreadLifecycle:
                 timeout,
             )
         return stopped
-

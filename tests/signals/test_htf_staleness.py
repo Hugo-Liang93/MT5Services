@@ -111,9 +111,7 @@ class TestHTFStaleness:
             }
         )
         runtime, _ = _make_runtime(source=source)
-        result = runtime._resolve_htf_indicators(
-            "XAUUSD", "M5", {"H1": ["adx14"]}
-        )
+        result = runtime._resolve_htf_indicators("XAUUSD", "M5", {"H1": ["adx14"]})
         assert "H1" in result
         assert result["H1"]["adx14"]["adx"] == 25.0
 
@@ -130,9 +128,7 @@ class TestHTFStaleness:
             }
         )
         runtime, _ = _make_runtime(source=source)
-        result = runtime._resolve_htf_indicators(
-            "XAUUSD", "M5", {"H1": ["adx14"]}
-        )
+        result = runtime._resolve_htf_indicators("XAUUSD", "M5", {"H1": ["adx14"]})
         assert result == {}
 
     def test_no_bar_time_still_injected(self):
@@ -143,8 +139,6 @@ class TestHTFStaleness:
             }
         )
         runtime, _ = _make_runtime(source=source)
-        result = runtime._resolve_htf_indicators(
-            "XAUUSD", "M5", {"H1": ["adx14"]}
-        )
+        result = runtime._resolve_htf_indicators("XAUUSD", "M5", {"H1": ["adx14"]})
         assert "H1" in result
         assert result["H1"]["adx14"]["adx"] == 25.0

@@ -2,12 +2,13 @@
 否则下一次 mode 切换回 full/observe 时拿到的还是同一个已 shutdown 的 executor，
 RuntimeError: cannot schedule new futures after shutdown 把指标主链永久毒化。
 """
+
 from __future__ import annotations
 
 import pytest
 
-from src.indicators.engine.pipeline import OptimizedPipeline, PipelineConfig
 from src.indicators.engine import parallel_executor as pe_module
+from src.indicators.engine.pipeline import OptimizedPipeline, PipelineConfig
 
 
 def test_pipeline_shutdown_clears_global_executor_to_allow_reuse() -> None:

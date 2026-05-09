@@ -2,6 +2,7 @@
 
 CrossTFFeatureProvider 单元测试。
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -10,10 +11,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.research.features.protocol import FeatureRole, ProviderDataRequirement
-from src.research.features.cross_tf import CrossTFFeatureProvider
 from src.research.core.config import CrossTFProviderConfig
-
+from src.research.features.cross_tf import CrossTFFeatureProvider
+from src.research.features.protocol import FeatureRole, ProviderDataRequirement
 
 # ---------------------------------------------------------------------------
 # Mock DataMatrix helpers
@@ -33,7 +33,9 @@ def _make_matrix(
     return m
 
 
-def _make_child_times(n: int, start_ts: int = 0, step_sec: int = 1800) -> List[datetime]:
+def _make_child_times(
+    n: int, start_ts: int = 0, step_sec: int = 1800
+) -> List[datetime]:
     """构造 n 个 M30 子 TF bar 时间戳（每 30 分钟）。"""
     return [
         datetime.fromtimestamp(start_ts + i * step_sec, tz=timezone.utc)
@@ -41,7 +43,9 @@ def _make_child_times(n: int, start_ts: int = 0, step_sec: int = 1800) -> List[d
     ]
 
 
-def _make_parent_times(n: int, start_ts: int = 0, step_sec: int = 14400) -> List[datetime]:
+def _make_parent_times(
+    n: int, start_ts: int = 0, step_sec: int = 14400
+) -> List[datetime]:
     """构造 n 个 H4 父 TF bar 时间戳（每 4 小时）。"""
     return [
         datetime.fromtimestamp(start_ts + i * step_sec, tz=timezone.utc)
@@ -222,9 +226,15 @@ class TestForwardFillAlignment:
         key = ("cross_tf", "parent_trend_dir")
         vals = result[key]
         assert len(vals) == 3
-        assert vals[0] == pytest.approx(1.0)   # child_ts=0: searchsorted=0, clip to 0 → parent[0]
-        assert vals[1] == pytest.approx(-1.0)  # child_ts=14400: searchsorted=2, -1=1 → parent[1]
-        assert vals[2] == pytest.approx(-1.0)  # child_ts=28800: searchsorted=2, -1=1 → parent[1]
+        assert vals[0] == pytest.approx(
+            1.0
+        )  # child_ts=0: searchsorted=0, clip to 0 → parent[0]
+        assert vals[1] == pytest.approx(
+            -1.0
+        )  # child_ts=14400: searchsorted=2, -1=1 → parent[1]
+        assert vals[2] == pytest.approx(
+            -1.0
+        )  # child_ts=28800: searchsorted=2, -1=1 → parent[1]
 
 
 # ---------------------------------------------------------------------------

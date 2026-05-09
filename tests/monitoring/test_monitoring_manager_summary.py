@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from src.monitoring.manager import MonitoringManager
 
-
 # ── §0u P2 回归：MonitoringManager._summary_status_value 把 failed 行漂白 ──
 
 
@@ -23,17 +22,13 @@ def test_summary_status_value_treats_failed_row_without_count_as_failure() -> No
         ]
     }
     value = MonitoringManager._summary_status_value(summary_payload)
-    assert value < 1.0, (
-        f"failed 行存在必须返回 <1.0（降级值）；got {value}"
-    )
+    assert value < 1.0, f"failed 行存在必须返回 <1.0（降级值）；got {value}"
 
 
 def test_summary_status_value_returns_healthy_when_no_failed_rows() -> None:
     """无 failed 行时正常返 1.0，确认契约对称。"""
     payload = {
-        "summary": [
-            {"code": "x", "status": "ok", "severity": "info", "message": ""}
-        ]
+        "summary": [{"code": "x", "status": "ok", "severity": "info", "message": ""}]
     }
     assert MonitoringManager._summary_status_value(payload) == 1.0
 
@@ -82,9 +77,9 @@ def test_check_execution_quality_records_metric_when_all_dispatches_failed() -> 
     manager._check_execution_quality(executor, "trading_executor")
 
     matches = [r for r in health.records if r[1] == "execution_failure_rate"]
-    assert matches, (
-        f"全失败场景必须仍记录 execution_failure_rate；records={health.records!r}"
-    )
+    assert (
+        matches
+    ), f"全失败场景必须仍记录 execution_failure_rate；records={health.records!r}"
     component, metric, value = matches[0]
     assert value == 1.0, f"全失败场景 failure_rate 必须 = 1.0；got {value}"
 
@@ -193,9 +188,7 @@ def test_pending_runtime_down_metric_triggers_critical_alert(tmp_path) -> None:
         f"pending_runtime_down=1.0 必须触发 critical；got status={metric['status']!r} "
         f"alert_level={metric['alert_level']!r}"
     )
-    assert metric["overall_impact"] == "blocking", (
-        "pending fill chain 断 = 阻断指标"
-    )
-    assert report["overall_status"] == "critical", (
-        f"挂单链路死必须把 overall_status 抬到 critical；got {report['overall_status']!r}"
-    )
+    assert metric["overall_impact"] == "blocking", "pending fill chain 断 = 阻断指标"
+    assert (
+        report["overall_status"] == "critical"
+    ), f"挂单链路死必须把 overall_status 抬到 critical；got {report['overall_status']!r}"

@@ -6,8 +6,7 @@ import random
 import time as time_module
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
-from typing import Any, Dict, Iterable, List, Optional, runtime_checkable
-from typing import Protocol
+from typing import Any, Dict, Iterable, List, Optional, Protocol, runtime_checkable
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -155,7 +154,11 @@ def _classify_market_session(value: datetime) -> tuple[str, bool, bool, bool]:
     is_europe = _within_session(hour, *_EUROPE_SESSION)
     is_us = _within_session(hour, *_US_SESSION)
 
-    active = [name for name, enabled in (("asia", is_asia), ("europe", is_europe), ("us", is_us)) if enabled]
+    active = [
+        name
+        for name, enabled in (("asia", is_asia), ("europe", is_europe), ("us", is_us))
+        if enabled
+    ]
     if not active:
         return SESSION_BUCKET_OFF_HOURS, False, False, False
     if len(active) == 1:
@@ -217,9 +220,15 @@ class EconomicCalendarEvent:
             self.is_europe_session = False
             self.is_us_session = False
         else:
-            session_bucket, is_asia, is_europe, is_us = _classify_market_session(self.scheduled_at)
-            self.scheduled_at_local = self.scheduled_at.astimezone(local_tz).replace(tzinfo=None)
-            self.scheduled_at_release = self.scheduled_at.astimezone(release_tz).replace(tzinfo=None)
+            session_bucket, is_asia, is_europe, is_us = _classify_market_session(
+                self.scheduled_at
+            )
+            self.scheduled_at_local = self.scheduled_at.astimezone(local_tz).replace(
+                tzinfo=None
+            )
+            self.scheduled_at_release = self.scheduled_at.astimezone(
+                release_tz
+            ).replace(tzinfo=None)
             self.session_bucket = session_bucket
             self.is_asia_session = is_asia
             self.is_europe_session = is_europe
@@ -324,7 +333,9 @@ class EconomicCalendarEvent:
             first_seen_at=_coerce_datetime(row[27]),
             last_seen_at=_coerce_datetime(row[28]),
             released_at=_coerce_datetime(row[29]) if row[29] is not None else None,
-            last_value_check_at=_coerce_datetime(row[30]) if row[30] is not None else None,
+            last_value_check_at=(
+                _coerce_datetime(row[30]) if row[30] is not None else None
+            ),
             raw_payload=row[31] or {},
             ingested_at=_coerce_datetime(row[32]),
             last_updated=_coerce_datetime(row[33]),
@@ -371,8 +382,12 @@ class _BaseHttpClient:
             "User-Agent": "MT5Services/1.0",
         }
 
-    def _request_json(self, base_url: str, params: Dict[str, Any]) -> Dict[str, Any] | List[Any]:
-        filtered = {key: value for key, value in params.items() if value not in (None, "", [])}
+    def _request_json(
+        self, base_url: str, params: Dict[str, Any]
+    ) -> Dict[str, Any] | List[Any]:
+        filtered = {
+            key: value for key, value in params.items() if value not in (None, "", [])
+        }
         url = f"{base_url}?{urlencode(filtered, doseq=True)}"
         attempts = max(1, int(self.settings.request_retries))
         timeout_seconds = max(1.0, float(self.settings.request_timeout_seconds))
@@ -384,13 +399,19 @@ class _BaseHttpClient:
                     payload = response.read().decode("utf-8")
                 return json.loads(payload)
             except json.JSONDecodeError as exc:
-                raise EconomicCalendarError(f"Invalid JSON response from {url}: {exc}") from exc
+                raise EconomicCalendarError(
+                    f"Invalid JSON response from {url}: {exc}"
+                ) from exc
             except Exception as exc:
                 last_error = exc
                 if attempt >= attempts:
                     break
-                backoff = max(0.1, float(self.settings.retry_backoff_seconds)) * (2 ** (attempt - 1))
-                jitter = random.uniform(0.0, max(0.0, float(self.settings.refresh_jitter_seconds)))
+                backoff = max(0.1, float(self.settings.retry_backoff_seconds)) * (
+                    2 ** (attempt - 1)
+                )
+                jitter = random.uniform(
+                    0.0, max(0.0, float(self.settings.refresh_jitter_seconds))
+                )
                 sleep_seconds = backoff + jitter
                 logger.warning(
                     "Economic calendar request failed (%s/%s) for %s, retrying in %.2fs: %s",
@@ -401,7 +422,9 @@ class _BaseHttpClient:
                     exc,
                 )
                 time_module.sleep(sleep_seconds)
-        raise EconomicCalendarError(f"Request failed for {url}: {last_error}") from last_error
+        raise EconomicCalendarError(
+            f"Request failed for {url}: {last_error}"
+        ) from last_error
 
 
 class TradingEconomicsCalendarClient(_BaseHttpClient):
@@ -464,10 +487,14 @@ class TradingEconomicsCalendarClient(_BaseHttpClient):
                         country=_as_text(item.get("Country")),
                         category=_as_text(item.get("Category")),
                         currency=_as_text(item.get("Currency")),
-                        reference=_as_text(item.get("Reference") or item.get("ReferenceDate")),
+                        reference=_as_text(
+                            item.get("Reference") or item.get("ReferenceDate")
+                        ),
                         actual=_as_text(item.get("Actual")),
                         previous=_as_text(item.get("Previous")),
-                        forecast=_as_text(item.get("Forecast") or item.get("TEForecast")),
+                        forecast=_as_text(
+                            item.get("Forecast") or item.get("TEForecast")
+                        ),
                         revised=_as_text(item.get("Revised")),
                         importance=_importance_to_int(item.get("Importance")),
                         unit=_as_text(item.get("Unit")),
@@ -496,12 +523,26 @@ class FredCalendarClient(_BaseHttpClient):
         return bool(self.settings.fred_api_key)
 
     def _should_include_release(self, release_id: str, release_name: str) -> bool:
-        whitelist_ids = {item.strip() for item in self.settings.fred_release_whitelist_ids if item.strip()}
-        whitelist_keywords = [item.strip().lower() for item in self.settings.fred_release_whitelist_keywords if item.strip()]
-        blacklist_keywords = [item.strip().lower() for item in self.settings.fred_release_blacklist_keywords if item.strip()]
+        whitelist_ids = {
+            item.strip()
+            for item in self.settings.fred_release_whitelist_ids
+            if item.strip()
+        }
+        whitelist_keywords = [
+            item.strip().lower()
+            for item in self.settings.fred_release_whitelist_keywords
+            if item.strip()
+        ]
+        blacklist_keywords = [
+            item.strip().lower()
+            for item in self.settings.fred_release_blacklist_keywords
+            if item.strip()
+        ]
 
         normalized_name = release_name.lower()
-        if blacklist_keywords and any(keyword in normalized_name for keyword in blacklist_keywords):
+        if blacklist_keywords and any(
+            keyword in normalized_name for keyword in blacklist_keywords
+        ):
             return False
 
         # Empty whitelist means no allow-list filtering.
@@ -510,7 +551,9 @@ class FredCalendarClient(_BaseHttpClient):
 
         if whitelist_ids and release_id in whitelist_ids:
             return True
-        if whitelist_keywords and any(keyword in normalized_name for keyword in whitelist_keywords):
+        if whitelist_keywords and any(
+            keyword in normalized_name for keyword in whitelist_keywords
+        ):
             return True
         return False
 
@@ -534,7 +577,9 @@ class FredCalendarClient(_BaseHttpClient):
                 "include_release_dates_with_no_data": "true",
             },
         )
-        release_dates = response.get("release_dates", []) if isinstance(response, dict) else []
+        release_dates = (
+            response.get("release_dates", []) if isinstance(response, dict) else []
+        )
         events: List[EconomicCalendarEvent] = []
         for item in release_dates:
             try:

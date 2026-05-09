@@ -152,7 +152,8 @@ class _MarketService:
         return SimpleNamespace(
             bid=3200.0,
             ask=3200.5,
-            time=datetime.now(timezone.utc) - timedelta(seconds=self._quote_age_seconds),
+            time=datetime.now(timezone.utc)
+            - timedelta(seconds=self._quote_age_seconds),
         )
 
 
@@ -189,7 +190,9 @@ def test_account_risk_state_projector_builds_local_risk_snapshot() -> None:
     assert projector.status()["db_degraded"] is False
 
 
-def test_account_risk_state_projector_does_not_flag_open_market_quote_as_stale() -> None:
+def test_account_risk_state_projector_does_not_flag_open_market_quote_as_stale() -> (
+    None
+):
     projector = AccountRiskStateProjector(
         write_fn=lambda batch: None,
         runtime_identity=_runtime_identity(),

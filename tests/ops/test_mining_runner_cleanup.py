@@ -5,6 +5,7 @@ context manager)，但 CLI 入口仍然裸构造 deps = build_research_data_deps
 而不走 with —— writer 连接池 + indicator pipeline 线程池在 CLI 路径上持续
 泄漏。本 sentinel 锁定 with 包裹模式，防回归。
 """
+
 from __future__ import annotations
 
 import inspect

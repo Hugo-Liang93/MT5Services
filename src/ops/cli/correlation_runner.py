@@ -14,13 +14,16 @@
     复用 BacktestEngine 跑完整回测，从 signal_evaluations 提取各策略的方向序列，
     然后调用 analyze_strategy_correlation() 纯函数。
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 
 import warnings
 
@@ -32,8 +35,9 @@ logging.disable(logging.CRITICAL)
 
 from collections import defaultdict
 from datetime import datetime, timezone
-from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict, List, Optional
+
+from src.utils.timezone import parse_iso_to_utc
 
 
 def _collect_signal_directions(
@@ -58,7 +62,9 @@ def _collect_signal_directions(
     from src.backtesting.models import BacktestConfig
 
     _OPTIMIZER_ONLY = {"search_mode", "max_combinations", "sort_metric"}
-    defaults = {k: v for k, v in get_backtest_defaults().items() if k not in _OPTIMIZER_ONLY}
+    defaults = {
+        k: v for k, v in get_backtest_defaults().items() if k not in _OPTIMIZER_ONLY
+    }
     signal_config = _load_signal_config_snapshot()
 
     strategy_sessions: dict = {}
@@ -113,9 +119,7 @@ def _collect_signal_directions(
 
     # 初始化方向矩阵
     strategies: set = set(e.strategy for e in evaluations)
-    directions: Dict[str, List[int]] = {
-        s: [0] * n_bars for s in strategies
-    }
+    directions: Dict[str, List[int]] = {s: [0] * n_bars for s in strategies}
 
     for e in evaluations:
         idx = bar_time_index[e.bar_time]
@@ -142,7 +146,9 @@ def _render_correlation_result(
     # 高相关对
     high_pairs = analysis.high_correlation_pairs
     if high_pairs:
-        lines.append(f"\n--- High Correlation Pairs (>{analysis.correlation_threshold:.2f}) ---")
+        lines.append(
+            f"\n--- High Correlation Pairs (>{analysis.correlation_threshold:.2f}) ---"
+        )
         lines.append(
             f"  {'Strategy A':<28} {'Strategy B':<28} {'Corr':>6} {'Overlap':>8} {'Agree%':>7}"
         )
@@ -157,9 +163,7 @@ def _render_correlation_result(
     # 推荐权重
     lines.append(f"\n--- Recommended Strategy Weights ---")
     lines.append(f"  (1.00 = keep as-is, <1.00 = reduce due to redundancy)")
-    for name, weight in sorted(
-        analysis.strategy_weights.items(), key=lambda x: x[1]
-    ):
+    for name, weight in sorted(analysis.strategy_weights.items(), key=lambda x: x[1]):
         marker = " *** REDUCE" if weight < 1.0 else ""
         lines.append(f"  {name:<28} weight={weight:.2f}{marker}")
 
@@ -172,11 +176,14 @@ def _render_correlation_result(
             w = analysis.strategy_weights[name]
             # 找到它与哪些策略高度相关
             corr_with = [
-                p for p in high_pairs
-                if p.strategy_a == name or p.strategy_b == name
+                p for p in high_pairs if p.strategy_a == name or p.strategy_b == name
             ]
             if corr_with:
-                partner = corr_with[0].strategy_b if corr_with[0].strategy_a == name else corr_with[0].strategy_a
+                partner = (
+                    corr_with[0].strategy_b
+                    if corr_with[0].strategy_a == name
+                    else corr_with[0].strategy_a
+                )
                 lines.append(
                     f"    {name} → {w:.2f} (correlated with {partner}, r={corr_with[0].correlation:.3f})"
                 )
@@ -197,9 +204,7 @@ def main() -> None:
         required=True,
         help="显式指定分析使用哪个环境数据库",
     )
-    parser.add_argument(
-        "--tf", required=True, help="Timeframe(s), comma-separated"
-    )
+    parser.add_argument("--tf", required=True, help="Timeframe(s), comma-separated")
     parser.add_argument("--start", default="2025-12-30")
     parser.add_argument("--end", default="2026-03-30")
     parser.add_argument(
@@ -239,7 +244,9 @@ def main() -> None:
         }
 
         if len(active_directions) < 2:
-            print(f"\n{tf}: Only {len(active_directions)} active strategies. Need at least 2.")
+            print(
+                f"\n{tf}: Only {len(active_directions)} active strategies. Need at least 2."
+            )
             continue
 
         sys.stderr.write(

@@ -12,16 +12,17 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
-from src.clients.mt5_market import MT5MarketClient
-from src.clients.mt5_market import Tick
 from src.clients.base import MT5BaseClient
+from src.clients.mt5_market import MT5MarketClient, Tick
 from src.clients.mt5_trading import MT5TradingClient
 from src.market import MarketDataService
 from src.persistence.validator import DataValidator
 from src.utils.event_store import ClaimedEvent, LocalEventStore
 
 
-def test_event_store_marks_event_permanently_failed_after_three_retries(tmp_path: Path) -> None:
+def test_event_store_marks_event_permanently_failed_after_three_retries(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "events.db"
     event_store = LocalEventStore(str(db_path))
     bar_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -47,7 +48,9 @@ def test_event_store_tracks_skipped_outcomes(tmp_path: Path) -> None:
     bar_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     event_id = event_store.publish_event("XAUUSD", "M1", bar_time)
-    assert event_store.claim_next_event() == ClaimedEvent(event_id=event_id, symbol="XAUUSD", timeframe="M1", bar_time=bar_time)
+    assert event_store.claim_next_event() == ClaimedEvent(
+        event_id=event_id, symbol="XAUUSD", timeframe="M1", bar_time=bar_time
+    )
     assert event_store.mark_event_skipped_by_id(event_id, "insufficient_history")
 
     stats = event_store.get_stats()
@@ -69,7 +72,9 @@ def test_event_store_supports_claim_and_completion_by_event_id(tmp_path: Path) -
     event_id = event_store.publish_event("XAUUSD", "M1", bar_time)
     claimed = event_store.claim_next_event()
 
-    assert claimed == ClaimedEvent(event_id=event_id, symbol="XAUUSD", timeframe="M1", bar_time=bar_time)
+    assert claimed == ClaimedEvent(
+        event_id=event_id, symbol="XAUUSD", timeframe="M1", bar_time=bar_time
+    )
     assert event_store.mark_event_completed_by_id(event_id)
 
     with sqlite3.connect(db_path) as conn:
@@ -82,7 +87,9 @@ def test_event_store_supports_claim_and_completion_by_event_id(tmp_path: Path) -
     assert outcome == "completed"
 
 
-def test_event_store_batch_publish_deduplicates_and_tracks_stats(tmp_path: Path) -> None:
+def test_event_store_batch_publish_deduplicates_and_tracks_stats(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "events.db"
     event_store = LocalEventStore(str(db_path))
     first_bar_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -193,18 +200,23 @@ def test_market_data_service_refreshes_quote_from_mt5_when_cache_is_stale() -> N
         time=datetime(2025, 12, 31, 23, 59, 55, tzinfo=timezone.utc),
     )
     client = SimpleNamespace(get_quote=lambda symbol: fresh_quote)
-    service = MarketDataService(client=client, market_settings=SimpleNamespace(
-        default_symbol="XAUUSD",
-        quote_stale_seconds=1.0,
-        intrabar_max_points=100,
-        ohlc_event_queue_size=16,
-        tick_limit=200,
-        ohlc_limit=200,
-        tick_cache_size=100,
-    ))
+    service = MarketDataService(
+        client=client,
+        market_settings=SimpleNamespace(
+            default_symbol="XAUUSD",
+            quote_stale_seconds=1.0,
+            intrabar_max_points=100,
+            ohlc_event_queue_size=16,
+            tick_limit=200,
+            ohlc_limit=200,
+            tick_cache_size=100,
+        ),
+    )
     service.set_quote("XAUUSD", stale_quote)
     service._utc_now = lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
-    service._as_utc = lambda value: value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    service._as_utc = lambda value: (
+        value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    )
 
     quote = service.get_quote("XAUUSD")
 
@@ -242,9 +254,12 @@ def test_mt5_market_client_fetches_forward_ohlc_window_in_utc() -> None:
         },
     ]
     mock_mt5 = MagicMock()
-    mock_mt5.copy_rates_range.side_effect = lambda symbol, tf, start, end: captured.update(
-        {"symbol": symbol, "tf": tf, "start": start, "end": end}
-    ) or raw_rates
+    mock_mt5.copy_rates_range.side_effect = (
+        lambda symbol, tf, start, end: captured.update(
+            {"symbol": symbol, "tf": tf, "start": start, "end": end}
+        )
+        or raw_rates
+    )
 
     with patch("src.clients.mt5_market.mt5", mock_mt5):
         bars = client.get_ohlc_from(
@@ -329,7 +344,9 @@ def test_mt5_base_client_initializes_session_with_credentials() -> None:
 
     with patch("src.clients.base.mt5", FakeMT5()):
         with patch.object(MT5BaseClient, "_terminal_path_exists", return_value=True):
-            with patch.object(MT5BaseClient, "_terminal_process_running", return_value=True):
+            with patch.object(
+                MT5BaseClient, "_terminal_process_running", return_value=True
+            ):
                 client.connect()
 
     # initialize 必须包含完整凭据（path + login + password + server + timeout）
@@ -344,7 +361,9 @@ def test_mt5_base_client_initializes_session_with_credentials() -> None:
     assert "login" not in captured
 
 
-def test_mt5_base_client_reuses_matching_existing_session_without_reinitialize() -> None:
+def test_mt5_base_client_reuses_matching_existing_session_without_reinitialize() -> (
+    None
+):
     calls = {"initialize": 0, "login": 0}
 
     class FakeMT5:
@@ -411,7 +430,9 @@ def test_mt5_base_client_classifies_interactive_login_required() -> None:
 
     with patch("src.clients.base.mt5", FakeMT5()):
         with patch.object(MT5BaseClient, "_terminal_path_exists", return_value=True):
-            with patch.object(MT5BaseClient, "_terminal_process_running", return_value=True):
+            with patch.object(
+                MT5BaseClient, "_terminal_process_running", return_value=True
+            ):
                 state = client.inspect_session_state()
 
     assert state.session_ready is False
@@ -443,7 +464,9 @@ def test_mt5_base_client_blocks_when_terminal_process_not_running() -> None:
 
     with patch("src.clients.base.mt5", FakeMT5()):
         with patch.object(MT5BaseClient, "_terminal_path_exists", return_value=True):
-            with patch.object(MT5BaseClient, "_terminal_process_running", return_value=False):
+            with patch.object(
+                MT5BaseClient, "_terminal_process_running", return_value=False
+            ):
                 state = client.inspect_session_state()
 
     assert state.session_ready is False
@@ -464,9 +487,12 @@ def test_mt5_market_client_uses_default_tick_lookback_without_ingest_settings() 
 
     mock_mt5 = MagicMock()
     mock_mt5.COPY_TICKS_ALL = 1
-    mock_mt5.copy_ticks_from.side_effect = lambda symbol, start, limit, flags: captured.update(
-        {"symbol": symbol, "start": start, "limit": limit, "flags": flags}
-    ) or [SimpleNamespace()]
+    mock_mt5.copy_ticks_from.side_effect = (
+        lambda symbol, start, limit, flags: captured.update(
+            {"symbol": symbol, "start": start, "limit": limit, "flags": flags}
+        )
+        or [SimpleNamespace()]
+    )
 
     with patch("src.clients.mt5_market.mt5", mock_mt5):
         ticks = client.get_ticks("XAUUSD", 10, None)
@@ -482,7 +508,9 @@ def test_mt5_market_client_normalizes_quote_last_price_from_bid_ask() -> None:
     client.metrics = SimpleNamespace(record=lambda *args, **kwargs: None)
     client.connect = lambda: None
     client._get_field = lambda obj, name, default=None: getattr(obj, name, default)
-    client._market_time_from_seconds = lambda value: datetime(2026, 1, 1, tzinfo=timezone.utc)
+    client._market_time_from_seconds = lambda value: datetime(
+        2026, 1, 1, tzinfo=timezone.utc
+    )
 
     mock_mt5 = MagicMock()
     mock_mt5.symbol_info_tick.return_value = SimpleNamespace(
@@ -554,8 +582,12 @@ def test_mt5_trading_client_retries_open_with_supported_filling_mode() -> None:
         def order_send(request):
             requests.append(dict(request))
             if request["type_filling"] != 2:
-                return SimpleNamespace(retcode=10030, comment="Unsupported filling mode")
-            return SimpleNamespace(retcode=10009, comment="Done", order=123456, deal=123456)
+                return SimpleNamespace(
+                    retcode=10030, comment="Unsupported filling mode"
+                )
+            return SimpleNamespace(
+                retcode=10009, comment="Done", order=123456, deal=123456
+            )
 
         @staticmethod
         def last_error():
@@ -613,7 +645,9 @@ def test_mt5_trading_client_retries_close_with_supported_filling_mode() -> None:
         def order_send(request):
             requests.append(dict(request))
             if request["type_filling"] != 2:
-                return SimpleNamespace(retcode=10030, comment="Unsupported filling mode")
+                return SimpleNamespace(
+                    retcode=10030, comment="Unsupported filling mode"
+                )
             return SimpleNamespace(retcode=10009, comment="Done")
 
         @staticmethod
@@ -847,8 +881,8 @@ def test_storage_writer_stats_include_queue_summary() -> None:
 
 def test_timescale_writer_wraps_ohlc_indicators_with_json_adapter() -> None:
     json_calls = []
-    from src.persistence.db import TimescaleWriter
     import src.persistence.db as persistence_db
+    from src.persistence.db import TimescaleWriter
 
     writer = object.__new__(TimescaleWriter)
     captured = []
@@ -946,8 +980,12 @@ def test_market_service_removes_bound_method_listeners_by_callable_identity() ->
     service.remove_ohlc_close_listener(owner.on_close)
     service.remove_intrabar_listener(owner.on_intrabar)
 
-    service.enqueue_ohlc_closed_event("XAUUSD", "M1", datetime(2026, 1, 1, tzinfo=timezone.utc))
-    service.set_intrabar("XAUUSD", "M1", SimpleNamespace(time=datetime(2026, 1, 1, tzinfo=timezone.utc)))
+    service.enqueue_ohlc_closed_event(
+        "XAUUSD", "M1", datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    service.set_intrabar(
+        "XAUUSD", "M1", SimpleNamespace(time=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    )
 
     assert owner.closed_calls == 0
     assert owner.intrabar_calls == 0

@@ -89,7 +89,7 @@ def _dynamic_artifact(*, status: str = "accepted") -> EntryMetaArtifact:
                 "strategy": {"breakout": 0.0},
                 "regime": {"trend": 0.0},
                 "session": {"london": 0.0},
-            }
+            },
         },
         status=status,
     )
@@ -180,7 +180,9 @@ def test_filter_mode_blocks_when_take_probability_below_threshold() -> None:
     assert overlay.report()["blocked_by_strategy"] == {"breakout": 1}
 
 
-def test_filter_mode_allows_accepted_artifact_when_probability_meets_threshold() -> None:
+def test_filter_mode_allows_accepted_artifact_when_probability_meets_threshold() -> (
+    None
+):
     overlay = EntryMetaBacktestOverlay(_artifact(), mode="filter", threshold=0.65)
 
     verdict = overlay.evaluate(
@@ -222,7 +224,9 @@ def test_missing_prediction_is_allowed_and_counted() -> None:
 
 
 def test_overlay_uses_dynamic_scorer_when_prediction_lookup_misses() -> None:
-    overlay = EntryMetaBacktestOverlay(_dynamic_artifact(), mode="filter", threshold=0.50)
+    overlay = EntryMetaBacktestOverlay(
+        _dynamic_artifact(), mode="filter", threshold=0.50
+    )
 
     verdict = overlay.evaluate(
         "2026-01-01T03:00:00Z",
@@ -322,8 +326,12 @@ def test_overlay_rejects_invalid_dynamic_scorer_feature_order() -> None:
 
 
 def test_overlay_dynamic_feature_failure_allows_and_records_reason() -> None:
-    overlay = EntryMetaBacktestOverlay(_dynamic_artifact(), mode="filter", threshold=0.50)
-    bad_context = dataclasses.replace(_feature_context(confidence=0.9), strategy="unknown")
+    overlay = EntryMetaBacktestOverlay(
+        _dynamic_artifact(), mode="filter", threshold=0.50
+    )
+    bad_context = dataclasses.replace(
+        _feature_context(confidence=0.9), strategy="unknown"
+    )
 
     verdict = overlay.evaluate(
         "2026-01-01T03:00:00Z",
@@ -342,7 +350,9 @@ def test_overlay_dynamic_feature_failure_allows_and_records_reason() -> None:
 
 
 def test_overlay_dynamic_missing_feature_allows_and_records_reason() -> None:
-    overlay = EntryMetaBacktestOverlay(_dynamic_artifact(), mode="filter", threshold=0.50)
+    overlay = EntryMetaBacktestOverlay(
+        _dynamic_artifact(), mode="filter", threshold=0.50
+    )
     bad_context = dataclasses.replace(_feature_context(confidence=0.9), indicators={})
 
     verdict = overlay.evaluate(
@@ -496,7 +506,9 @@ def test_state_edge_block_prevents_entry_meta_overlay_call() -> None:
 
 def test_entry_meta_filter_can_block_after_state_edge_allows() -> None:
     state_edge_overlay = _StateEdgeOverlayStub(allowed=True)
-    entry_meta_overlay = EntryMetaBacktestOverlay(_artifact(), mode="filter", threshold=0.65)
+    entry_meta_overlay = EntryMetaBacktestOverlay(
+        _artifact(), mode="filter", threshold=0.65
+    )
     rejections: list[str] = []
     blocked_events: list[dict] = []
     engine = _ProcessDecisionEngine(

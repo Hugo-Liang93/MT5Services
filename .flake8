@@ -1,0 +1,22 @@
+[flake8]
+# 与 [tool.black] line-length=88 对齐（pyproject.toml:90）。
+# Black 已格式化的代码禁止再被 flake8 reflow。
+max-line-length = 88
+
+# 与 black 风格冲突的规则禁用：
+# E203: whitespace before ':' — black 对切片放空格，符合 PEP 8 后修订
+# W503: line break before binary operator — PEP 8 推荐 break before
+# E501: max-line-length 已显式设置
+extend-ignore = E203, W503
+
+# 排除目录
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    build,
+    dist,
+    *.egg-info,
+    data,
+    scratch

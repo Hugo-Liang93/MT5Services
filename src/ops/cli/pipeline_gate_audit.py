@@ -52,13 +52,19 @@ def _print_ranked(
         )
         categories = item.get("categories") or {}
         if categories:
-            print(f"    categories={json.dumps(categories, ensure_ascii=False, sort_keys=True)}")
+            print(
+                f"    categories={json.dumps(categories, ensure_ascii=False, sort_keys=True)}"
+            )
         timeframes = item.get("timeframes") or {}
         if timeframes:
-            print(f"    timeframes={json.dumps(timeframes, ensure_ascii=False, sort_keys=True)}")
+            print(
+                f"    timeframes={json.dumps(timeframes, ensure_ascii=False, sort_keys=True)}"
+            )
         sources = item.get("sources") or {}
         if sources:
-            print(f"    sources={json.dumps(sources, ensure_ascii=False, sort_keys=True)}")
+            print(
+                f"    sources={json.dumps(sources, ensure_ascii=False, sort_keys=True)}"
+            )
 
 
 def _print_by_day(items: Sequence[dict[str, object]], *, focus: Sequence[str]) -> None:
@@ -81,7 +87,9 @@ def _print_by_day(items: Sequence[dict[str, object]], *, focus: Sequence[str]) -
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Audit pipeline gate events over recent days")
+    parser = argparse.ArgumentParser(
+        description="Audit pipeline gate events over recent days"
+    )
     parser.add_argument(
         "--environment",
         default="live",
@@ -161,14 +169,13 @@ def main() -> None:
     _print_ranked("Top Gate Reason", summary["by_reason"], key_name="gate_reason")
 
     focus_buckets = [
-        item
-        for item in summary["by_family"]
-        if item["gate_family"] in set(focus)
+        item for item in summary["by_family"] if item["gate_family"] in set(focus)
     ]
-    _print_ranked("Focus Family", focus_buckets, key_name="gate_family", limit=len(focus) or 10)
+    _print_ranked(
+        "Focus Family", focus_buckets, key_name="gate_family", limit=len(focus) or 10
+    )
     _print_by_day(summary["by_day"], focus=focus)
 
 
 if __name__ == "__main__":
     main()
-

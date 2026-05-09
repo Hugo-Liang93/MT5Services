@@ -192,7 +192,19 @@ class MarketRepository:
         self,
         symbol: str,
         limit: int,
-    ) -> List[Tuple[str, float, Optional[float], Optional[float], Optional[float], float, datetime, Optional[int], Optional[int]]]:
+    ) -> List[
+        Tuple[
+            str,
+            float,
+            Optional[float],
+            Optional[float],
+            Optional[float],
+            float,
+            datetime,
+            Optional[int],
+            Optional[int],
+        ]
+    ]:
         sql = (
             "SELECT symbol, price, bid, ask, last, volume, time, time_msc, flags "
             "FROM ("
@@ -212,7 +224,19 @@ class MarketRepository:
         start_time: Optional[datetime],
         end_time: Optional[datetime],
         limit: int,
-    ) -> List[Tuple[str, float, Optional[float], Optional[float], Optional[float], float, datetime, Optional[int], Optional[int]]]:
+    ) -> List[
+        Tuple[
+            str,
+            float,
+            Optional[float],
+            Optional[float],
+            Optional[float],
+            float,
+            datetime,
+            Optional[int],
+            Optional[int],
+        ]
+    ]:
         sql = (
             "SELECT symbol, price, bid, ask, last, volume, time, time_msc, flags "
             "FROM ticks WHERE symbol=%s"

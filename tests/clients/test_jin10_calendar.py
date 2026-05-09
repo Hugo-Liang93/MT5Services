@@ -14,10 +14,10 @@ from src.clients.economic_calendar import (
     EconomicCalendarProvider,
 )
 from src.clients.jin10_calendar import (
-    Jin10CalendarClient,
     _BEIJING_OFFSET,
     _COUNTRY_MAP,
     _STAR_TO_IMPORTANCE,
+    Jin10CalendarClient,
     _parse_beijing_time,
 )
 
@@ -297,10 +297,22 @@ class TestFetchEvents:
     def test_country_filter(self, mock_request):
         """国家过滤应正确应用。"""
         items = [
-            {"data_id": 1, "indicator_id": 1, "pub_time": "2026-03-25 10:00",
-             "indicator_name": "US CPI", "country": "美国", "star": 3},
-            {"data_id": 2, "indicator_id": 2, "pub_time": "2026-03-25 10:00",
-             "indicator_name": "JP CPI", "country": "日本", "star": 3},
+            {
+                "data_id": 1,
+                "indicator_id": 1,
+                "pub_time": "2026-03-25 10:00",
+                "indicator_name": "US CPI",
+                "country": "美国",
+                "star": 3,
+            },
+            {
+                "data_id": 2,
+                "indicator_id": 2,
+                "pub_time": "2026-03-25 10:00",
+                "indicator_name": "JP CPI",
+                "country": "日本",
+                "star": 3,
+            },
         ]
         mock_request.side_effect = [
             {"status": 200, "data": items},
@@ -308,7 +320,8 @@ class TestFetchEvents:
         ]
 
         events = self.client.fetch_events(
-            date(2026, 3, 25), date(2026, 3, 25),
+            date(2026, 3, 25),
+            date(2026, 3, 25),
             countries=["United States"],
         )
         assert len(events) == 1
@@ -318,6 +331,7 @@ class TestFetchEvents:
     def test_api_error_graceful(self, mock_request):
         """API 错误时不崩溃，返回空列表。"""
         from src.clients.economic_calendar import EconomicCalendarError
+
         mock_request.side_effect = EconomicCalendarError("timeout")
         events = self.client.fetch_events(date(2026, 3, 25), date(2026, 3, 25))
         assert events == []

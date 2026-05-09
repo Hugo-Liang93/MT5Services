@@ -143,7 +143,9 @@ def _mining_result(
     )
 
 
-def test_discover_strategy_candidates_classifies_robust_tf_specific_and_divergent() -> None:
+def test_discover_strategy_candidates_classifies_robust_tf_specific_and_divergent() -> (
+    None
+):
     results = {
         "M30": _mining_result(
             "run_m30",
@@ -253,7 +255,9 @@ def test_discover_strategy_candidates_classifies_robust_tf_specific_and_divergen
     assert "cross-TF direction diverges" in divergent.decision_reason
 
 
-def test_discover_strategy_candidates_marks_tf_specific_without_multiple_evidence_as_refit() -> None:
+def test_discover_strategy_candidates_marks_tf_specific_without_multiple_evidence_as_refit() -> (
+    None
+):
     results = {
         "H1": _mining_result(
             "run_h1",

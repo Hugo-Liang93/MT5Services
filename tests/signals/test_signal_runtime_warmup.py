@@ -102,7 +102,9 @@ def _make_runtime(
     targets=None,  # type: ignore[no-untyped-def]
 ) -> SignalRuntime:
     if targets is None:
-        targets = [SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")]
+        targets = [
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ]
 
     policy = SignalPolicy(
         warmup_required_indicators=("atr14",),
@@ -320,7 +322,9 @@ class TestIntrabarBarrier:
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion"),
             SignalTarget(symbol="EURUSD", timeframe="M5", strategy="rsi_reversion"),
         ]
-        rt = _make_runtime(source, service, warmup_ready_fn=lambda: True, targets=targets)
+        rt = _make_runtime(
+            source, service, warmup_ready_fn=lambda: True, targets=targets
+        )
 
         # XAUUSD confirmed——解除 XAUUSD 屏障
         _emit_and_process(rt, "XAUUSD", "M5", _INDICATORS_FULL, "confirmed")
@@ -382,7 +386,9 @@ class TestWarmupStatus:
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion"),
             SignalTarget(symbol="XAUUSD", timeframe="M15", strategy="rsi_reversion"),
         ]
-        rt = _make_runtime(source, service, warmup_ready_fn=lambda: True, targets=targets)
+        rt = _make_runtime(
+            source, service, warmup_ready_fn=lambda: True, targets=targets
+        )
 
         assert rt.status()["warmup_realtime_symbols"] == 0
 

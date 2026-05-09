@@ -1,4 +1,5 @@
 """Tests for the extracted event batch persistence helpers."""
+
 from __future__ import annotations
 
 import queue
@@ -6,8 +7,7 @@ import threading
 from types import SimpleNamespace
 
 from src.indicators.manager import UnifiedIndicatorManager
-from src.indicators.runtime import event_io
-from src.indicators.runtime import event_loops
+from src.indicators.runtime import event_io, event_loops
 
 
 def _make_manager_stub() -> UnifiedIndicatorManager:
@@ -75,6 +75,7 @@ def test_flush_event_batch_survives_write_error(caplog) -> None:
 def test_event_writer_loop_drains_on_shutdown() -> None:
     manager = _make_manager_stub()
     import threading
+
     published = []
     manager.event_store.publish_events_batch = lambda batch: published.extend(batch)
 

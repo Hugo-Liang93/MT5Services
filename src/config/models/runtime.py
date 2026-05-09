@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Literal
+from typing import Any, Dict, List, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -216,7 +216,7 @@ class RecoveryRuntimeRunnerConfig(BaseModel):
     demo_only: bool = True
     symbol: str = "XAUUSD"
     direction: Literal["buy", "sell"] = "buy"
-    strategy: str = "tick_martingale_probe"
+    strategy: str = "tick_recovery_probe"
     timeframe: str = "TICK"
     base_volume: float = 0.01
     multiplier: float = 2.0
@@ -266,6 +266,28 @@ class RecoveryRuntimeRunnerConfig(BaseModel):
     rolling_loss_window_minutes: int = 60
     max_consecutive_loss_cycles: int = 0
     loss_lockout_minutes: int = 0
+
+    @model_validator(mode="after")
+    def _enforce_live_dispatch_cycle_caps(self) -> "RecoveryRuntimeRunnerConfig":
+        if not (self.enabled and not self.dry_run):
+            return self
+        violations: list[str] = []
+        if self.max_cycles_per_day < 1:
+            violations.append("max_cycles_per_day must be >= 1")
+        if self.max_cycles_per_hour < 1:
+            violations.append("max_cycles_per_hour must be >= 1")
+        if self.cooldown_after_cycle_close_seconds < 60:
+            violations.append("cooldown_after_cycle_close_seconds must be >= 60")
+        if self.min_cycle_interval_seconds < 30:
+            violations.append("min_cycle_interval_seconds must be >= 30")
+        if self.real_trade_calibration_min_samples < 50:
+            violations.append("real_trade_calibration_min_samples must be >= 50")
+        if violations:
+            raise ValueError(
+                "ADR-014 cycle 限流硬约束违反 (enabled=true + dry_run=false 时): "
+                + "; ".join(violations)
+            )
+        return self
 
 
 RiskPreTradeRuleName = Literal[
@@ -321,7 +343,7 @@ class RiskProfileConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _apply_policy_rule_defaults(cls, data):
+    def _apply_policy_rule_defaults(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
         if "pre_trade_rules" in data:
@@ -335,12 +357,10 @@ class RiskProfileConfig(BaseModel):
         return payload
 
     @model_validator(mode="after")
-    def _validate_trade_frequency_flag(self):
+    def _validate_trade_frequency_flag(self) -> "RiskProfileConfig":
         enabled_by_rules = "trade_frequency" in set(self.pre_trade_rules)
         if bool(self.trade_frequency_enabled) != enabled_by_rules:
-            raise ValueError(
-                "trade_frequency_enabled must match pre_trade_rules"
-            )
+            raise ValueError("trade_frequency_enabled must match pre_trade_rules")
         return self
 
 

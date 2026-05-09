@@ -16,6 +16,7 @@ from .component_factory import cleanup_components as _cleanup_components  # noqa
 
 logger = logging.getLogger(__name__)
 
+
 def _cast_number_or_text(value: str) -> Any:
     """解析 CLI 字符串参数，优先按数字转换。"""
     normalized = value.strip()
@@ -45,8 +46,6 @@ def _build_components(args: argparse.Namespace) -> Dict[str, Any]:
 
     strategy_params = _parse_cli_strategy_params(args)
     return build_backtest_components(strategy_params=strategy_params)
-
-
 
 
 def _load_strategy_scope_overrides() -> (
@@ -107,9 +106,9 @@ def _build_deployment_gate_from_args(args: argparse.Namespace) -> Any:
 def _persist_result(result: Any, writer: Any = None) -> None:
     # docstring removed during encoding normalization
     try:
-        from src.persistence.repositories.backtest_repo import BacktestRepository
         from src.config.database import load_db_settings
         from src.persistence.db import TimescaleWriter
+        from src.persistence.repositories.backtest_repo import BacktestRepository
 
         if writer is None:
             db_config = load_db_settings()

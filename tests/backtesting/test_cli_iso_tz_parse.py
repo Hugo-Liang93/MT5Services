@@ -5,6 +5,7 @@
 §0x EXEMPT 清单中的"CLI 入口仅接受 naive UTC"假设是错的——CLI 没有显式
 reject aware 输入，用户实际可以传任意 ISO。所有 CLI 都必须走 parse_iso_to_utc。
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

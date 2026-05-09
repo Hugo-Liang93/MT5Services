@@ -33,7 +33,9 @@ def main() -> None:
     parser.add_argument("--start", required=True, help="Start time/date ISO format")
     parser.add_argument("--end", required=True, help="End time/date ISO format")
     parser.add_argument("--backend", choices=["cpu", "gpu"], default="cpu")
-    parser.add_argument("--artifact-dir", required=True, help="Artifact output directory")
+    parser.add_argument(
+        "--artifact-dir", required=True, help="Artifact output directory"
+    )
     parser.add_argument("--json-output", default=None, help="Write lab result JSON")
     parser.add_argument("--symbol", default="XAUUSD", help="Symbol, default XAUUSD")
     parser.add_argument("--model-id", default=None, help="Optional stable model id")
@@ -50,9 +52,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    from src.backtesting.component_factory import build_research_data_deps
     from src.config.instance_context import set_current_environment
     from src.ops.cli._coverage import ensure_ohlc_data_coverage
-    from src.backtesting.component_factory import build_research_data_deps
     from src.research.core.backends import resolve_backend
     from src.research.core.config import load_research_config
     from src.research.entry_meta.lab import EntryMetaLab

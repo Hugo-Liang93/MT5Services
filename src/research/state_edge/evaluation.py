@@ -126,7 +126,12 @@ def evaluate_overlay_increment(
         pnl_delta >= 0.0
         and pf_delta >= 0.0
         and expectancy_delta >= 0.0
-        and (pnl_delta > 0.0 or pf_delta > 0.0 or expectancy_delta > 0.0 or max_dd_delta < 0.0)
+        and (
+            pnl_delta > 0.0
+            or pf_delta > 0.0
+            or expectancy_delta > 0.0
+            or max_dd_delta < 0.0
+        )
     ):
         return StateEdgeEvaluationDecision(
             status="accepted",
@@ -255,9 +260,7 @@ def _build_shadow_check(
         keys=("trades", "pnl", "pf", "expectancy", "max_dd"),
     )
     changed = {
-        key: value
-        for key, value in metric_deltas.items()
-        if abs(float(value)) > 1e-9
+        key: value for key, value in metric_deltas.items() if abs(float(value)) > 1e-9
     }
     return {
         "status": "passed" if not changed else "failed",
@@ -297,7 +300,9 @@ def _build_filter_diagnostics(
         "missing_predictions": int(
             state_edge_overlay.get("missing_predictions", 0) or 0
         ),
-        "filter_directions": list(state_edge_overlay.get("filter_directions", []) or []),
+        "filter_directions": list(
+            state_edge_overlay.get("filter_directions", []) or []
+        ),
         "blocked_by_direction": dict(
             state_edge_overlay.get("blocked_by_direction", {}) or {}
         ),
@@ -391,9 +396,15 @@ def _blocked_trade_attribution(
         "baseline_trades_available": bool(trades),
         "matched_trades": len(matched_trades),
         "unmatched_events": len(unmatched_events),
-        "matched_pnl": round(sum(_float_trade_value(t, "pnl") for t in matched_trades), 10),
-        "matched_wins": sum(1 for trade in matched_trades if _float_trade_value(trade, "pnl") > 0.0),
-        "matched_losses": sum(1 for trade in matched_trades if _float_trade_value(trade, "pnl") <= 0.0),
+        "matched_pnl": round(
+            sum(_float_trade_value(t, "pnl") for t in matched_trades), 10
+        ),
+        "matched_wins": sum(
+            1 for trade in matched_trades if _float_trade_value(trade, "pnl") > 0.0
+        ),
+        "matched_losses": sum(
+            1 for trade in matched_trades if _float_trade_value(trade, "pnl") <= 0.0
+        ),
         "matched_by_exit_reason": _trade_field_counts(matched_trades, "exit_reason"),
         "matched_by_strategy": _matched_strategy_summary(matched_trades),
         "unmatched_by_strategy": _event_field_counts(unmatched_events, "strategy"),

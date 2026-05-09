@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.monitoring.health import HealthMonitor, close_health_monitor, get_health_monitor
+from src.monitoring.health import (
+    HealthMonitor,
+    close_health_monitor,
+    get_health_monitor,
+)
 from src.monitoring.health.checks import check_queue_stats
 from src.monitoring.manager import (
     MonitoringManager,
@@ -54,10 +58,21 @@ def test_check_queue_stats_records_market_data_health_metrics(tmp_path: Path) ->
     report = monitor.generate_report(hours=1)
 
     assert stats["market_data_health"]["mt5"]["circuit_open"] is True
-    assert report["components"]["data_ingestion"]["mt5_circuit_open"]["status"] == "critical"
-    assert report["components"]["data_ingestion"]["market_data_stale_count"]["status"] == "warning"
-    assert "market_data_lane_market_age_seconds" in report["components"]["data_ingestion"]
-    assert report["components"]["data_ingestion"]["market_data_lane_stale"]["status"] == "critical"
+    assert (
+        report["components"]["data_ingestion"]["mt5_circuit_open"]["status"]
+        == "critical"
+    )
+    assert (
+        report["components"]["data_ingestion"]["market_data_stale_count"]["status"]
+        == "warning"
+    )
+    assert (
+        "market_data_lane_market_age_seconds" in report["components"]["data_ingestion"]
+    )
+    assert (
+        report["components"]["data_ingestion"]["market_data_lane_stale"]["status"]
+        == "critical"
+    )
 
 
 def test_check_queue_stats_does_not_raise_optional_tick_stale_to_critical(
@@ -129,16 +144,33 @@ def test_indicator_intrabar_slo_metrics_trigger_alerts(tmp_path: Path) -> None:
 
     monitor.record_metric("indicator_calculation", "intrabar_drop_rate_1m", 7.5)
     monitor.record_metric("indicator_calculation", "intrabar_queue_age_p95_ms", 2600.0)
-    monitor.record_metric("indicator_calculation", "intrabar_to_decision_latency_p95_ms", 8000.0)
+    monitor.record_metric(
+        "indicator_calculation", "intrabar_to_decision_latency_p95_ms", 8000.0
+    )
 
     report = monitor.generate_report(hours=1)
 
-    assert report["components"]["indicator_calculation"]["intrabar_drop_rate_1m"]["status"] == "critical"
-    assert report["components"]["indicator_calculation"]["intrabar_queue_age_p95_ms"]["status"] == "warning"
-    assert report["components"]["indicator_calculation"]["intrabar_to_decision_latency_p95_ms"]["status"] == "critical"
+    assert (
+        report["components"]["indicator_calculation"]["intrabar_drop_rate_1m"]["status"]
+        == "critical"
+    )
+    assert (
+        report["components"]["indicator_calculation"]["intrabar_queue_age_p95_ms"][
+            "status"
+        ]
+        == "warning"
+    )
+    assert (
+        report["components"]["indicator_calculation"][
+            "intrabar_to_decision_latency_p95_ms"
+        ]["status"]
+        == "critical"
+    )
 
 
-def test_health_report_uses_blocking_metrics_for_critical_status(tmp_path: Path) -> None:
+def test_health_report_uses_blocking_metrics_for_critical_status(
+    tmp_path: Path,
+) -> None:
     monitor = HealthMonitor(str(tmp_path / "health.db"))
 
     monitor.record_metric("market_data", "data_latency", 999.0)
@@ -186,12 +218,13 @@ def test_startup_grace_suppresses_transient_staleness_alert(tmp_path: Path) -> N
     """
     monitor = HealthMonitor(str(tmp_path / "health.db"))
     # builder_phases/monitoring.py 会在生产构建时注入这个阈值；测试需显式配置
-    monitor.alerts["economic_calendar_staleness"] = {"warning": 900.0, "critical": 1800.0}
+    monitor.alerts["economic_calendar_staleness"] = {
+        "warning": 900.0,
+        "critical": 1800.0,
+    }
 
     # 启动瞬间 record 一个超高 staleness 值（77041s，真实观察到的启动瞬态）
-    monitor.record_metric(
-        "economic_calendar", "economic_calendar_staleness", 77041.0
-    )
+    monitor.record_metric("economic_calendar", "economic_calendar_staleness", 77041.0)
 
     # 未触发 alert（被 grace 抑制）
     assert monitor.active_alerts == {}
@@ -213,17 +246,17 @@ def test_startup_grace_does_not_mask_runtime_data_latency(tmp_path: Path) -> Non
 def test_startup_grace_expires_after_threshold(tmp_path: Path, monkeypatch) -> None:
     """grace 期过后，豁免的 metric 应正常触发 alert。"""
     monitor = HealthMonitor(str(tmp_path / "health.db"))
-    monitor.alerts["economic_calendar_staleness"] = {"warning": 900.0, "critical": 1800.0}
+    monitor.alerts["economic_calendar_staleness"] = {
+        "warning": 900.0,
+        "critical": 1800.0,
+    }
 
     # 人工把启动时间往前推 70 秒，超出 60s grace 期
     import time as _time
-    monkeypatch.setattr(
-        monitor, "_started_at_monotonic", _time.monotonic() - 70.0
-    )
 
-    monitor.record_metric(
-        "economic_calendar", "economic_calendar_staleness", 77041.0
-    )
+    monkeypatch.setattr(monitor, "_started_at_monotonic", _time.monotonic() - 70.0)
+
+    monitor.record_metric("economic_calendar", "economic_calendar_staleness", 77041.0)
 
     assert "economic_calendar.economic_calendar_staleness" in monitor.active_alerts
 
@@ -256,9 +289,9 @@ def test_generate_report_overall_status_reflects_active_critical_alert(
     report = monitor.generate_report(hours=1)
 
     assert report["active_alerts"], "active_alerts 应被原样透传"
-    assert report["overall_status"] == "critical", (
-        f"active critical alert 必须把 overall_status 抬到 critical；got {report['overall_status']!r}"
-    )
+    assert (
+        report["overall_status"] == "critical"
+    ), f"active critical alert 必须把 overall_status 抬到 critical；got {report['overall_status']!r}"
 
 
 def test_generate_report_overall_status_reflects_active_warning_alert(
@@ -280,9 +313,10 @@ def test_generate_report_overall_status_reflects_active_warning_alert(
 
     report = monitor.generate_report(hours=1)
 
-    assert report["overall_status"] in ("warning", "critical"), (
-        f"active warning alert 必须把 overall_status 抬到 warning+；got {report['overall_status']!r}"
-    )
+    assert report["overall_status"] in (
+        "warning",
+        "critical",
+    ), f"active warning alert 必须把 overall_status 抬到 warning+；got {report['overall_status']!r}"
 
 
 def test_record_metric_resolves_active_alert_when_metric_recovers(
@@ -299,7 +333,10 @@ def test_record_metric_resolves_active_alert_when_metric_recovers(
     recovered_report = monitor.generate_report(hours=1)
 
     assert "recovery_runner.consumer_stalled" not in monitor.active_alerts
-    assert recovered_report["components"]["recovery_runner"]["consumer_stalled"]["status"] == "healthy"
+    assert (
+        recovered_report["components"]["recovery_runner"]["consumer_stalled"]["status"]
+        == "healthy"
+    )
     assert recovered_report["overall_status"] == "healthy"
 
 
@@ -322,9 +359,9 @@ def test_generate_report_critical_trading_metric_drives_overall_status_to_critic
 
     metric = report["components"]["trading_executor"]["execution_failure_rate"]
     assert metric["status"] == "critical"
-    assert metric["overall_impact"] == "blocking", (
-        f"trading 域 critical metric 必须算 blocking；got impact={metric['overall_impact']!r}"
-    )
+    assert (
+        metric["overall_impact"] == "blocking"
+    ), f"trading 域 critical metric 必须算 blocking；got impact={metric['overall_impact']!r}"
     assert report["overall_status"] == "critical", (
         f"trading 域 critical 必须把 overall_status 抬到 critical；"
         f"got {report['overall_status']!r} + summary={report['summary']!r}"
@@ -354,12 +391,14 @@ def test_get_system_status_does_not_report_healthy_with_active_critical_alert(
     monitor = HealthMonitor(str(tmp_path / "health.db"))
 
     # 让 store 缓存中存在一份 healthy snapshot
-    monitor._store.set_system_status({
-        "timestamp": "2026-04-26T00:00:00+00:00",
-        "overall_status": "healthy",
-        "components_status": {},
-        "metrics_summary": {},
-    })
+    monitor._store.set_system_status(
+        {
+            "timestamp": "2026-04-26T00:00:00+00:00",
+            "overall_status": "healthy",
+            "components_status": {},
+            "metrics_summary": {},
+        }
+    )
 
     # 注入一个 active critical alert（模拟 generate_report 之后才被触发）
     monitor.active_alerts["trading.execution_failure_rate"] = {
@@ -402,8 +441,10 @@ def test_record_metric_warns_once_when_alert_threshold_missing(
         monitor.record_metric("comp_z", "metric_no_threshold_y", 3.0)
 
     warns = [
-        r for r in caplog.records
-        if "metric_no_threshold_y" in r.getMessage() and "no threshold registered" in r.getMessage()
+        r
+        for r in caplog.records
+        if "metric_no_threshold_y" in r.getMessage()
+        and "no threshold registered" in r.getMessage()
     ]
     # 同一 metric 名只 WARN 一次（去重 set），即使跨 component
     assert len(warns) == 1, (
@@ -425,13 +466,10 @@ def test_record_metric_no_warn_when_check_alert_explicitly_false(
             "comp_x", "informational_metric_z", 0.5, check_alert=False
         )
 
-    warns = [
-        r for r in caplog.records
-        if "informational_metric_z" in r.getMessage()
-    ]
-    assert warns == [], (
-        f"check_alert=False 不应触发未注册 WARN；got {[r.getMessage() for r in warns]!r}"
-    )
+    warns = [r for r in caplog.records if "informational_metric_z" in r.getMessage()]
+    assert (
+        warns == []
+    ), f"check_alert=False 不应触发未注册 WARN；got {[r.getMessage() for r in warns]!r}"
 
 
 def test_record_metric_no_warn_when_metric_has_threshold(
@@ -447,9 +485,11 @@ def test_record_metric_no_warn_when_metric_has_threshold(
         monitor.record_metric("market_data", "data_latency", 0.5)
 
     warns = [
-        r for r in caplog.records
-        if "data_latency" in r.getMessage() and "no threshold registered" in r.getMessage()
+        r
+        for r in caplog.records
+        if "data_latency" in r.getMessage()
+        and "no threshold registered" in r.getMessage()
     ]
-    assert warns == [], (
-        f"已注册 metric 不应 WARN；got {[r.getMessage() for r in warns]!r}"
-    )
+    assert (
+        warns == []
+    ), f"已注册 metric 不应 WARN；got {[r.getMessage() for r in warns]!r}"

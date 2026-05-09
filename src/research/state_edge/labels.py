@@ -43,25 +43,33 @@ class StateEdgeLabelBuilder:
 
         for idx in range(matrix.n_bars):
             long_ret, long_key = self._best_return_at(matrix.barrier_returns_long, idx)
-            short_ret, short_key = self._best_return_at(matrix.barrier_returns_short, idx)
+            short_ret, short_key = self._best_return_at(
+                matrix.barrier_returns_short, idx
+            )
             long_best_return.append(long_ret)
             short_best_return.append(short_ret)
             best_long_barrier.append(long_key)
             best_short_barrier.append(short_key)
 
-            if long_ret is not None and long_ret > 0 and (
-                short_ret is None or long_ret >= short_ret
+            if (
+                long_ret is not None
+                and long_ret > 0
+                and (short_ret is None or long_ret >= short_ret)
             ):
                 labels.append(StateEdgeClass.LONG)
-            elif short_ret is not None and short_ret > 0 and (
-                long_ret is None or short_ret > long_ret
+            elif (
+                short_ret is not None
+                and short_ret > 0
+                and (long_ret is None or short_ret > long_ret)
             ):
                 labels.append(StateEdgeClass.SHORT)
             else:
                 labels.append(StateEdgeClass.NO_TRADE)
 
         counts = Counter(label.value for label in labels)
-        summary = {label.value: int(counts.get(label.value, 0)) for label in StateEdgeClass}
+        summary = {
+            label.value: int(counts.get(label.value, 0)) for label in StateEdgeClass
+        }
         return StateEdgeLabelSet(
             labels=labels,
             long_best_return=long_best_return,

@@ -5,7 +5,12 @@ from datetime import datetime
 from typing import Any
 
 from .entry_policies import RecoveryExitModel
-from .models import RecoveryCycleState, RecoveryDecision, RecoveryMarketSnapshot, RecoveryPolicy
+from .models import (
+    RecoveryCycleState,
+    RecoveryDecision,
+    RecoveryMarketSnapshot,
+    RecoveryPolicy,
+)
 
 
 class BoundedRecoveryController:
@@ -40,7 +45,10 @@ class BoundedRecoveryController:
             return self._decision(
                 "block",
                 "max_steps_reached",
-                metadata={"step_count": cycle.step_count, "max_steps": policy.max_steps},
+                metadata={
+                    "step_count": cycle.step_count,
+                    "max_steps": policy.max_steps,
+                },
             )
 
         elapsed_ms = self._elapsed_ms(cycle.last_step_at, observed_at)
@@ -92,7 +100,9 @@ class BoundedRecoveryController:
                     "max_next_volume": policy.max_next_volume,
                 },
             )
-        total_after = self._round_volume(cycle.total_volume + next_volume, policy.volume_step)
+        total_after = self._round_volume(
+            cycle.total_volume + next_volume, policy.volume_step
+        )
         if total_after > policy.max_total_volume:
             return self._decision(
                 "block",
@@ -135,8 +145,14 @@ class BoundedRecoveryController:
     ) -> RecoveryCycleState:
         if decision.action != "open_step":
             raise ValueError("decision must be open_step")
-        if decision.volume is None or decision.entry_price is None or decision.step_index is None:
-            raise ValueError("open_step decision requires volume, entry_price, and step_index")
+        if (
+            decision.volume is None
+            or decision.entry_price is None
+            or decision.step_index is None
+        ):
+            raise ValueError(
+                "open_step decision requires volume, entry_price, and step_index"
+            )
         new_total = cycle.total_volume + decision.volume
         new_average = (
             (cycle.average_entry_price * cycle.total_volume)

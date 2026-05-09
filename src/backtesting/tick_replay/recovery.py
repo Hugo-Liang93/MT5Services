@@ -66,7 +66,9 @@ class TickRecoveryReplayRunner:
         cycle_id: str,
     ) -> RecoveryReplayReport:
         ordered = self._ordered_ticks(ticks)
-        tradable_tick_count = sum(1 for tick in ordered if tick.bid is not None and tick.ask is not None)
+        tradable_tick_count = sum(
+            1 for tick in ordered if tick.bid is not None and tick.ask is not None
+        )
         events: list[RecoveryDecision] = []
         fills: list[RecoveryReplayFill] = []
         blocked_count = 0
@@ -91,7 +93,11 @@ class TickRecoveryReplayRunner:
 
         first = ordered[0]
         first_snapshot = self._snapshot(symbol, first)
-        initial_price = first_snapshot.entry_price(direction) if first_snapshot.has_bid_ask() else None
+        initial_price = (
+            first_snapshot.entry_price(direction)
+            if first_snapshot.has_bid_ask()
+            else None
+        )
         if initial_price is None:
             events.append(RecoveryDecision(action="block", reason="quote_side_missing"))
             return self._report(
@@ -146,7 +152,9 @@ class TickRecoveryReplayRunner:
 
         for tick in ordered[1:]:
             snapshot = self._snapshot(symbol, tick)
-            exit_decision = self._controller.evaluate_cycle_exit(policy, cycle, snapshot)
+            exit_decision = self._controller.evaluate_cycle_exit(
+                policy, cycle, snapshot
+            )
             if exit_decision.action == "block":
                 events.append(exit_decision)
                 blocked_count += 1
@@ -164,7 +172,9 @@ class TickRecoveryReplayRunner:
                 closed = True
                 break
 
-            decision = self._controller.evaluate_next_step(policy, cycle, snapshot, now=tick.time)
+            decision = self._controller.evaluate_next_step(
+                policy, cycle, snapshot, now=tick.time
+            )
             events.append(decision)
             if decision.action == "block":
                 blocked_count += 1
@@ -213,9 +223,11 @@ class TickRecoveryReplayRunner:
         return sorted(
             list(ticks),
             key=lambda tick: (
-                int(tick.time_msc)
-                if tick.time_msc is not None
-                else int(tick.time.timestamp() * 1000),
+                (
+                    int(tick.time_msc)
+                    if tick.time_msc is not None
+                    else int(tick.time.timestamp() * 1000)
+                ),
                 tick.time,
             ),
         )

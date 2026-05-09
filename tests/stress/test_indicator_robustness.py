@@ -14,7 +14,6 @@ import pytest
 
 from src.indicators.core.base import sanitize_result
 
-
 # ─── NaN/Inf Sanitization ──────────────────────────────────────────────
 
 
@@ -116,9 +115,9 @@ class TestPreviewSnapshotConcurrency:
                     errors.append(exc)
                     stop.set()
 
-        threads = [
-            threading.Thread(target=writer, args=(i,)) for i in range(5)
-        ] + [threading.Thread(target=reader) for _ in range(3)]
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(5)] + [
+            threading.Thread(target=reader) for _ in range(3)
+        ]
         for t in threads:
             t.start()
         for t in threads:
@@ -139,17 +138,24 @@ class TestHTFInjectionPerformance:
 
         class DummySource:
             snapshot_listeners = []
-            def add_snapshot_listener(self, l): pass
-            def remove_snapshot_listener(self, l): pass
+
+            def add_snapshot_listener(self, l):
+                pass
+
+            def remove_snapshot_listener(self, l):
+                pass
+
             current_trace_id = None
 
-            def get_current_trace_id(self): return self.current_trace_id
+            def get_current_trace_id(self):
+                return self.current_trace_id
 
             def get_indicator(self, s, tf, name):
                 return {"ema": 2650.0} if name == "ema50" else None
 
         class DummyService:
             soft_regime_enabled = False
+
             def strategy_capability_catalog(self):
                 return [
                     {
@@ -162,9 +168,16 @@ class TestHTFInjectionPerformance:
                         "htf_requirements": {"ema50": "H1", "adx14": "H1"},
                     }
                 ]
-            def strategy_requirements(self, s): return ("ema50",)
-            def strategy_scopes(self, s): return ("confirmed",)
-            def strategy_affinity_map(self, s): return {}
+
+            def strategy_requirements(self, s):
+                return ("ema50",)
+
+            def strategy_scopes(self, s):
+                return ("confirmed",)
+
+            def strategy_affinity_map(self, s):
+                return {}
+
             def strategy_htf_indicators(self, s):
                 return {"H1": ("ema50", "adx14")}
 
@@ -180,12 +193,12 @@ class TestHTFInjectionPerformance:
 
         start = time.monotonic()
         for _ in range(1000):
-            runtime._resolve_htf_indicators(
-                "XAUUSD", "M5", {"H1": ("ema50", "adx14")}
-            )
+            runtime._resolve_htf_indicators("XAUUSD", "M5", {"H1": ("ema50", "adx14")})
         elapsed_ms = (time.monotonic() - start) * 1000
 
-        assert elapsed_ms < 100, f"HTF resolve took {elapsed_ms:.1f}ms for 1000 iterations"
+        assert (
+            elapsed_ms < 100
+        ), f"HTF resolve took {elapsed_ms:.1f}ms for 1000 iterations"
 
 
 # ─── Intrabar 衰减 ────────────────────────────────────────────────────
@@ -200,14 +213,21 @@ class TestIntrabarDecay:
 
         class DummySource:
             snapshot_listeners = []
-            def add_snapshot_listener(self, l): pass
-            def remove_snapshot_listener(self, l): pass
+
+            def add_snapshot_listener(self, l):
+                pass
+
+            def remove_snapshot_listener(self, l):
+                pass
+
             current_trace_id = None
 
-            def get_current_trace_id(self): return self.current_trace_id
+            def get_current_trace_id(self):
+                return self.current_trace_id
 
         class DummyService:
             soft_regime_enabled = False
+
             def strategy_capability_catalog(self):
                 return [
                     {
@@ -220,10 +240,18 @@ class TestIntrabarDecay:
                         "htf_requirements": {},
                     }
                 ]
-            def strategy_requirements(self, s): return ()
-            def strategy_scopes(self, s): return ("confirmed",)
-            def strategy_affinity_map(self, s): return {}
-            def strategy_htf_indicators(self, s): return {}
+
+            def strategy_requirements(self, s):
+                return ()
+
+            def strategy_scopes(self, s):
+                return ("confirmed",)
+
+            def strategy_affinity_map(self, s):
+                return {}
+
+            def strategy_htf_indicators(self, s):
+                return {}
 
         runtime = SignalRuntime(
             service=DummyService(),

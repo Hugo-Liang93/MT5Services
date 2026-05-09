@@ -68,7 +68,9 @@ class RecoveryDecisionAnalytics:
         if execution_status:
             self._execution_status_counts[execution_status] += 1
 
-        direction_policy = _extract_policy_payload(execution_payload, "direction_policy")
+        direction_policy = _extract_policy_payload(
+            execution_payload, "direction_policy"
+        )
         direction_policy_reason = _clean(direction_policy.get("reason"))
         if direction_policy_reason:
             self._direction_policy_reason_counts[direction_policy_reason] += 1
@@ -243,9 +245,7 @@ class _NumericStats:
             "sample_count": self._count,
             "recent_sample_count": len(recent_values),
             "last": self._last,
-            "avg": (
-                round(self._total / self._count, 10) if self._count else None
-            ),
+            "avg": (round(self._total / self._count, 10) if self._count else None),
             "min": self._min,
             "max": self._max,
             "p50_recent": _percentile(recent_values, 50),

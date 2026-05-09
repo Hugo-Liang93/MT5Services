@@ -21,7 +21,9 @@ class _MarketService:
 
     def remove_tick_batch_listener(self, listener) -> None:
         self.listeners = [
-            item for item in self.listeners if not same_listener_reference(item, listener)
+            item
+            for item in self.listeners
+            if not same_listener_reference(item, listener)
         ]
 
     def add_quote_listener(self, listener) -> None:
@@ -29,7 +31,9 @@ class _MarketService:
 
     def remove_quote_listener(self, listener) -> None:
         self.listeners = [
-            item for item in self.listeners if not same_listener_reference(item, listener)
+            item
+            for item in self.listeners
+            if not same_listener_reference(item, listener)
         ]
 
 
@@ -69,7 +73,7 @@ def _risk_config() -> RiskConfig:
                 "demo_only": True,
                 "symbol": "XAUUSD",
                 "direction": "buy",
-                "strategy": "tick_martingale_probe",
+                "strategy": "tick_recovery_probe",
                 "timeframe": "TICK",
                 "base_volume": 0.01,
                 "multiplier": 2.0,
@@ -142,7 +146,9 @@ def test_recovery_runtime_layer_applies_recovery_profile_budget():
     container, _, _ = _container()
     risk_config = _risk_config()
     risk_config.risk_profiles["recovery_budgeted"].max_daily_recovery_loss_amount = 25.0
-    risk_config.risk_profiles["recovery_budgeted"].max_rolling_recovery_loss_amount = 10.0
+    risk_config.risk_profiles["recovery_budgeted"].max_rolling_recovery_loss_amount = (
+        10.0
+    )
     risk_config.risk_profiles["recovery_budgeted"].rolling_loss_window_minutes = 45
     risk_config.risk_profiles["recovery_budgeted"].max_consecutive_loss_cycles = 2
     risk_config.risk_profiles["recovery_budgeted"].loss_lockout_minutes = 30
@@ -185,7 +191,7 @@ def test_recovery_runtime_layer_exposes_risk_profile_contract():
 def test_recovery_runtime_layer_rejects_strategy_profile_binding_mismatch():
     container, _, _ = _container()
     risk_config = _risk_config()
-    risk_config.risk_profile_bindings["tick_martingale_probe"] = "standard_kline"
+    risk_config.risk_profile_bindings["tick_recovery_probe"] = "standard_kline"
 
     with pytest.raises(ValueError, match="risk_profile_binding_mismatch"):
         build_recovery_runtime_layer(container, risk_config=risk_config)

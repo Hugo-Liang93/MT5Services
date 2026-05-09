@@ -118,8 +118,10 @@ def _format_report(report) -> str:
     lines.append("")
 
     # Metrics 表
-    lines.append(f"{'Strategy':<28} {'TF':<5} {'Trades':>6} {'Sharpe':>8} "
-                 f"{'MaxDD%':>8} {'PnL':>10} {'WinRate':>8}")
+    lines.append(
+        f"{'Strategy':<28} {'TF':<5} {'Trades':>6} {'Sharpe':>8} "
+        f"{'MaxDD%':>8} {'PnL':>10} {'WinRate':>8}"
+    )
     lines.append("-" * 72)
     for m in sorted(report.metrics, key=lambda x: (-x.sharpe, x.strategy)):
         lines.append(
@@ -133,8 +135,10 @@ def _format_report(report) -> str:
     improvements = [r for r in report.regressions if r.severity == "improvement"]
     if report.regressions:
         lines.append("")
-        lines.append(f"Regressions (relative to previous run): "
-                     f"{len(regressions)} bad, {len(improvements)} good")
+        lines.append(
+            f"Regressions (relative to previous run): "
+            f"{len(regressions)} bad, {len(improvements)} good"
+        )
         for r in regressions:
             lines.append(
                 f"  [REGRESSION] {r.strategy}/{r.timeframe} {r.metric}: "
@@ -161,37 +165,49 @@ def main() -> int:
         description="Nightly WF: strategies × TFs backtest + regression detection"
     )
     parser.add_argument(
-        "--environment", choices=["live", "demo"], required=True,
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
     )
     parser.add_argument(
-        "--tf", required=True, help="Timeframe(s), comma-separated: M15,M30,H1",
+        "--tf",
+        required=True,
+        help="Timeframe(s), comma-separated: M15,M30,H1",
     )
     parser.add_argument("--start", required=True, help="ISO date")
     parser.add_argument("--end", required=True, help="ISO date")
     parser.add_argument(
-        "--strategies", default="",
+        "--strategies",
+        default="",
         help="Comma-separated strategies. Default: all live-executable.",
     )
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument(
-        "--output-dir", default="data/nightly_wf",
+        "--output-dir",
+        default="data/nightly_wf",
         help="Directory to persist reports",
     )
     parser.add_argument(
-        "--previous", default="",
+        "--previous",
+        default="",
         help="Path to previous report JSON for regression comparison",
     )
     parser.add_argument(
-        "--sharpe-regression-threshold", type=float, default=0.20,
+        "--sharpe-regression-threshold",
+        type=float,
+        default=0.20,
         help="Relative Sharpe drop threshold (default 0.20 = 20%)",
     )
     parser.add_argument(
-        "--dd-regression-threshold", type=float, default=0.15,
+        "--dd-regression-threshold",
+        type=float,
+        default=0.15,
         help="Relative MaxDD worsening threshold (default 0.15 = 15%)",
     )
     args = parser.parse_args()
 
     from src.config.instance_context import set_current_environment
+
     set_current_environment(args.environment)
 
     from src.research.nightly import (
@@ -232,7 +248,9 @@ def main() -> int:
                 config=report.config,
                 metrics=report.metrics,
                 regressions=compare_reports(
-                    current=report, previous=prev, config=cfg,
+                    current=report,
+                    previous=prev,
+                    config=cfg,
                 ),
                 previous_report_path=previous_path,
                 runtime_seconds=report.runtime_seconds,

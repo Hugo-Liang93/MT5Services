@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from src.persistence.repositories.pipeline_trace_repo import PipelineTraceRepository
-from src.persistence.schema.pipeline_trace_events import DDL as PIPELINE_TRACE_EVENTS_DDL
+from src.persistence.schema.pipeline_trace_events import (
+    DDL as PIPELINE_TRACE_EVENTS_DDL,
+)
 
 
 class _Cursor:
@@ -101,7 +103,9 @@ def test_query_trace_summaries_accepts_execution_identifier_filters() -> None:
     assert writer.last_params == ["intent_1", "cmd_1", "act_1", 20, 0]
 
 
-def test_pipeline_trace_scope_contract_covers_signal_tick_and_operator_domains() -> None:
+def test_pipeline_trace_scope_contract_covers_signal_tick_and_operator_domains() -> (
+    None
+):
     ddl = " ".join(PIPELINE_TRACE_EVENTS_DDL.split())
 
     assert "DROP CONSTRAINT IF EXISTS pipeline_trace_events_scope_check" in ddl

@@ -16,10 +16,7 @@ from src.trading.execution.eventing import (
 )
 from src.trading.intents.codec import signal_event_from_payload
 from src.trading.runtime.lifecycle import OwnedThreadLifecycle
-from src.trading.runtime.progress_health import (
-    build_progress_health_snapshot,
-    utc_now,
-)
+from src.trading.runtime.progress_health import build_progress_health_snapshot, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +40,12 @@ class ExecutionIntentConsumer:
         # §0dn A1：所有 *_fn 必填（移除 Optional default 补丁种子）。
         # heartbeat_fn / mark_dispatched_fn 是 at-most-once 语义的核心组件，
         # 不允许 None 退化路径——装配阶段缺失即 fail-fast。
-        if claim_fn is None or complete_fn is None or heartbeat_fn is None or mark_dispatched_fn is None:
+        if (
+            claim_fn is None
+            or complete_fn is None
+            or heartbeat_fn is None
+            or mark_dispatched_fn is None
+        ):
             raise ValueError(
                 "ExecutionIntentConsumer requires claim_fn / complete_fn / "
                 "heartbeat_fn / mark_dispatched_fn (no Optional default; "

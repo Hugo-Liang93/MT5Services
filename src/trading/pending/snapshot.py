@@ -56,7 +56,8 @@ class PendingEntrySnapshotService:
                 "fill_rate": round(filled / submitted, 3) if submitted > 0 else None,
                 "avg_price_improvement": (
                     round(
-                        float(stats_copy.get("total_price_improvement", 0.0)) / filled, 4
+                        float(stats_copy.get("total_price_improvement", 0.0)) / filled,
+                        4,
                     )
                     if filled > 0
                     else None

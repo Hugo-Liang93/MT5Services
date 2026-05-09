@@ -8,14 +8,11 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
-from src.utils.timezone import parse_iso_to_utc
 from typing import List, Tuple
 
-from .contracts import (
-    NightlyWFConfig,
-    NightlyWFReport,
-    StrategyMetrics,
-)
+from src.utils.timezone import parse_iso_to_utc
+
+from .contracts import NightlyWFConfig, NightlyWFReport, StrategyMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +31,7 @@ def run_nightly_wf(config: NightlyWFConfig) -> NightlyWFReport:
     started = time.monotonic()
 
     tasks: List[Tuple[str, str]] = [
-        (strategy, tf)
-        for strategy in config.strategies
-        for tf in config.timeframes
+        (strategy, tf) for strategy in config.strategies for tf in config.timeframes
     ]
 
     metrics: List[StrategyMetrics] = []
@@ -45,10 +40,15 @@ def run_nightly_wf(config: NightlyWFConfig) -> NightlyWFReport:
     if config.workers == 1 or len(tasks) == 1:
         for strategy, tf in tasks:
             try:
-                metrics.append(_run_single_combo(
-                    symbol=config.symbol, strategy=strategy, tf=tf,
-                    start=config.start_date, end=config.end_date,
-                ))
+                metrics.append(
+                    _run_single_combo(
+                        symbol=config.symbol,
+                        strategy=strategy,
+                        tf=tf,
+                        start=config.start_date,
+                        end=config.end_date,
+                    )
+                )
             except Exception as exc:
                 logger.exception("nightly_wf: %s/%s failed", strategy, tf)
                 failures.append(f"{strategy}/{tf}: {exc}")
@@ -62,9 +62,7 @@ def run_nightly_wf(config: NightlyWFConfig) -> NightlyWFReport:
             (config.symbol, s, tf, config.start_date, config.end_date)
             for s, tf in tasks
         ]
-        with ProcessPoolExecutor(
-            max_workers=max_workers, mp_context=ctx
-        ) as pool:
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as pool:
             results = pool.map(_run_single_combo_packed, packed)
             for (strategy, tf), outcome in zip(tasks, results):
                 if isinstance(outcome, StrategyMetrics):
@@ -75,7 +73,9 @@ def run_nightly_wf(config: NightlyWFConfig) -> NightlyWFReport:
     elapsed = time.monotonic() - started
     logger.info(
         "nightly_wf: %d combos done in %.1fs (%d failed)",
-        len(metrics), elapsed, len(failures),
+        len(metrics),
+        elapsed,
+        len(failures),
     )
 
     return NightlyWFReport(
@@ -95,7 +95,7 @@ def run_nightly_wf(config: NightlyWFConfig) -> NightlyWFReport:
 _INFRASTRUCTURE_EXCEPTIONS: tuple[type[BaseException], ...] = (
     ConnectionError,
     TimeoutError,
-    OSError,        # 包含 IOError / FileNotFoundError / PermissionError
+    OSError,  # 包含 IOError / FileNotFoundError / PermissionError
     MemoryError,
 )
 
@@ -110,7 +110,11 @@ def _run_single_combo_packed(args: tuple):
     symbol, strategy, tf, start, end = args
     try:
         return _run_single_combo(
-            symbol=symbol, strategy=strategy, tf=tf, start=start, end=end,
+            symbol=symbol,
+            strategy=strategy,
+            tf=tf,
+            start=start,
+            end=end,
         )
     except _INFRASTRUCTURE_EXCEPTIONS:
         # 基础设施异常不能 catch——主流程必须 fail-fast

@@ -62,7 +62,9 @@ def get_tracked_positions(
     )
 
 
-@router.get("/regime/{symbol}/{timeframe}", response_model=ApiResponse[RegimeReportView])
+@router.get(
+    "/regime/{symbol}/{timeframe}", response_model=ApiResponse[RegimeReportView]
+)
 def get_regime(
     symbol: str,
     timeframe: str,
@@ -74,7 +76,10 @@ def get_regime(
     )
 
 
-@router.get("/market-structure/{symbol}/{timeframe}", response_model=ApiResponse[MarketStructureView])
+@router.get(
+    "/market-structure/{symbol}/{timeframe}",
+    response_model=ApiResponse[MarketStructureView],
+)
 def get_market_structure(
     symbol: str,
     timeframe: str,
@@ -104,7 +109,9 @@ def get_market_structure(
         metadata={
             "symbol": symbol,
             "timeframe": timeframe,
-            "analysis_mode": "live_quote" if latest_close is not None else "closed_bar_fallback",
+            "analysis_mode": (
+                "live_quote" if latest_close is not None else "closed_bar_fallback"
+            ),
             "price_source": price_source,
             "event_time": event_time.isoformat(),
         },
@@ -178,7 +185,9 @@ def get_intrabar_slos_timeseries(
                     IntrabarSLOPoint(
                         timestamp=str(sample["timestamp"]),
                         value=float(sample["value"]),
-                        alert_level=alert_level if isinstance(alert_level, str) else None,
+                        alert_level=(
+                            alert_level if isinstance(alert_level, str) else None
+                        ),
                     )
                 )
             except (TypeError, ValueError):

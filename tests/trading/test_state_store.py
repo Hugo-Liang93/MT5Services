@@ -73,7 +73,9 @@ class DummyDB:
         return None
 
 
-def test_trading_state_store_closes_missing_pending_state_when_position_is_recovered() -> None:
+def test_trading_state_store_closes_missing_pending_state_when_position_is_recovered() -> (
+    None
+):
     db = DummyDB()
     store = TradingStateStore(
         db,

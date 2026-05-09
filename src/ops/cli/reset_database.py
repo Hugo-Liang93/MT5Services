@@ -12,10 +12,12 @@ from __future__ import annotations
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 
-import logging
 import argparse
+import logging
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -24,7 +26,9 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     from src.config.instance_context import set_current_environment
 
-    parser = argparse.ArgumentParser(description="Reset database schema for a target environment")
+    parser = argparse.ArgumentParser(
+        description="Reset database schema for a target environment"
+    )
     parser.add_argument(
         "--environment",
         choices=["live", "demo"],
@@ -50,7 +54,13 @@ def main() -> None:
     from src.persistence.db import TimescaleWriter
 
     settings = load_db_settings()
-    logger.info("连接数据库: %s@%s:%s/%s", settings.pg_user, settings.pg_host, settings.pg_port, settings.pg_database)
+    logger.info(
+        "连接数据库: %s@%s:%s/%s",
+        settings.pg_user,
+        settings.pg_host,
+        settings.pg_port,
+        settings.pg_database,
+    )
 
     writer = TimescaleWriter(settings, min_conn=1, max_conn=2)
 
@@ -60,11 +70,14 @@ def main() -> None:
         conn.autocommit = True
         with conn.cursor() as cur:
             # 获取所有用户表
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT tablename FROM pg_tables
                 WHERE schemaname = %s
                 ORDER BY tablename
-            """, (settings.pg_schema if hasattr(settings, 'pg_schema') else 'public',))
+            """,
+                (settings.pg_schema if hasattr(settings, "pg_schema") else "public",),
+            )
             tables = [row[0] for row in cur.fetchall()]
 
             if tables:
@@ -90,18 +103,23 @@ def main() -> None:
     logger.info("Phase 4: 验证...")
     with writer.connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT tablename FROM pg_tables
                 WHERE schemaname = %s
                 ORDER BY tablename
-            """, (settings.pg_schema if hasattr(settings, 'pg_schema') else 'public',))
+            """,
+                (settings.pg_schema if hasattr(settings, "pg_schema") else "public",),
+            )
             new_tables = [row[0] for row in cur.fetchall()]
 
             # 检查 hypertable
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT hypertable_name FROM timescaledb_information.hypertables
                 ORDER BY hypertable_name
-            """)
+            """
+            )
             hypertables = [row[0] for row in cur.fetchall()]
 
     logger.info("  创建了 %d 张表:", len(new_tables))
@@ -109,12 +127,14 @@ def main() -> None:
         ht_marker = " [hypertable]" if t in hypertables else ""
         logger.info("    %s%s", t, ht_marker)
 
-    logger.info("\n数据库重置完成。共 %d 张表，其中 %d 张 hypertable。",
-                len(new_tables), len(hypertables))
+    logger.info(
+        "\n数据库重置完成。共 %d 张表，其中 %d 张 hypertable。",
+        len(new_tables),
+        len(hypertables),
+    )
 
     writer.close()
 
 
 if __name__ == "__main__":
     main()
-

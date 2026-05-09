@@ -50,9 +50,13 @@ class TradingAccountRegistry:
         return self._settings.account_alias
 
     def list_accounts(self) -> list[dict]:
-        environment = resolve_current_environment(instance_name=self._settings.instance_name)
+        environment = resolve_current_environment(
+            instance_name=self._settings.instance_name
+        )
         if environment is None:
-            raise ValueError("runtime environment is not configured for trading account registry")
+            raise ValueError(
+                "runtime environment is not configured for trading account registry"
+            )
         return [
             {
                 "alias": self._settings.account_alias,
@@ -74,21 +78,27 @@ class TradingAccountRegistry:
     def resolve_alias(self, account_alias: Optional[str] = None) -> str:
         alias = str(account_alias or self._settings.account_alias).strip()
         if alias != self._settings.account_alias:
-            raise KeyError(f"MT5 account alias not configured for this instance: {alias}")
+            raise KeyError(
+                f"MT5 account alias not configured for this instance: {alias}"
+            )
         return alias
 
     def get_settings(self, account_alias: Optional[str] = None) -> MT5Settings:
         self.resolve_alias(account_alias)
         return self._settings
 
-    def get_account_service(self, account_alias: Optional[str] = None) -> MT5AccountClient:
+    def get_account_service(
+        self, account_alias: Optional[str] = None
+    ) -> MT5AccountClient:
         self.resolve_alias(account_alias)
         with self._lock:
             if self._account_client is None:
                 self._account_client = MT5AccountClient(self._settings)
             return self._account_client
 
-    def get_trading_service(self, account_alias: Optional[str] = None) -> TradingService:
+    def get_trading_service(
+        self, account_alias: Optional[str] = None
+    ) -> TradingService:
         self.resolve_alias(account_alias)
         with self._lock:
             if self._trading_service is None:
@@ -111,4 +121,6 @@ class TradingAccountRegistry:
     def operation_scope(self, account_alias: Optional[str] = None):
         alias = self.resolve_alias(account_alias)
         with self._lock:
-            yield alias, self.get_trading_service(alias), self.get_account_service(alias)
+            yield alias, self.get_trading_service(alias), self.get_account_service(
+                alias
+            )

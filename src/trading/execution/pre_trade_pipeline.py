@@ -41,7 +41,9 @@ class PreTradePipeline:
     def run_confirmed(self, event: "SignalEvent", timeframe: str) -> str | None:
         return self.run(event, timeframe)
 
-    def run_intrabar(self, event: "SignalEvent", timeframe: str) -> IntrabarPreTradeResult:
+    def run_intrabar(
+        self, event: "SignalEvent", timeframe: str
+    ) -> IntrabarPreTradeResult:
         if self._executor.intrabar_guard is None:
             return IntrabarPreTradeResult(
                 can_execute=False,

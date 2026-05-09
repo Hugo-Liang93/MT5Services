@@ -82,13 +82,21 @@ def test_start_service_schedules_startup_jobs_without_blocking(monkeypatch) -> N
 
     monkeypatch.setattr(calendar_sync, "_utc_now", lambda: now)
     monkeypatch.setattr(calendar_sync, "restore_job_state", lambda svc: None)
-    monkeypatch.setattr(calendar_sync, "persist_job_state", lambda svc, job: persisted_jobs.append(job))
-    monkeypatch.setattr(calendar_sync, "startup_schedule_time", lambda svc, job, current: scheduled_calendar_sync)
+    monkeypatch.setattr(
+        calendar_sync, "persist_job_state", lambda svc, job: persisted_jobs.append(job)
+    )
+    monkeypatch.setattr(
+        calendar_sync,
+        "startup_schedule_time",
+        lambda svc, job, current: scheduled_calendar_sync,
+    )
     monkeypatch.setattr(calendar_sync, "Thread", _FakeThread)
     monkeypatch.setattr(
         calendar_sync,
         "safe_run_job",
-        lambda svc, job_type: (_ for _ in ()).throw(AssertionError("safe_run_job should not run during start_service")),
+        lambda svc, job_type: (_ for _ in ()).throw(
+            AssertionError("safe_run_job should not run during start_service")
+        ),
     )
 
     calendar_sync.start_service(service)

@@ -2,6 +2,7 @@
 
 IntrabarFeatureProvider 单元测试。
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,9 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.research.features.protocol import FeatureRole
 from src.research.features.intrabar import IntrabarProvider
-
+from src.research.features.protocol import FeatureRole
 
 # ---------------------------------------------------------------------------
 # Mock helper
@@ -132,10 +132,10 @@ class TestChildBarConsensus:
     def test_half_children_same_color(self) -> None:
         """父 bar 阳线，子 bars 2 阳 2 阴 → consensus = 0.5。"""
         children = [
-            _make_child(1.0, 1.1, 1.2, 0.9),   # 阳
-            _make_child(1.1, 1.0, 1.2, 0.9),   # 阴
-            _make_child(1.0, 1.1, 1.2, 0.9),   # 阳
-            _make_child(1.1, 1.0, 1.2, 0.9),   # 阴
+            _make_child(1.0, 1.1, 1.2, 0.9),  # 阳
+            _make_child(1.1, 1.0, 1.2, 0.9),  # 阴
+            _make_child(1.0, 1.1, 1.2, 0.9),  # 阳
+            _make_child(1.1, 1.0, 1.2, 0.9),  # 阴
         ]
         m = _make_matrix(
             opens=[1.0],
@@ -189,10 +189,10 @@ class TestChildRangeAcceleration:
         """后半段 range 是前半段两倍 → acceleration = 1.0。"""
         # 4 个子 bars：前 2 range=1, 后 2 range=2
         children = [
-            _make_child(1.0, 1.0, 2.0, 1.0),   # range=1
-            _make_child(1.0, 1.0, 2.0, 1.0),   # range=1
-            _make_child(1.0, 1.0, 3.0, 1.0),   # range=2
-            _make_child(1.0, 1.0, 3.0, 1.0),   # range=2
+            _make_child(1.0, 1.0, 2.0, 1.0),  # range=1
+            _make_child(1.0, 1.0, 2.0, 1.0),  # range=1
+            _make_child(1.0, 1.0, 3.0, 1.0),  # range=2
+            _make_child(1.0, 1.0, 3.0, 1.0),  # range=2
         ]
         m = _make_matrix(opens=[1.0], closes=[1.0], child_bars={0: children})
         p = IntrabarProvider()
@@ -317,9 +317,7 @@ class TestChildVolumeFrontWeight:
 class TestChildBarCountRatio:
     def test_full_count_ratio(self) -> None:
         """H1/M15 预期 4 个子 bars，实际 4 个 → ratio = 1.0。"""
-        children = [
-            _make_child(1.0, 1.1, 1.2, 0.9) for _ in range(4)
-        ]
+        children = [_make_child(1.0, 1.1, 1.2, 0.9) for _ in range(4)]
         m = _make_matrix(
             opens=[1.0],
             closes=[1.1],
@@ -334,9 +332,7 @@ class TestChildBarCountRatio:
 
     def test_half_count_ratio(self) -> None:
         """H1/M15 预期 4 个子 bars，实际 2 个 → ratio = 0.5。"""
-        children = [
-            _make_child(1.0, 1.1, 1.2, 0.9) for _ in range(2)
-        ]
+        children = [_make_child(1.0, 1.1, 1.2, 0.9) for _ in range(2)]
         m = _make_matrix(
             opens=[1.0],
             closes=[1.1],

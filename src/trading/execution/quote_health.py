@@ -31,7 +31,9 @@ def build_execution_quote_health(
     try:
         quote = market_service.get_quote(symbol)
     except Exception:
-        logger.debug("Execution quote health probe failed for %s", symbol, exc_info=True)
+        logger.debug(
+            "Execution quote health probe failed for %s", symbol, exc_info=True
+        )
         return {
             "stale": True,
             "age_seconds": None,

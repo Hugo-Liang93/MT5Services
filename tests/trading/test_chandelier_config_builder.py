@@ -5,6 +5,7 @@
 - factories/signals 与 backtesting/engine 共用同一构建入口避免参数构造漂移
 - duck typing 接受任何带 chandelier_* 字段的对象（SignalConfig / 未来 ExitConfig）
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -76,11 +77,18 @@ def test_build_chandelier_config_copies_mappings_defensively() -> None:
 
 def test_build_chandelier_config_reflects_alpha_change() -> None:
     """default_alpha 改变应通过 profile_from_aggression 重新派生 default_profile。"""
-    cfg_low = build_chandelier_config(_stub_signal_config(chandelier_default_alpha=0.10))
-    cfg_high = build_chandelier_config(_stub_signal_config(chandelier_default_alpha=0.90))
+    cfg_low = build_chandelier_config(
+        _stub_signal_config(chandelier_default_alpha=0.10)
+    )
+    cfg_high = build_chandelier_config(
+        _stub_signal_config(chandelier_default_alpha=0.90)
+    )
 
     # 低 alpha → 紧 trail（小 atr_multiplier）
-    assert cfg_low.default_profile.chandelier_atr_multiplier < cfg_high.default_profile.chandelier_atr_multiplier
+    assert (
+        cfg_low.default_profile.chandelier_atr_multiplier
+        < cfg_high.default_profile.chandelier_atr_multiplier
+    )
     # 低 alpha → 高锁利
     assert cfg_low.default_profile.lock_ratio > cfg_high.default_profile.lock_ratio
 
@@ -91,6 +99,7 @@ def test_build_chandelier_config_accepts_duck_typed_source() -> None:
     这是有意设计：将来 chandelier 字段从 SignalConfig 拆出独立 ExitConfig
     时，无需修改本函数。
     """
+
     class DuckTypedExitConfig:
         chandelier_regime_aware = False
         chandelier_default_alpha = 0.30

@@ -10,6 +10,7 @@ e.g., index tickers like ^TNX).
 NOT responsible for: persistence, retries beyond yfinance defaults, multi-symbol
 parallel fetching, rate limiting.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -17,10 +18,7 @@ from typing import Any, List
 
 import pandas as pd
 
-from src.research.external.protocol import (
-    DailyBar,
-    register_source,
-)
+from src.research.external.protocol import DailyBar, register_source
 
 
 class YFinanceError(RuntimeError):
@@ -32,9 +30,7 @@ class YFinanceClient:
 
     name = "yfinance"
 
-    def fetch_daily(
-        self, symbol: str, *, start: date, end: date
-    ) -> List[DailyBar]:
+    def fetch_daily(self, symbol: str, *, start: date, end: date) -> List[DailyBar]:
         """Fetch daily OHLCV for [start, end] inclusive.
 
         Raises YFinanceError if the response is empty (Yahoo returns empty

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-
 _OPTIONAL_INT_KEYS = (
     "max_positions_per_symbol",
     "max_open_positions_total",
@@ -191,14 +190,11 @@ def _normalize_recovery_runtime_runner(
     section: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     policy: dict[str, Any] = dict(section or {})
-    misplaced = [
-        key for key in _RECOVERY_RUNNER_PROFILE_BUDGET_KEYS if key in policy
-    ]
+    misplaced = [key for key in _RECOVERY_RUNNER_PROFILE_BUDGET_KEYS if key in policy]
     if misplaced:
         raise ValueError(
             "recovery_runtime_runner loss-budget fields moved to "
-            "risk_profiles.recovery_budgeted: "
-            + ", ".join(misplaced)
+            "risk_profiles.recovery_budgeted: " + ", ".join(misplaced)
         )
     for key in _RECOVERY_RUNNER_INT_KEYS + _RECOVERY_RUNNER_FLOAT_KEYS:
         if str(policy.get(key, "")).strip() == "":

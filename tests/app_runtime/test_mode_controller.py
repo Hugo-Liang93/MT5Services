@@ -248,13 +248,17 @@ def test_mode_controller_full_and_observe_toggle_trade_listener() -> None:
     controller = RuntimeModeController(
         container,
         policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
-        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        guard=RuntimeModeTransitionGuard(
+            trading_module_getter=lambda: container.trade_module
+        ),
         auto_transition_policy=RuntimeModeAutoTransitionPolicy(),
     )
 
     full = controller.apply_mode(RuntimeMode.FULL, reason="test")
     assert full["current_mode"] == "full"
-    assert container.signal_runtime.listeners == [container.trade_executor.on_signal_event]
+    assert container.signal_runtime.listeners == [
+        container.trade_executor.on_signal_event
+    ]
     assert container.trade_executor.start_calls == 1
 
     observe = controller.apply_mode(RuntimeMode.OBSERVE, reason="test")
@@ -269,7 +273,9 @@ def test_mode_controller_blocks_ingest_only_when_live_risk_exists() -> None:
     controller = RuntimeModeController(
         container,
         policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
-        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        guard=RuntimeModeTransitionGuard(
+            trading_module_getter=lambda: container.trade_module
+        ),
         auto_transition_policy=RuntimeModeAutoTransitionPolicy(),
     )
 
@@ -286,7 +292,9 @@ def test_auto_eod_sets_flag_and_session_start_restores() -> None:
     controller = RuntimeModeController(
         container,
         policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
-        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        guard=RuntimeModeTransitionGuard(
+            trading_module_getter=lambda: container.trade_module
+        ),
         auto_transition_policy=RuntimeModeAutoTransitionPolicy(
             after_eod_action=RuntimeModeEODAction.INGEST_ONLY,
         ),
@@ -324,7 +332,9 @@ def test_manual_ingest_only_not_auto_restored() -> None:
     controller = RuntimeModeController(
         container,
         policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
-        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        guard=RuntimeModeTransitionGuard(
+            trading_module_getter=lambda: container.trade_module
+        ),
         auto_transition_policy=RuntimeModeAutoTransitionPolicy(
             after_eod_action=RuntimeModeEODAction.INGEST_ONLY,
         ),
@@ -359,7 +369,9 @@ def test_apply_mode_partial_failure_still_updates_mode() -> None:
     controller = RuntimeModeController(
         container,
         policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
-        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        guard=RuntimeModeTransitionGuard(
+            trading_module_getter=lambda: container.trade_module
+        ),
         auto_transition_policy=RuntimeModeAutoTransitionPolicy(),
     )
 

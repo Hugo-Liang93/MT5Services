@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app_runtime.builder_phases.tick_features import attach_tick_feature_listener
 from src.app_runtime.container import AppContainer
 from src.app_runtime.factories import (
     build_signal_components,
@@ -15,9 +16,8 @@ from src.signals.orchestration.intrabar_contract import (
     intrabar_trading_active,
 )
 from src.trading.execution.market_data_health import build_execution_market_data_health
-from src.trading.execution.tick_feature_health import build_execution_tick_feature_health
-from src.app_runtime.builder_phases.tick_features import (
-    attach_tick_feature_listener,
+from src.trading.execution.tick_feature_health import (
+    build_execution_tick_feature_health,
 )
 
 
@@ -192,11 +192,17 @@ def _wire_required_market_data_lanes(ingestor: Any, signal_runtime: Any) -> None
 def _has_tick_derived_strategy(signal_runtime: Any) -> bool:
     if signal_runtime is None:
         return False
-    contract_fn = _resolve_optional_getter(signal_runtime, "strategy_capability_contract")
+    contract_fn = _resolve_optional_getter(
+        signal_runtime, "strategy_capability_contract"
+    )
     if not callable(contract_fn):
         return False
     for item in contract_fn() or ():
-        scopes = item.valid_scopes if isinstance(item, StrategyCapability) else item.get("valid_scopes", ())
+        scopes = (
+            item.valid_scopes
+            if isinstance(item, StrategyCapability)
+            else item.get("valid_scopes", ())
+        )
         if "tick_derived" in tuple(scopes or ()):
             return True
     return False
@@ -317,7 +323,10 @@ def build_signal_layer(
         container.trade_executor.set_market_data_health_fn(
             lambda symbol: build_execution_market_data_health(ingestor, symbol)
         )
-    if container.trade_executor is not None and container.tick_feature_health_store is not None:
+    if (
+        container.trade_executor is not None
+        and container.tick_feature_health_store is not None
+    ):
         health_store = container.tick_feature_health_store
         feature_bus = container.tick_feature_bus
         container.trade_executor.set_tick_feature_health_fn(

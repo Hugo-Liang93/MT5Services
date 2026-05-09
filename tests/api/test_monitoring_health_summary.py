@@ -43,7 +43,10 @@ def test_build_runtime_health_summary_includes_event_outcomes() -> None:
     assert summary["events"]["skipped"] == 5
     assert summary["events"]["retrying"] == 1
     assert summary["events"]["outcome_counts"]["skipped_insufficient_history"] == 5
-    assert summary["events"]["recent_skips"][0]["outcome"] == "skipped_insufficient_history"
+    assert (
+        summary["events"]["recent_skips"][0]["outcome"]
+        == "skipped_insufficient_history"
+    )
     assert summary["events"]["recent_retryable_errors"][0]["error_message"] == "boom"
     assert summary["events"]["recent_errors"] == []
     assert summary["cache"]["snapshot"] == {"hits": 10, "misses": 3}
@@ -78,7 +81,9 @@ def test_build_storage_runtime_summary_marks_warning_for_high_queue() -> None:
     assert summary["worst_queue"]["status"] == "high"
 
 
-def test_build_storage_runtime_summary_marks_critical_when_ingestor_thread_stops() -> None:
+def test_build_storage_runtime_summary_marks_critical_when_ingestor_thread_stops() -> (
+    None
+):
     summary = RuntimeReadModel.build_storage_summary(
         {
             "threads": {"writer_alive": True, "ingest_alive": False},

@@ -9,8 +9,8 @@ import pytest
 
 from src.research.entry_meta.dataset import EntryMetaDataset
 from src.research.entry_meta.features import (
-    EntryMetaFeatureBuildError,
     EntryMetaFeatureBuilder,
+    EntryMetaFeatureBuildError,
     EntryMetaFeatureContext,
     EntryMetaFeatureRowBuilder,
 )
@@ -22,7 +22,9 @@ class _Regime(Enum):
     RANGE = "range"
 
 
-def _dataset(trades: list[dict[str, object]], bar_indices: list[int]) -> EntryMetaDataset:
+def _dataset(
+    trades: list[dict[str, object]], bar_indices: list[int]
+) -> EntryMetaDataset:
     return EntryMetaDataset(
         trades=[dict(trade) for trade in trades],
         bar_indices=bar_indices,
@@ -279,7 +281,10 @@ def test_builds_entry_context_visible_indicators_and_codes_in_stable_order() -> 
             dtype=float,
         ),
     )
-    assert features.bar_times == ["2026-01-01T00:05:00+00:00", "2026-01-01T00:10:00+00:00"]
+    assert features.bar_times == [
+        "2026-01-01T00:05:00+00:00",
+        "2026-01-01T00:10:00+00:00",
+    ]
     assert features.train_indices == [0]
     assert features.test_indices == [1]
     assert features.manifest["n_features"] == len(features.feature_keys)
@@ -421,7 +426,9 @@ def test_non_finite_and_non_numeric_visible_values_become_zero() -> None:
 
     features = EntryMetaFeatureBuilder().build(matrix, _dataset([trade], [0]))
 
-    assert features.rows.tolist() == [[0.9, 1.0, 0.0, 1.2345, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+    assert features.rows.tolist() == [
+        [0.9, 1.0, 0.0, 1.2345, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    ]
 
 
 def test_nested_entry_values_do_not_override_top_level_trade_contract() -> None:

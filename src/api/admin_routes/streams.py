@@ -21,7 +21,11 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.get("/events/stream")
 async def admin_events_stream(
-    scope: str = Query(default="all", pattern="^(confirmed|intrabar|all)$", description="按 confirmed、intrabar、all 过滤。"),
+    scope: str = Query(
+        default="all",
+        pattern="^(confirmed|intrabar|all)$",
+        description="按 confirmed、intrabar、all 过滤。",
+    ),
     symbol: Optional[str] = Query(default=None, description="按品种过滤。"),
     signal_runtime: SignalRuntime = Depends(deps.get_signal_runtime),
 ) -> StreamingResponse:
@@ -59,22 +63,41 @@ async def admin_events_stream(
         try:
             while True:
                 try:
-                    payload = await asyncio.wait_for(queue.get(), timeout=heartbeat_interval)
+                    payload = await asyncio.wait_for(
+                        queue.get(), timeout=heartbeat_interval
+                    )
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
-                    heartbeat = {"type": "heartbeat", "ts": datetime.now(timezone.utc).isoformat()}
+                    heartbeat = {
+                        "type": "heartbeat",
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                    }
                     yield f"data: {json.dumps(heartbeat, ensure_ascii=False)}\n\n"
         finally:
             signal_runtime.remove_signal_listener(_on_signal)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/pipeline/stream")
 async def admin_pipeline_stream(
-    scope: str = Query(default="all", pattern="^(confirmed|intrabar|all)$", description="按 confirmed、intrabar、all 过滤。"),
+    scope: str = Query(
+        default="all",
+        pattern="^(confirmed|intrabar|all)$",
+        description="按 confirmed、intrabar、all 过滤。",
+    ),
     symbol: Optional[str] = Query(default=None, description="按品种过滤。"),
-    detail: bool = Query(default=False, description="为 true 时返回完整 OHLC 与指标快照。"),
+    detail: bool = Query(
+        default=False, description="为 true 时返回完整 OHLC 与指标快照。"
+    ),
     pipeline_bus: PipelineEventBus = Depends(deps.get_pipeline_event_bus),
 ) -> StreamingResponse:
     detail_keys = {"ohlc", "indicator_names", "indicators"}
@@ -86,7 +109,15 @@ async def admin_pipeline_stream(
             return
         if symbol and event.symbol != symbol:
             return
-        payload: Dict[str, Any] = {"type": event.type, "trace_id": event.trace_id, "symbol": event.symbol, "timeframe": event.timeframe, "scope": event.scope, "ts": event.ts, **event.payload}
+        payload: Dict[str, Any] = {
+            "type": event.type,
+            "trace_id": event.trace_id,
+            "symbol": event.symbol,
+            "timeframe": event.timeframe,
+            "scope": event.scope,
+            "ts": event.ts,
+            **event.payload,
+        }
         if not detail:
             for key in detail_keys:
                 payload.pop(key, None)
@@ -102,15 +133,28 @@ async def admin_pipeline_stream(
         try:
             while True:
                 try:
-                    payload = await asyncio.wait_for(queue.get(), timeout=heartbeat_interval)
+                    payload = await asyncio.wait_for(
+                        queue.get(), timeout=heartbeat_interval
+                    )
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
-                    heartbeat = {"type": "heartbeat", "ts": datetime.now(timezone.utc).isoformat()}
+                    heartbeat = {
+                        "type": "heartbeat",
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                    }
                     yield f"data: {json.dumps(heartbeat, ensure_ascii=False)}\n\n"
         finally:
             pipeline_bus.remove_listener(_on_pipeline_event)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/pipeline/stats", response_model=ApiResponse[PipelineStatsView])

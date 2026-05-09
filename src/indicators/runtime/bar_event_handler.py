@@ -5,8 +5,10 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from src.utils.event_store import ClaimedEvent
+
+from ..query_services.runtime import _get_pipeline_bus as _runtime_get_pipeline_bus
 from ..query_services.runtime import (
-    _get_pipeline_bus as _runtime_get_pipeline_bus,
     compute_confirmed_results_for_bars,
     compute_intrabar_results_for_bars,
     get_intrabar_eligible_names,
@@ -21,10 +23,8 @@ from ..query_services.runtime import (
     select_indicator_names_for_history,
     write_back_results,
 )
-from src.utils.event_store import ClaimedEvent
 
 logger = logging.getLogger(__name__)
-
 
 
 def _extract_ohlc(bar: object) -> Optional[Dict[str, float]]:
@@ -39,6 +39,7 @@ def _extract_ohlc(bar: object) -> Optional[Dict[str, float]]:
         }
     except (AttributeError, TypeError):
         return None
+
 
 def process_closed_bar_events_batch(
     manager,
@@ -68,7 +69,9 @@ def process_closed_bar_events_batch(
             )
             if durable_event:
                 for event in ordered:
-                    mark_event_failed(manager, event.event_id, "batch_processing_failed")
+                    mark_event_failed(
+                        manager, event.event_id, "batch_processing_failed"
+                    )
 
 
 def process_symbol_timeframe_batch(
@@ -110,7 +113,11 @@ def process_symbol_timeframe_batch(
             if pipeline_bus is not None:
                 ohlc = _extract_ohlc(bars[end_idx]) if end_idx is not None else None
                 pipeline_bus.emit_bar_closed(
-                    trace_id, symbol, timeframe, "confirmed", bar_time,
+                    trace_id,
+                    symbol,
+                    timeframe,
+                    "confirmed",
+                    bar_time,
                     ohlc=ohlc,
                 )
             if end_idx is None:
@@ -164,8 +171,12 @@ def process_symbol_timeframe_batch(
             # Broadcast: indicator computation completed
             if pipeline_bus is not None:
                 pipeline_bus.emit_indicator_computed(
-                    trace_id, symbol, timeframe, "confirmed",
-                    compute_time_ms, len(results),
+                    trace_id,
+                    symbol,
+                    timeframe,
+                    "confirmed",
+                    compute_time_ms,
+                    len(results),
                     indicator_names=sorted(results.keys()),
                 )
 
@@ -228,7 +239,12 @@ def process_closed_bar_event(
         if pipeline_bus is not None:
             ohlc = _extract_ohlc(bars[-1]) if bars else None
             pipeline_bus.emit_bar_closed(
-                trace_id, symbol, timeframe, "confirmed", bar_time, ohlc=ohlc,
+                trace_id,
+                symbol,
+                timeframe,
+                "confirmed",
+                bar_time,
+                ohlc=ohlc,
             )
 
         if not bars:
@@ -245,8 +261,12 @@ def process_closed_bar_event(
 
         if pipeline_bus is not None:
             pipeline_bus.emit_indicator_computed(
-                trace_id, symbol, timeframe, "confirmed",
-                compute_time_ms, len(results),
+                trace_id,
+                symbol,
+                timeframe,
+                "confirmed",
+                compute_time_ms,
+                len(results),
                 indicator_names=sorted(results.keys()),
             )
 
@@ -290,7 +310,11 @@ def process_intrabar_event(
 
     if pipeline_bus is not None:
         pipeline_bus.emit_bar_closed(
-            trace_id, symbol, timeframe, "intrabar", bar.time,
+            trace_id,
+            symbol,
+            timeframe,
+            "intrabar",
+            bar.time,
             ohlc=_extract_ohlc(bar),
         )
 
@@ -322,8 +346,12 @@ def process_intrabar_event(
 
     if pipeline_bus is not None:
         pipeline_bus.emit_indicator_computed(
-            trace_id, symbol, timeframe, "intrabar",
-            _compute_time_ms, len(results),
+            trace_id,
+            symbol,
+            timeframe,
+            "intrabar",
+            _compute_time_ms,
+            len(results),
             indicator_names=sorted(results.keys()),
         )
 
@@ -343,4 +371,3 @@ def process_intrabar_event(
     finally:
         manager.set_current_trace_id(None)
     return result
-

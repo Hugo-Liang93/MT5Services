@@ -11,15 +11,7 @@ from typing import List
 import pytest
 
 from src.indicators.core.mean import ema, hma, sma
-from src.indicators.core.momentum import (
-    cci,
-    macd,
-    roc,
-    rsi,
-    stoch_rsi,
-    williams_r,
-)
-
+from src.indicators.core.momentum import cci, macd, roc, rsi, stoch_rsi, williams_r
 
 # ---------------------------------------------------------------------------
 # Mock bar helper
@@ -483,7 +475,9 @@ class TestWilliamsR:
 
     def test_williams_r_range_negative_100_to_0(self) -> None:
         """Williams %R 值始终在 [-100, 0] 范围内。"""
-        data = [(c + 3.0, c - 3.0, c) for c in [50.0 + (i * 1.7 % 8) for i in range(20)]]
+        data = [
+            (c + 3.0, c - 3.0, c) for c in [50.0 + (i * 1.7 % 8) for i in range(20)]
+        ]
         bars = _make_bars_hlc(data)
         result = williams_r(bars, {"period": 14})
         assert -100.0 <= result["williams_r"] <= 0.0
@@ -570,7 +564,7 @@ class TestRoc:
 # Bollinger Bands Tests
 # ===================================================================
 
-from src.indicators.core.volatility import bollinger, keltner, donchian, atr, adx
+from src.indicators.core.volatility import adx, atr, bollinger, donchian, keltner
 
 
 class TestBollinger:
@@ -645,7 +639,9 @@ class TestKeltner:
 
     def test_keltner_upper_gt_mid_gt_lower(self) -> None:
         """上轨 > 中轨 > 下轨（价格有波动时）。"""
-        data = [(c + 3.0, c - 3.0, c) for c in [50.0 + (i * 1.7 % 8) for i in range(30)]]
+        data = [
+            (c + 3.0, c - 3.0, c) for c in [50.0 + (i * 1.7 % 8) for i in range(30)]
+        ]
         bars = _make_bars_hlc(data)
         result = keltner(bars, {"period": 20, "atr_period": 14, "mult": 2.0})
         assert result["kc_upper"] > result["kc_mid"]
@@ -692,7 +688,9 @@ class TestDonchian:
 
     def test_donchian_upper_gte_lower(self) -> None:
         """donchian_upper >= donchian_lower 始终成立。"""
-        data = [(c + 5.0, c - 5.0, c) for c in [50.0 + (i * 3.1 % 12) for i in range(25)]]
+        data = [
+            (c + 5.0, c - 5.0, c) for c in [50.0 + (i * 3.1 % 12) for i in range(25)]
+        ]
         bars = _make_bars_hlc(data)
         result = donchian(bars, {"period": 20})
         assert result["donchian_upper"] >= result["donchian_lower"]
@@ -716,7 +714,12 @@ class TestDonchian:
         data = [(c + 1.0, c - 1.0, c) for c in [50.0 + i for i in range(20)]]
         bars = _make_bars_hlc(data)
         result = donchian(bars, {"period": 20})
-        assert set(result.keys()) == {"donchian_upper", "donchian_lower", "donchian_mid", "close"}
+        assert set(result.keys()) == {
+            "donchian_upper",
+            "donchian_lower",
+            "donchian_mid",
+            "close",
+        }
 
 
 # ===================================================================
@@ -744,7 +747,9 @@ class TestAtr:
 
     def test_atr_positive_value(self) -> None:
         """ATR 值应始终 > 0（价格有波动时）。"""
-        data = [(c + 2.0, c - 2.0, c) for c in [50.0 + (i * 1.7 % 6) for i in range(20)]]
+        data = [
+            (c + 2.0, c - 2.0, c) for c in [50.0 + (i * 1.7 % 6) for i in range(20)]
+        ]
         bars = _make_bars_hlc(data)
         result = atr(bars, {"period": 14})
         assert result["atr"] > 0
@@ -799,7 +804,10 @@ class TestAdx:
 
     def test_adx_range_0_100(self) -> None:
         """ADX 值在 [0, 100] 范围内。"""
-        data = [(c + 3.0, c - 3.0, c) for c in [50.0 + (i * 2.7 % 15) - 7 for i in range(60)]]
+        data = [
+            (c + 3.0, c - 3.0, c)
+            for c in [50.0 + (i * 2.7 % 15) - 7 for i in range(60)]
+        ]
         bars = _make_bars_hlc(data)
         result = adx(bars, {"period": 14})
         if result:
@@ -815,7 +823,10 @@ class TestAdx:
     def test_adx_strong_trend(self) -> None:
         """强趋势序列中 ADX 应较高，plus_di > minus_di。"""
         # 持续上涨：每根 bar 的 high/low/close 均单调上升
-        data = [(50.0 + i * 2.0 + 3.0, 50.0 + i * 2.0 - 1.0, 50.0 + i * 2.0) for i in range(60)]
+        data = [
+            (50.0 + i * 2.0 + 3.0, 50.0 + i * 2.0 - 1.0, 50.0 + i * 2.0)
+            for i in range(60)
+        ]
         bars = _make_bars_hlc(data)
         result = adx(bars, {"period": 14})
         if result:

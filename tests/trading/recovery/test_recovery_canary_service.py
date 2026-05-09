@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from src.backtesting.tick_replay import RecoveryCanaryGatePolicy
 from src.clients.mt5_market import Tick
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.recovery import (
@@ -8,6 +9,7 @@ from src.trading.recovery import (
     RecoveryExecutionCanaryPolicy,
     RecoveryPolicy,
 )
+from src.trading.recovery import canary as recovery_canary_service
 from src.trading.recovery.canary import (
     close_dry_run_recovery_cycle,
     close_initial_recovery_cycle,
@@ -15,8 +17,6 @@ from src.trading.recovery.canary import (
     execute_recovery_canary,
     open_initial_recovery_cycle,
 )
-from src.trading.recovery import canary as recovery_canary_service
-from src.backtesting.tick_replay import RecoveryCanaryGatePolicy
 
 
 class DummyStateStore:
@@ -148,7 +148,7 @@ def _cycle_state(**overrides) -> RecoveryCycleState:
         "started_at": opened_at,
         "updated_at": opened_at,
         "last_step_at": opened_at,
-        "strategy": "tick_martingale_probe",
+        "strategy": "tick_recovery_probe",
         "timeframe": "TICK",
         "source_signal_id": "sig-cleanup-alert",
     }
@@ -254,7 +254,7 @@ def test_open_initial_recovery_cycle_records_real_trade_result_as_cycle_state():
         source_signal_id="sig-live",
         state_store=store,
         trading_port=trading,
-        strategy="tick_martingale_probe",
+        strategy="tick_recovery_probe",
         timeframe="TICK",
     )
 
@@ -433,7 +433,9 @@ def test_evaluate_current_recovery_step_records_submitted_scaling_state():
 def test_close_recovery_canary_positions_closes_initial_and_recovery_tickets():
     store = DummyStateStore()
     trading = CloseRecordingTradingPort()
-    cycle = _cycle_state(cycle_id="cycle-close-recovery", source_signal_id="sig-close-recovery")
+    cycle = _cycle_state(
+        cycle_id="cycle-close-recovery", source_signal_id="sig-close-recovery"
+    )
 
     result = recovery_canary_service.close_recovery_canary_positions(
         initial_result={
@@ -456,7 +458,7 @@ def test_close_recovery_canary_positions_closes_initial_and_recovery_tickets():
                 "started_at": cycle.started_at,
                 "updated_at": cycle.updated_at,
                 "last_step_at": cycle.last_step_at,
-                "strategy": "tick_martingale_probe",
+                "strategy": "tick_recovery_probe",
                 "timeframe": "TICK",
                 "source_signal_id": "sig-close-recovery",
                 "metadata": {"canary": True},
@@ -476,8 +478,14 @@ def test_close_recovery_canary_positions_closes_initial_and_recovery_tickets():
     assert result["status"] == "closed"
     assert result["tickets"] == [9001, 9002]
     assert [call[0] for call in trading.dispatch_calls] == ["close", "close"]
-    assert trading.dispatch_calls[0][1]["action_id"] == "recovery:cycle-close-recovery:close_initial"
-    assert trading.dispatch_calls[1][1]["action_id"] == "recovery:cycle-close-recovery:close_step_1"
+    assert (
+        trading.dispatch_calls[0][1]["action_id"]
+        == "recovery:cycle-close-recovery:close_initial"
+    )
+    assert (
+        trading.dispatch_calls[1][1]["action_id"]
+        == "recovery:cycle-close-recovery:close_step_1"
+    )
     closed_cycle, kwargs = store.records[0]
     assert closed_cycle.status == "closed"
     assert closed_cycle.step_count == 1
@@ -571,7 +579,7 @@ def test_close_initial_recovery_cycle_marks_cycle_closed_when_state_store_provid
         started_at=opened_at,
         updated_at=opened_at,
         last_step_at=opened_at,
-        strategy="tick_martingale_probe",
+        strategy="tick_recovery_probe",
         timeframe="TICK",
         source_signal_id="sig-close-state",
     )
@@ -635,7 +643,10 @@ def test_verify_initial_recovery_cleanup_records_critical_alert_when_ticket_stil
     blocked_cycle, kwargs = store.records[0]
     assert blocked_cycle.status == "blocked"
     assert blocked_cycle.cycle_id == "cycle-cleanup-alert"
-    assert blocked_cycle.metadata["cleanup_alert"]["code"] == "recovery_initial_cleanup_unresolved"
+    assert (
+        blocked_cycle.metadata["cleanup_alert"]["code"]
+        == "recovery_initial_cleanup_unresolved"
+    )
     assert kwargs["status_reason"] == "canary_initial_cleanup_unresolved"
 
 
@@ -680,5 +691,8 @@ def test_verify_initial_recovery_cleanup_records_critical_alert_when_verificatio
     assert "mt5 position read failed" in result["alert"]["message"]
     blocked_cycle, kwargs = store.records[0]
     assert blocked_cycle.status == "blocked"
-    assert blocked_cycle.metadata["cleanup_alert"]["code"] == "recovery_initial_cleanup_verification_failed"
+    assert (
+        blocked_cycle.metadata["cleanup_alert"]["code"]
+        == "recovery_initial_cleanup_verification_failed"
+    )
     assert kwargs["status_reason"] == "canary_initial_cleanup_verification_failed"

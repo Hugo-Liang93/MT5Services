@@ -15,9 +15,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from src.signals.evaluation.regime import MarketRegimeDetector
 from src.signals.service import SignalModule
 
+from ..analysis.metrics import _empty_metrics, compute_metrics
 from ..data.loader import HistoricalDataLoader
 from ..engine.runner import BacktestEngine
-from ..analysis.metrics import _empty_metrics, compute_metrics
 from ..models import BacktestConfig, BacktestMetrics, BacktestResult, ParameterSpace
 from .optimizer import ParameterOptimizer
 
@@ -200,17 +200,13 @@ class WalkForwardValidator:
                     )
 
             # ── 用最优参数在训练集上回测（IS 结果）────────────────
-            in_sample_result = self._run_backtest(
-                train_start, train_end, best_params
-            )
+            in_sample_result = self._run_backtest(train_start, train_end, best_params)
 
             # ── 用最优参数在测试集上回测（OOS 结果）───────────────
             if progress_callback:
                 progress_callback(i + 1, n_splits, "testing")
 
-            out_of_sample_result = self._run_backtest(
-                test_start, test_end, best_params
-            )
+            out_of_sample_result = self._run_backtest(test_start, test_end, best_params)
 
             split = WalkForwardSplit(
                 split_index=i,

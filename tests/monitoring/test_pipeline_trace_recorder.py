@@ -5,8 +5,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.monitoring.pipeline import PipelineEvent, PipelineEventBus
-from src.monitoring.pipeline import PipelineTraceRecorder
+from src.monitoring.pipeline import (
+    PipelineEvent,
+    PipelineEventBus,
+    PipelineTraceRecorder,
+)
 
 
 class _DBWriter:
@@ -65,7 +68,9 @@ def test_pipeline_trace_recorder_persists_bus_events() -> None:
     assert row[6]["bar_time"] == "2026-01-01T08:00:00+00:00"
 
 
-def test_pipeline_trace_recorder_stop_keeps_thread_reference_when_join_times_out() -> None:
+def test_pipeline_trace_recorder_stop_keeps_thread_reference_when_join_times_out() -> (
+    None
+):
     removed = []
     flushed = []
 
@@ -160,12 +165,12 @@ def test_pipeline_trace_recorder_survives_transient_write_failure() -> None:
             _time.sleep(0.05)
             if len(db.rows) >= 1:
                 break
-        assert recorder.is_running(), (
-            f"瞬时写库失败不能打死 recorder 线程；db.calls={db.calls!r}"
-        )
+        assert (
+            recorder.is_running()
+        ), f"瞬时写库失败不能打死 recorder 线程；db.calls={db.calls!r}"
         # 至少恢复后写入 1 条
-        assert len(db.rows) >= 1, (
-            f"恢复后必须能写入；db.rows={len(db.rows)} db.calls={db.calls}"
-        )
+        assert (
+            len(db.rows) >= 1
+        ), f"恢复后必须能写入；db.rows={len(db.rows)} db.calls={db.calls}"
     finally:
         recorder.stop()

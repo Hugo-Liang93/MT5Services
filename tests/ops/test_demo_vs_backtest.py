@@ -19,7 +19,6 @@ from datetime import datetime, timezone
 
 from src.ops.cli import demo_vs_backtest as cli
 
-
 # ── SQL 字段对齐 sentinel ────────────────────────────────────────────
 
 
@@ -60,8 +59,7 @@ def test_demo_sql_filters_signal_direction() -> None:
     src = inspect.getsource(cli)
     # 接受单引号或双引号
     assert (
-        "direction IN ('buy', 'sell')" in src
-        or "direction IN (\"buy\", \"sell\")" in src
+        "direction IN ('buy', 'sell')" in src or 'direction IN ("buy", "sell")' in src
     ), "应过滤 direction IN ('buy', 'sell') 排除 hold"
 
 
@@ -156,9 +154,9 @@ def test_report_includes_signed_price_change_for_demo() -> None:
     aggs = {"alpha": _make_aggregate("alpha")}
     report = cli._build_report(cfg, aggs)
     payload = report.aggregates[0]
-    assert "signed_price_change" in payload["demo"], (
-        "demo payload 应含 signed_price_change 而非 total_pnl(USD)，避免单位误读"
-    )
+    assert (
+        "signed_price_change" in payload["demo"]
+    ), "demo payload 应含 signed_price_change 而非 total_pnl(USD)，避免单位误读"
 
 
 def test_report_does_not_emit_pf_drift_alarm() -> None:

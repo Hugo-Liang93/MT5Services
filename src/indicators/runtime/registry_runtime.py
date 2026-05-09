@@ -6,8 +6,7 @@ import importlib
 import logging
 from typing import TYPE_CHECKING, Any
 
-from src.config.indicator_config import ComputeMode
-from src.config.indicator_config import IndicatorConfig
+from src.config.indicator_config import ComputeMode, IndicatorConfig
 
 from ..cache.incremental import IncrementalIndicator
 from ..engine.dependency_manager import get_global_dependency_manager
@@ -63,7 +62,9 @@ def _load_incremental_class(
             return None
         return cls
     except (ImportError, AttributeError, TypeError) as exc:
-        logger.warning("Failed to load incremental class for '%s': %s", config.name, exc)
+        logger.warning(
+            "Failed to load incremental class for '%s': %s", config.name, exc
+        )
         return None
 
 

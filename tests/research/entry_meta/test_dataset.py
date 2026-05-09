@@ -46,7 +46,10 @@ def test_train_test_indices_are_dataset_sample_indices_not_bar_indices() -> None
 
 
 def test_unmatched_trade_is_recorded_and_not_labeled() -> None:
-    matched = {"entry_time": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc), "pnl": 5.0}
+    matched = {
+        "entry_time": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+        "pnl": 5.0,
+    }
     unmatched = {"entry_time": "not-a-time", "pnl": -100.0}
 
     dataset = EntryMetaDatasetBuilder().build(_matrix(), [matched, unmatched])

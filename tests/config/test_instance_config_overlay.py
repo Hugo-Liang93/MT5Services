@@ -3,12 +3,12 @@ from __future__ import annotations
 import configparser
 from pathlib import Path
 
-from src.config.instance_context import resolve_instance_scoped_dir, set_current_instance_name
-from src.config.mt5 import load_mt5_settings
-from src.config.topology import (
-    load_topology_group,
-    resolve_topology_assignment,
+from src.config.instance_context import (
+    resolve_instance_scoped_dir,
+    set_current_instance_name,
 )
+from src.config.mt5 import load_mt5_settings
+from src.config.topology import load_topology_group, resolve_topology_assignment
 from src.config.utils import get_merged_option_source, load_config_with_base
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -94,7 +94,9 @@ workers = live-exec-a, live-exec-b
     assert assignment.live_topology_mode == "multi_account"
 
 
-def test_load_config_with_base_ignores_instance_overrides_for_global_configs(tmp_path) -> None:
+def test_load_config_with_base_ignores_instance_overrides_for_global_configs(
+    tmp_path,
+) -> None:
     _write(
         tmp_path / "config" / "signal.ini",
         """
@@ -271,7 +273,9 @@ label = Live Main
     assert settings.timezone == "UTC"
 
 
-def test_load_mt5_settings_inherits_root_defaults_under_instance_context(tmp_path) -> None:
+def test_load_mt5_settings_inherits_root_defaults_under_instance_context(
+    tmp_path,
+) -> None:
     _write(
         tmp_path / "config" / "mt5.local.ini",
         """
@@ -396,8 +400,14 @@ max_trades_per_day = 2
 def test_resolve_instance_scoped_dir_appends_instance_name() -> None:
     set_current_instance_name("live-main")
     try:
-        assert resolve_instance_scoped_dir(Path("data") / "runtime") == Path("data") / "runtime" / "live-main"
-        assert resolve_instance_scoped_dir(Path("data") / "logs") == Path("data") / "logs" / "live-main"
+        assert (
+            resolve_instance_scoped_dir(Path("data") / "runtime")
+            == Path("data") / "runtime" / "live-main"
+        )
+        assert (
+            resolve_instance_scoped_dir(Path("data") / "logs")
+            == Path("data") / "logs" / "live-main"
+        )
     finally:
         set_current_instance_name(None)
 
@@ -467,7 +477,9 @@ trend__trending = 0.90
     )
 
 
-def test_load_config_with_base_instance_exit_local_has_highest_priority(tmp_path) -> None:
+def test_load_config_with_base_instance_exit_local_has_highest_priority(
+    tmp_path,
+) -> None:
     """exit.local.ini（实例级）覆盖优先级最高。"""
     _write(
         tmp_path / "config" / "exit.ini",

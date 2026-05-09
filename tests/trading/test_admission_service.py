@@ -16,8 +16,6 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.trading.admission.service import (
     TradeAdmissionService,
     append_admission_report_event,
@@ -236,7 +234,9 @@ def test_precheck_payload_uses_formal_command_contract() -> None:
         "magic": 0,
         "metadata": {"account_key": "demo:key"},
     }
-    assert result["report"]["deployment_contract"]["strategy"] == "structured_price_action"
+    assert (
+        result["report"]["deployment_contract"]["strategy"] == "structured_price_action"
+    )
     assert result["report"]["deployment_contract"]["timeframe"] == "M15"
 
 
@@ -555,3 +555,114 @@ def test_account_alias_payload_overrides_runtime_identity() -> None:
         requested_operation="market",
     )["report"]
     assert report["account_alias"] == "live_exec_a"
+
+
+# ── ADR-014 combined_exposure 检查 ─────────────────────────────────────────
+
+
+def _stub_views_with_combined_exposure(
+    *,
+    by_symbol: dict | None = None,
+    max_volume_per_symbol: float | None = 0.03,
+    max_net_lots_per_symbol: float | None = None,
+    source_status: str = "ok",
+) -> Any:
+    views = _stub_runtime_views()
+    views.combined_exposure_payload.return_value = {
+        "view": "combined_exposure",
+        "source_status": source_status,
+        "recovery_runner_enabled": True,
+        "recovery_active_cycle_id": "cycle-42",
+        "recovery_lots": 0.02,
+        "signal_lots": 0.0,
+        "total_lots": 0.02,
+        "by_symbol": by_symbol or {"XAUUSD": {"total_lots": 0.02}},
+        "limits": {
+            "max_volume_per_symbol": max_volume_per_symbol,
+            "max_net_lots_per_symbol": max_net_lots_per_symbol,
+            "max_open_positions_total": 3,
+            "max_positions_per_symbol": 3,
+        },
+    }
+    return views
+
+
+def test_combined_exposure_blocks_when_signal_volume_would_exceed_limit() -> None:
+    """ADR-014: 恢复轨已占 0.02 + PA 新单 0.02 = 0.04 > max 0.03 → deny。"""
+    views = _stub_views_with_combined_exposure()
+    svc = _make_service(runtime_views=views)
+    result = svc.evaluate_trade_payload(
+        {"symbol": "XAUUSD", "volume": 0.02, "side": "buy"},
+        requested_operation="execute_trade",
+    )
+    report = result["report"]
+    breach = next(
+        (r for r in report["reasons"] if r["code"] == "combined_exposure_exceeded"),
+        None,
+    )
+    assert breach is not None
+    assert breach["stage"] == "account_risk"
+    assert breach["details"]["future_total_lots"] == 0.04
+    assert "max_volume_per_symbol" in breach["details"]["breached_limits"]
+
+
+def test_combined_exposure_allows_when_within_budget() -> None:
+    """ADR-014: 恢复轨已占 0.02 + PA 新单 0.005 = 0.025 < 0.03 → 允许。"""
+    views = _stub_views_with_combined_exposure()
+    svc = _make_service(runtime_views=views)
+    result = svc.evaluate_trade_payload(
+        {"symbol": "XAUUSD", "volume": 0.005, "side": "buy"},
+        requested_operation="execute_trade",
+    )
+    report = result["report"]
+    assert not any(r["code"] == "combined_exposure_exceeded" for r in report["reasons"])
+
+
+def test_combined_exposure_skips_close_operations() -> None:
+    """平仓操作不检查 combined_exposure（不增量占用）。"""
+    views = _stub_views_with_combined_exposure()
+    svc = _make_service(runtime_views=views)
+    result = svc.evaluate_trade_payload(
+        {"symbol": "XAUUSD", "volume": 0.02, "side": "sell"},
+        requested_operation="close_position",
+    )
+    report = result["report"]
+    assert not any(r["code"] == "combined_exposure_exceeded" for r in report["reasons"])
+
+
+def test_combined_exposure_skips_when_position_manager_unavailable() -> None:
+    """source_status=unavailable 时透明降级，不阻断。"""
+    views = _stub_views_with_combined_exposure(
+        source_status="position_manager_unavailable"
+    )
+    svc = _make_service(runtime_views=views)
+    result = svc.evaluate_trade_payload(
+        {"symbol": "XAUUSD", "volume": 0.05, "side": "buy"},
+        requested_operation="execute_trade",
+    )
+    report = result["report"]
+    assert not any(r["code"] == "combined_exposure_exceeded" for r in report["reasons"])
+
+
+def test_combined_exposure_skips_when_limits_unset() -> None:
+    """risk_config 未注入 → limits=None → 不阻断（透明降级）。"""
+    views = _stub_views_with_combined_exposure(max_volume_per_symbol=None)
+    svc = _make_service(runtime_views=views)
+    result = svc.evaluate_trade_payload(
+        {"symbol": "XAUUSD", "volume": 0.10, "side": "buy"},
+        requested_operation="execute_trade",
+    )
+    report = result["report"]
+    assert not any(r["code"] == "combined_exposure_exceeded" for r in report["reasons"])
+
+
+def test_combined_exposure_skips_zero_volume_payload() -> None:
+    """volume=0（如平仓 close 不带量）不检查。"""
+    views = _stub_views_with_combined_exposure()
+    svc = _make_service(runtime_views=views)
+    result = svc.evaluate_trade_payload(
+        {"symbol": "XAUUSD", "volume": 0, "side": "buy"},
+        requested_operation="execute_trade",
+    )
+    report = result["report"]
+    assert not any(r["code"] == "combined_exposure_exceeded" for r in report["reasons"])

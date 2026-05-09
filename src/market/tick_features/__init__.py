@@ -1,7 +1,7 @@
 """Tick-derived feature contracts and runtime components."""
 
-from .calculator import TickFeatureCalculator
 from .bus import TickFeatureBus
+from .calculator import TickFeatureCalculator
 from .engine import TickFeatureEngine
 from .health import TickFeatureHealth, TickFeatureHealthStore
 from .models import TickFeatureConfig, TickFeatureSnapshot

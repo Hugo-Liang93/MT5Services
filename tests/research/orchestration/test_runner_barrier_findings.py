@@ -134,9 +134,9 @@ def test_barrier_top_findings_keep_high_rr_low_winrate() -> None:
     )
 
     summaries = [f.summary for f in findings]
-    assert any("high_rr.value" in s for s in summaries), (
-        "tp<sl 但 mean_return>0 的高赔率组合应保留——决策 1"
-    )
+    assert any(
+        "high_rr.value" in s for s in summaries
+    ), "tp<sl 但 mean_return>0 的高赔率组合应保留——决策 1"
 
 
 def test_barrier_summary_includes_mean_return() -> None:

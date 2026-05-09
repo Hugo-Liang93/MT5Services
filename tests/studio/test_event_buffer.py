@@ -1,4 +1,5 @@
 """Tests for src/studio/event_buffer.py — thread-safe ring buffer."""
+
 from __future__ import annotations
 
 import threading

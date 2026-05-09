@@ -40,6 +40,10 @@ from src.signals.execution.filters import (
     TrendExhaustionFilter,
     VolatilitySpikeFilter,
 )
+from src.signals.orchestration.intrabar_contract import (
+    intrabar_enabled_strategies,
+    intrabar_trading_active,
+)
 from src.signals.orchestration.policy import SignalPolicy
 from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 from src.signals.service import SignalModule
@@ -47,10 +51,6 @@ from src.signals.strategies.adapters import UnifiedIndicatorSourceAdapter
 from src.signals.strategies.catalog import build_default_strategy_set
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.tracking.repository import TimescaleSignalRepository
-from src.signals.orchestration.intrabar_contract import (
-    intrabar_enabled_strategies,
-    intrabar_trading_active,
-)
 from src.trading.closeout import ExposureCloseoutController, ExposureCloseoutService
 from src.trading.execution.eventing import execute_market_order
 from src.trading.execution.executor import ExecutorConfig, TradeExecutor

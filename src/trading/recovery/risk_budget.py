@@ -98,7 +98,10 @@ class RecoveryRiskBudgetGuard:
                 snapshot=snapshot,
             )
 
-        if rolling_limit > 0 and metrics["rolling_realized_loss_amount"] >= rolling_limit:
+        if (
+            rolling_limit > 0
+            and metrics["rolling_realized_loss_amount"] >= rolling_limit
+        ):
             snapshot["active_reason"] = "recovery_rolling_loss_budget_reached"
             snapshot["remaining_rolling_loss_amount"] = 0.0
             return RecoveryRiskBudgetDecision(
@@ -256,7 +259,8 @@ def _consecutive_loss_lockout(
 
     ordered = sorted(
         rows,
-        key=lambda row: _row_event_time(row) or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda row: _row_event_time(row)
+        or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
     latest_loss_at: datetime | None = None

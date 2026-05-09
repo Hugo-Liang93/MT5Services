@@ -1,7 +1,7 @@
 # 系统架构参考
 
 > 合并自原 `docs/architecture/` 下 4 个文件（overview / data-flow / module-boundaries / module-layout）。
-> 更新日期：2026-04-12
+> 更新日期：2026-05-09（tick-derived recovery runtime architecture 落地后同步）
 
 ---
 
@@ -38,32 +38,46 @@
 
 ## 1. 系统定位与分层
 
-FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 → 单策略信号评估 → execution intent 交付 → 风控准入 → 交易执行 → 持仓管理。
+FastAPI 量化交易运行时，**双轨执行体系**：
+
+- **信号轨**（confirmed-bar 驱动）：行情采集 → 指标计算 → 单策略信号评估（PA candidate）→ execution intent 交付 → 风控准入 → 交易执行 → 持仓管理。
+- **恢复轨**（tick-derived 驱动）：MT5 ticks → TickFeatureEngine → TickFeatureSnapshot → DemoBoundedRecoveryRunner cycle 状态机 → 独立 admission（`recovery_budgeted` profile）→ TradeExecutor 真实下单（demo_only=true）→ recovery_cycle_states 持久化。
+
+两轨共用 MarketDataService / StorageWriter / TradeExecutor / 持久化层，但 admission 与状态机独立。详见 `docs/design/full-runtime-dataflow.md §1.1-§1.2`。
 
 ### 1.1 领域层
 
 | 目录 | 职责 |
 |------|------|
-| `src/market/` | 运行时内存行情缓存（唯一事实源）|
+| `src/market/` | 运行时内存行情缓存（唯一事实源）+ **`tick_features/`** 子包（TickFeatureEngine / Calculator / Bus / HealthStore，5 文件，恢复轨数据源） |
 | `src/ingestion/` | 从 MT5 拉取 quote/tick/OHLC/intrabar，写入缓存 + 持久化队列 |
 | `src/indicators/` | 收盘与盘中事件处理，生成指标快照 |
-| `src/signals/` | 策略注册、单策略评估、状态机、信号持久化、execution intent 发布 |
-| `src/trading/` | execution intent 消费、下单执行、价格确认入场、持仓跟踪、结果追踪 |
+| `src/signals/` | 策略注册、单策略评估、状态机、信号持久化、execution intent 发布。当前注册 1 条策略：`StructuredPriceAction` |
+| `src/trading/` | execution intent 消费、下单执行、价格确认入场、持仓跟踪、结果追踪。**新增 `recovery/` 子包**（10 文件，~3000 行，bounded recovery / martingale 资金管理域）+ **`entry_policy/` 子包**（5 内置 policy，ADR-013） |
 | `src/calendar/` | 经济日历同步与交易窗口保护 |
-| `src/persistence/` | 8 通道异步 StorageWriter + TimescaleDB 仓储 + Retention Policy |
+| `src/persistence/` | 8 通道异步 StorageWriter + TimescaleDB 仓储 + Retention Policy。**新增 `recovery_cycle_states` 表 PK 含 `account_key`**（ADR-012） |
 | `src/monitoring/` | 内存环形缓冲健康指标 + SQLite 告警 + Pipeline Trace |
-| `src/risk/` | 风控规则、保证金守卫 |
+| `src/risk/` | 风控规则、保证金守卫 + 风控档位（`recovery_budgeted` 等 profile） |
 | `src/readmodels/decision.py` | 上下文融合决策摘要（`build_decision_brief`） |
 | `src/market_structure/` | 市场结构分析 |
 | `src/backtesting/` | 回测引擎 + 参数优化 + 验证决策（ADR-010 后 Paper Trading 已删除，由 demo environment + deployment.status=demo_validation 承接） |
 | `src/research/` | 信号挖掘：指标预测力分析 + 阈值扫描 + Regime 亲和度调优 |
 
-`src/trading/` 当前再细分为 4 条主子域：
+`src/trading/` 当前再细分为多条主子域：
 
 - `src/trading/application/`：交易应用服务、审计、幂等回放、MT5 交易业务服务
 - `src/trading/commands/`：operator command 提交、消费、结果合同
+- `src/trading/intents/`：execution intent 发布与消费（lease-based queue）
+- `src/trading/admission/`：入场审核（信号轨）
 - `src/trading/execution/`：执行器、pre-trade pipeline、执行门禁、执行健康
+- `src/trading/positions/`：持仓监控、Chandelier exit、reconcile
+- `src/trading/pending/`：挂单管理、过期、成交衔接
+- `src/trading/closeout/`：风险收口（紧急/日终平仓）
+- `src/trading/state/`：交易状态持久化与启动恢复
+- `src/trading/tracking/`：信号质量 + 交易结果两条独立追踪链路
 - `src/trading/runtime/`：账户注册表与后台线程生命周期基础设施
+- `src/trading/recovery/`：**bounded recovery / martingale 资金管理域**（独立子系统，10 文件 ~3000 行）
+- `src/trading/entry_policy/`：**EntryPolicy 端口**（ADR-013，5 内置 policy + registry + factory）
 
 ### 1.2 运行时装配层（src/app_runtime/）
 
@@ -91,10 +105,22 @@ FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 →
 ### 构建阶段 — `build_app_container()`
 
 ```text
-MarketDataService → StorageWriter → BackgroundIngestor → UnifiedIndicatorManager
-→ EconomicCalendarService → TradingModule → SignalModule + SignalRuntime + ExecutionIntent delivery
-→ TradeExecutor + PendingEntryManager + PositionManager
-→ HealthMonitor + MonitoringManager → RuntimeReadModel → StudioService
+build_market_layer
+  → MarketDataService → StorageWriter → BackgroundIngestor → UnifiedIndicatorManager
+  → PipelineEventBus → PipelineTraceRecorder
+build_trading_layer
+  → EconomicCalendarService → TradingModule → TradingStateStore / Recovery / Alerts
+build_signal_layer (main 角色) 或 build_account_runtime_layer (executor 角色)
+  → SignalModule + SignalRuntime（按 environment 过滤策略集合）
+  → TradeExecutor + PendingEntryManager + PositionManager
+  → ConfidenceCalibrator + PerformanceTracker
+ensure_tick_feature_runtime
+  → TickFeatureEngine + TickFeatureBus + TickFeatureHealthStore
+build_recovery_runtime_layer
+  → DemoBoundedRecoveryRunner（按 risk_config.recovery_runtime_runner 装配，仅 main 角色）
+build_runtime_controls
+  → RuntimeModeController + TradingStateRecovery startup reconciliation
+build_monitoring_layer → build_runtime_read_models → build_studio_service_layer → build_notifications
 ```
 
 ### 运行阶段 — `AppRuntime.start()`
@@ -108,10 +134,12 @@ AppRuntime.start()
      3. ingestion
      4. pipeline_trace
      5. indicators（内部同时启动 EconomicCalendarService）
-     6. signals
-     7. trade_execution
-     8. pending_entry
-     9. position_manager
+     6. tick_features（TickFeatureEngine 启动监听）
+     7. signals
+     8. trade_execution
+     9. pending_entry
+    10. position_manager
+    11. recovery_runner（demo 实例 + risk_config.recovery_runtime_runner.enabled=true 时）
     （ADR-010 后 paper_trading 组件已删除）
 ```
 
@@ -121,7 +149,9 @@ AppRuntime.start()
 
 ## 3. 数据流
 
-### 3.1 主链路
+### 3.1 主链路（双轨）
+
+**信号轨**：
 
 ```text
 MT5 → BackgroundIngestor → MarketDataService(内存缓存)
@@ -130,15 +160,33 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存)
   │    └─ SignalRuntime(confirmed优先+intrabar) → 单策略评估 → 状态机/发布
   │         └─ ExecutionIntentPublisher → execution_intents
   │              → ExecutionIntentConsumer → TradeExecutor
-  │              → PendingEntryManager → MT5 下单
+  │              → EntryPolicy(ADR-013) → PendingEntryManager → MT5 下单
   └─ 子 TF close → 合成父 TF intrabar bar → set_intrabar() (trigger 模式)
        └─ 同上 intrabar 管道 → IntrabarTradeCoordinator → intrabar_armed
             → ExecutionIntentPublisher → execution_intents → worker 执行
 ```
 
+**恢复轨**（与信号轨平行运行，独立 admission）：
+
+```text
+MT5 ticks → BackgroundIngestor → MarketDataService
+  └─ TickBatchEvent → TickFeatureEngine
+       └─ TickFeatureSnapshot → TickFeatureBus
+            └─ DemoBoundedRecoveryRunner（常驻，每 snapshot 推进）
+                 ├─ RecoveryDirectionPolicy → BUY/SELL/SKIP
+                 ├─ RecoveryCostGate → spread + slippage + commission 预算
+                 ├─ BoundedRecoveryController → cycle 状态机
+                 │    （open_step / hold / block / close_cycle）
+                 └─ open_step → RecoveryPreTradeGuard
+                      → TradeExecutor.execute_recovery_scaling_intent()
+                      → RecoveryExecutionAdapter → MT5 下单
+                      → recovery_cycle_states（PK 含 account_key + cycle_id）
+                      → TradingFlowTraceReadModel
+```
+
 ### 3.2 持久化链路
 
-**TimescaleDB**（26 表，14 hypertable，三级 retention policy）：
+**TimescaleDB**（~30 表，14 hypertable，三级 retention policy；ADR-012 multi-account 主键契约全表落地）：
 - L1 审计（730 天）：trade_outcomes, trade_command_audits
 - L2 业务（180-365 天）：ohlc, signal_events, signal_outcomes, auto_executions
 - L3 高频（7-90 天）：ticks, quotes, ohlc_intrabar, signal_preview_events, pipeline_trace_events
@@ -400,7 +448,23 @@ Intrabar trigger：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → 
 
 **规则**：修改涉及 ADR 的组件前，先读 `docs/design/adr.md` 对应条目了解上下文。评估后可变更，但须更新 ADR。
 
-当前 ADR 索引：ADR-001（PipelineEventBus 同步 dispatch）、ADR-002（SignalRuntime 纯函数提取）、ADR-003（MetadataKey 常量化）、ADR-004（组件生命周期安全契约）、ADR-005（后台线程 join 超时后的线程引用保留）、ADR-006（跨模块边界禁止读写私有属性）。
+当前 ADR 索引（13 条均已确定）：
+
+| 编号 | 主题 |
+|---|---|
+| ADR-001 | PipelineEventBus 同步 dispatch |
+| ADR-002 | SignalRuntime warmup/metadata 纯函数提取 |
+| ADR-003 | MetadataKey 常量化 |
+| ADR-004 | 组件生命周期安全契约（8 项防护机制） |
+| ADR-005 | 后台线程 join 超时后必须保留仍存活线程引用 |
+| ADR-006 | 跨模块边界禁止读写私有属性 |
+| ADR-007 | Research 与 Backtesting 的职责边界 + 特征晋升通道 |
+| ADR-008 | 持久化 pool 单例 + 关键运行时线程 fail-fast + /health 只读契约 |
+| ADR-009 | BacktestEngine 默认只评估 live 能执行的策略 |
+| ADR-010 | Paper Trading 模块删除 + Demo 重定位为组合演练账户 |
+| ADR-011 | EconomicDecayService 单一端口 + 时间显式注入 + 异常分层 |
+| ADR-012 | 多账户/多实例运行时状态主键契约（multi-account 表 PK 必含 account_key） |
+| ADR-013 | 入场决策从信号策略中收口为可插拔 EntryPolicy 端口 |
 
 ## 9. 扩展契约（新增组件必须满足 5 个公共端口）
 

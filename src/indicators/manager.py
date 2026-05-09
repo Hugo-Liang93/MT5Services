@@ -9,8 +9,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from collections import OrderedDict
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
@@ -22,6 +21,7 @@ from src.config.indicator_config import (
 )
 from src.market import MarketDataService
 from src.utils.event_store import get_event_store
+
 from .engine.dependency_manager import get_global_dependency_manager
 from .engine.pipeline import get_global_pipeline
 from .monitoring.metrics_collector import get_global_collector
@@ -102,12 +102,12 @@ class IndicatorRuntimeState:
 
 class UnifiedIndicatorManager(RegistryBindingMixin, QueryBindingMixin):
     """
-    Single runtime entrypoint for indicator registration, scheduling and persistence.
+        Single runtime entrypoint for indicator registration, scheduling and persistence.
 
-    Runtime behavior:
-    - consume closed-bar events from the durable event store
-- reconcile all configured symbol/timeframe pairs on an interval as a recovery path to cover computation gaps
-    - write indicator values back into the market cache and the OHLC persistence channel
+        Runtime behavior:
+        - consume closed-bar events from the durable event store
+    - reconcile all configured symbol/timeframe pairs on an interval as a recovery path to cover computation gaps
+        - write indicator values back into the market cache and the OHLC persistence channel
     """
 
     def __init__(

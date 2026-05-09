@@ -1,4 +1,5 @@
 """optimizer.py 单元测试。"""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -6,7 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 from src.backtesting.models import ParameterSpace
-from src.backtesting.optimization.optimizer import ParameterOptimizer, build_signal_module_with_overrides
+from src.backtesting.optimization.optimizer import (
+    ParameterOptimizer,
+    build_signal_module_with_overrides,
+)
 from src.signals.evaluation.regime import RegimeType
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
@@ -104,10 +108,20 @@ def test_build_signal_module_with_overrides_preserves_base_per_tf_config() -> No
     )
 
     resolver = module._tf_param_resolver
-    assert resolver.get("structured_price_action", "some_param", "M5", default=0.0) == 22.0
-    assert resolver.get("structured_price_action", "some_param", "H1", default=0.0) == 30.0
-    assert resolver.get("structured_price_action", "other_param", "M5", default=0.0) == 75.0
-    assert module.strategy_affinity_map("structured_price_action")[RegimeType.RANGING] == 0.9
+    assert (
+        resolver.get("structured_price_action", "some_param", "M5", default=0.0) == 22.0
+    )
+    assert (
+        resolver.get("structured_price_action", "some_param", "H1", default=0.0) == 30.0
+    )
+    assert (
+        resolver.get("structured_price_action", "other_param", "M5", default=0.0)
+        == 75.0
+    )
+    assert (
+        module.strategy_affinity_map("structured_price_action")[RegimeType.RANGING]
+        == 0.9
+    )
 
 
 def test_build_signal_module_with_overrides_preserves_strategies() -> None:
@@ -148,11 +162,21 @@ def test_build_backtest_components_registers_multi_timeframe_confirm(
             )
 
     monkeypatch.setattr("src.config.database.load_db_settings", lambda: object())
-    monkeypatch.setattr("src.config.indicator_config.get_global_config_manager", lambda: _DummyConfigManager())
-    monkeypatch.setattr("src.indicators.engine.pipeline.create_isolated_pipeline", lambda cfg: _DummyPipeline())
+    monkeypatch.setattr(
+        "src.config.indicator_config.get_global_config_manager",
+        lambda: _DummyConfigManager(),
+    )
+    monkeypatch.setattr(
+        "src.indicators.engine.pipeline.create_isolated_pipeline",
+        lambda cfg: _DummyPipeline(),
+    )
     monkeypatch.setattr("src.persistence.db.TimescaleWriter", _DummyWriter)
-    monkeypatch.setattr("src.persistence.repositories.market_repo.MarketRepository", _DummyMarketRepo)
-    monkeypatch.setattr("src.backtesting.data.loader.HistoricalDataLoader", _DummyLoader)
+    monkeypatch.setattr(
+        "src.persistence.repositories.market_repo.MarketRepository", _DummyMarketRepo
+    )
+    monkeypatch.setattr(
+        "src.backtesting.data.loader.HistoricalDataLoader", _DummyLoader
+    )
     monkeypatch.setattr(
         "src.config.signal.get_signal_config",
         lambda: SimpleNamespace(

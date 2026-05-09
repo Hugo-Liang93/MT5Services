@@ -1,6 +1,6 @@
 # 全量运行时数据流图（当前实现版）
 
-> 更新日期：2026-05-06
+> 更新日期：2026-05-09（tick-derived recovery runtime architecture 落地后同步）
 > 目的：给当前代码库一份“可审查、可对照实现、可映射真实运行结果”的完整数据流图。  
 > 本文不是理想架构图，而是基于当前仓库与真实启动结果整理的运行时真相。
 > 策略开发规范、regime、单策略契约与规划类方案不在本文重复展开，统一由各专题文档维护。
@@ -174,7 +174,7 @@ bid/ask ticks
 
 ### 2.1 构建阶段 `build_app_container()`
 
-当前装配顺序来自 `src/app_runtime/builder.py`：
+当前装配顺序来自 `src/app_runtime/builder.py`（按 role 分支）：
 
 1. `build_market_layer()`
    - `MarketDataService`
@@ -187,26 +187,35 @@ bid/ask ticks
    - `EconomicCalendarService`
    - `TradingModule`
    - `TradingStateStore / Recovery / Alerts`
-3. `build_signal_layer()`（ADR-010 后内部新增 environment-aware 策略过滤）
-   - 按 `runtime_identity.environment` 过滤策略集合：
-     - environment=live → 装配 status ∈ {ACTIVE, ACTIVE_GUARDED}
-     - environment=demo → 装配 status ∈ {ACTIVE, ACTIVE_GUARDED, DEMO_VALIDATION}
-     - environment 未知 → 装配全集 + WARNING（向后兼容）
-   - `SignalModule`（strategies = 过滤后子集）
-   - `SignalRuntime`（targets = symbols × tfs × 过滤后策略）
-   - `TradeExecutor`
-   - `PendingEntryManager`
-   - `PositionManager`
-   - `ConfidenceCalibrator`
-   - `PerformanceTracker`
-4. `build_runtime_controls()`
+3. role 分支：
+   - **executor 角色** → `build_account_runtime_layer()`
+     - `ExecutionIntentConsumer`、`OperatorCommandConsumer`、本地账户执行栈
+     - 不装配 `SignalRuntime`、不装配 recovery runner
+   - **main 角色** → `build_signal_layer()`（ADR-010 后内部新增 environment-aware 策略过滤）
+     - 按 `runtime_identity.environment` 过滤策略集合：
+       - environment=live → 装配 status ∈ {ACTIVE, ACTIVE_GUARDED}
+       - environment=demo → 装配 status ∈ {ACTIVE, ACTIVE_GUARDED, DEMO_VALIDATION}
+       - environment 未知 → 装配全集 + WARNING（向后兼容）
+     - `SignalModule`（strategies = 过滤后子集，当前注册仅 `StructuredPriceAction`）
+     - `SignalRuntime`（targets = symbols × tfs × 过滤后策略）
+     - `TradeExecutor` + `PendingEntryManager` + `PositionManager`
+     - `ConfidenceCalibrator` + `PerformanceTracker`
+4. `ensure_tick_feature_runtime()`（main 与 executor 都装配 — tick feature 是共享基建）
+   - `TickFeatureEngine` + `TickFeatureCalculator` + `TickFeatureBus` + `TickFeatureHealthStore`
+5. `build_recovery_runtime_layer()`（仅 main 角色 + `risk_config.recovery_runtime_runner.enabled=true`）
+   - `DemoBoundedRecoveryRunner`（消费 TickFeatureBus，独立 admission，不进信号管线）
+   - 启动时 assert demo_only=true 与 demo 字串在 account_key 中
+6. `build_runtime_controls()`
    - runtime mode controller
    - trading state recovery startup reconciliation
-5. `build_monitoring_layer()`
-6. `build_runtime_read_models()`
-7. `build_studio_service_layer()`
+7. `build_monitoring_layer()`
+8. `build_runtime_read_models()`
+9. `build_studio_service_layer()`
+10. `build_notifications_layer()`
 
 > ADR-010（2026-04-25）后 `build_paper_trading_layer()` 已整体删除。原"无摩擦影子交易"角色由 demo-main 实例真实下单替代；装配过滤在 `_filter_strategies_for_environment()` 内完成，下游所有组件天然只看到当前 environment 应该运行的策略集。
+>
+> 装配契约（builder.py:142-159）：`is_executor` 时禁止 recovery runner 装配（raise RuntimeError）——recovery 必须跑在 market data 实例上以消费 tick feature snapshot。
 
 ### 2.2 FULL 模式启动顺序
 
@@ -224,13 +233,16 @@ AppRuntime.start()
           -> IndicatorEventWriter
           -> IndicatorEventLoop
           -> IndicatorIntrabar
+     -> tick_features            # TickFeatureEngine 启动 listener
      -> signals
      -> trade_execution
      -> pending_entry
      -> position_manager
+     -> recovery_runner          # 仅 main 角色 + recovery_runtime_runner.enabled=true
 ```
 
 ADR-010 后 `paper_trading` 组件已从 RuntimeComponentRegistry 删除。
+recovery_runner 只在 demo-main 实例（demo_only 硬约束）+ `risk.local.ini [recovery_runtime_runner].enabled=true` 时启动；其他情况下 builder 装配但不启动线程。
 
 注意：
 

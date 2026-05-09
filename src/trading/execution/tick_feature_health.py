@@ -12,7 +12,14 @@ def _safe_dict(value: Any) -> dict[str, Any]:
 
 
 def _blocking_status(status: str) -> bool:
-    return status in {"missing", "unavailable", "stale", "blocked", "sparse", "critical"}
+    return status in {
+        "missing",
+        "unavailable",
+        "stale",
+        "blocked",
+        "sparse",
+        "critical",
+    }
 
 
 def normalize_tick_feature_health_snapshot(
@@ -43,10 +50,14 @@ def normalize_tick_feature_health_snapshot(
         payload = raw
 
     status = str(payload.get("status") or raw.get("status") or "unknown").lower()
-    blocking = bool(payload.get("blocking", raw.get("blocking", False))) or _blocking_status(status)
+    blocking = bool(
+        payload.get("blocking", raw.get("blocking", False))
+    ) or _blocking_status(status)
     result = dict(payload)
     result["status"] = status
-    result["source_status"] = str(payload.get("status") or raw.get("status") or "unknown")
+    result["source_status"] = str(
+        payload.get("status") or raw.get("status") or "unknown"
+    )
     result["blocking"] = blocking
     if symbol:
         result["symbol"] = str(symbol)

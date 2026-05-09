@@ -207,7 +207,14 @@ def momentum_consensus(bars: Iterable, params: Dict[str, Any]) -> Dict[str, floa
     smooth_d = get_int(params, "smooth_d", default=3)
     min_bars = get_int(params, "min_bars", default=50)
 
-    window = tail_bars(bars, max(min_bars, slow + signal + 15, rsi_period * 3 + stoch_period + smooth_k + smooth_d))
+    window = tail_bars(
+        bars,
+        max(
+            min_bars,
+            slow + signal + 15,
+            rsi_period * 3 + stoch_period + smooth_k + smooth_d,
+        ),
+    )
     if len(window) < min_bars:
         return {}
 
@@ -234,7 +241,11 @@ def momentum_consensus(bars: Iterable, params: Dict[str, Any]) -> Dict[str, floa
     votes = [
         1.0 if float(hist) > 0 else -1.0 if float(hist) < 0 else 0.0,
         1.0 if float(rsi_value) > 50.0 else -1.0 if float(rsi_value) < 50.0 else 0.0,
-        1.0 if float(stoch_value) > 50.0 else -1.0 if float(stoch_value) < 50.0 else 0.0,
+        (
+            1.0
+            if float(stoch_value) > 50.0
+            else -1.0 if float(stoch_value) < 50.0 else 0.0
+        ),
     ]
     consensus = sum(votes) / 3.0
     bullish_votes = sum(1 for vote in votes if vote > 0)

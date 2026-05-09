@@ -72,10 +72,15 @@ def build_trade_execution_error_response(
     elif "price" in error_msg.lower():
         error_code = AIErrorCode.INVALID_PRICE
         suggested_action = AIErrorAction.USE_MARKET_ORDER
-    elif "position_not_found" in error_msg.lower() or "position not found" in error_msg.lower():
+    elif (
+        "position_not_found" in error_msg.lower()
+        or "position not found" in error_msg.lower()
+    ):
         error_code = AIErrorCode.POSITION_NOT_FOUND
         suggested_action = AIErrorAction.CHECK_ACCOUNT_STATUS
-    elif "order_not_found" in error_msg.lower() or "order not found" in error_msg.lower():
+    elif (
+        "order_not_found" in error_msg.lower() or "order not found" in error_msg.lower()
+    ):
         error_code = AIErrorCode.ORDER_NOT_FOUND
         suggested_action = AIErrorAction.CHECK_ACCOUNT_STATUS
     else:

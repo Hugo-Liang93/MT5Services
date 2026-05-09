@@ -130,7 +130,9 @@ class TradingModule:
         try:
             self._command_audit.record(record)
         except Exception:
-            logger.exception("Failed to persist trade command audit for %s", record.command_type)
+            logger.exception(
+                "Failed to persist trade command audit for %s", record.command_type
+            )
 
     def _cache_successful_trade_result(
         self,
@@ -139,7 +141,9 @@ class TradingModule:
     ) -> None:
         self._trade_execution_replay.cache_successful_trade_result(request_id, result)
 
-    def _find_idempotent_trade_result(self, request_id: str) -> Optional[dict[str, Any]]:
+    def _find_idempotent_trade_result(
+        self, request_id: str
+    ) -> Optional[dict[str, Any]]:
         return self._trade_execution_replay.find_successful_trade_result(request_id)
 
     def find_operator_action_replay(
@@ -288,7 +292,9 @@ class TradingModule:
             if isinstance(payload.get("request_context"), dict)
             else {}
         )
-        extra_fields = {"result": raw_result if isinstance(raw_result, dict) else raw_result}
+        extra_fields = {
+            "result": raw_result if isinstance(raw_result, dict) else raw_result
+        }
         if error_message is not None:
             return (
                 build_operator_command_result(
@@ -312,8 +318,12 @@ class TradingModule:
             )
 
         if operation_type == "close_position":
-            result_payload = dict(raw_result or {}) if isinstance(raw_result, dict) else {}
-            success = bool(result_payload.get("success", True)) and raw_result is not None
+            result_payload = (
+                dict(raw_result or {}) if isinstance(raw_result, dict) else {}
+            )
+            success = (
+                bool(result_payload.get("success", True)) and raw_result is not None
+            )
             message = (
                 "position close completed"
                 if success
@@ -359,10 +369,15 @@ class TradingModule:
             )
 
         result_payload = dict(raw_result or {}) if isinstance(raw_result, dict) else {}
-        success_key = "closed" if operation_type in {
-            "close_all_positions",
-            "close_positions_by_tickets",
-        } else "canceled"
+        success_key = (
+            "closed"
+            if operation_type
+            in {
+                "close_all_positions",
+                "close_positions_by_tickets",
+            }
+            else "canceled"
+        )
         success_items = list(result_payload.get(success_key) or [])
         failed_items = list(result_payload.get("failed") or [])
         if failed_items and success_items:
@@ -417,7 +432,9 @@ class TradingModule:
         required = ("symbol", "volume", "side")
         missing = [key for key in required if payload.get(key) in (None, "")]
         if missing:
-            raise ValueError(f"trade payload missing required fields: {', '.join(missing)}")
+            raise ValueError(
+                f"trade payload missing required fields: {', '.join(missing)}"
+            )
         try:
             volume = float(payload.get("volume"))
         except Exception as exc:  # noqa: BLE001
@@ -425,7 +442,9 @@ class TradingModule:
         if volume <= 0:
             raise ValueError("trade payload volume must be > 0")
 
-        precheck_payload = {key: value for key, value in payload.items() if key in PRECHECK_TRADE_FIELDS}
+        precheck_payload = {
+            key: value for key, value in payload.items() if key in PRECHECK_TRADE_FIELDS
+        }
         precheck = self.precheck_trade(**precheck_payload)
         action = str(precheck.get("verdict") or "allow").lower()
         if config.dispatch_strict_mode and action == "block":
@@ -448,8 +467,12 @@ class TradingModule:
         started = time.monotonic()
         resolved_alias = self.registry.resolve_alias(account_alias)
         trace_id = str(payload.get("trace_id") or payload.get("request_id") or "")
-        operator_action_requested = self._operator_action_requested(operation_type, payload)
-        resolved_operation_id = str(operation_id or payload.get("action_id") or "").strip() or None
+        operator_action_requested = self._operator_action_requested(
+            operation_type, payload
+        )
+        resolved_operation_id = (
+            str(operation_id or payload.get("action_id") or "").strip() or None
+        )
         if operator_action_requested and not resolved_operation_id:
             resolved_operation_id = uuid4().hex
         try:
@@ -482,7 +505,9 @@ class TradingModule:
                 )
                 if operation_type == "execute_trade":
                     self._cache_successful_trade_result(
-                        str(payload.get("request_id") or result.get("request_id") or ""),
+                        str(
+                            payload.get("request_id") or result.get("request_id") or ""
+                        ),
                         result,
                     )
             record = TradeCommandAuditRecord(
@@ -498,7 +523,9 @@ class TradingModule:
                 magic=payload.get("magic"),
                 duration_ms=duration_ms,
                 request_payload=payload,
-                response_payload=result if isinstance(result, dict) else {"result": result},
+                response_payload=(
+                    result if isinstance(result, dict) else {"result": result}
+                ),
                 operation_id=record_operation_id,
             )
             self._record_command_audit(record)
@@ -549,7 +576,9 @@ class TradingModule:
             self._update_daily_stats(record)
             raise
 
-    def dispatch_operation(self, operation: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+    def dispatch_operation(
+        self, operation: str, payload: Optional[Dict[str, Any]] = None
+    ) -> Any:
         payload = payload or {}
         handlers = {
             "trade": lambda: self._run_trade_with_dispatch_controls(payload),
@@ -562,7 +591,9 @@ class TradingModule:
             raise ValueError(f"unsupported trading operation: {operation}")
         return handlers[operation]()
 
-    def daily_trade_summary(self, summary_date: Optional[date] = None) -> dict[str, Any]:
+    def daily_trade_summary(
+        self, summary_date: Optional[date] = None
+    ) -> dict[str, Any]:
         return self._daily_stats.summary(
             account_alias=self.active_account_alias,
             summary_date=summary_date,
@@ -608,7 +639,13 @@ class TradingModule:
             "connection": "ready" if health.get("connected", False) else "failed",
             "account": "ready" if account_ready else "failed",
             "risk": "ready" if risk_action != "block" else "blocked",
-            "order": "ready" if health.get("connected", False) and account_ready and risk_action != "block" else "blocked",
+            "order": (
+                "ready"
+                if health.get("connected", False)
+                and account_ready
+                and risk_action != "block"
+                else "blocked"
+            ),
         }
         return {
             "account_alias": account_alias,
@@ -701,7 +738,12 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute_command("precheck_trade", alias, payload, lambda: trading_service.precheck_trade(**kwargs))
+            return self._execute_command(
+                "precheck_trade",
+                alias,
+                payload,
+                lambda: trading_service.precheck_trade(**kwargs),
+            )
 
     def execute_trade_batch(self, trades: list[dict], stop_on_error: bool = False):
         all_results = []
@@ -712,10 +754,25 @@ class TradingModule:
             payload = dict(trade)
             try:
                 result = self.execute_trade(**payload)
-                all_results.append({"index": index, "success": True, "result": result, "account_alias": alias})
+                all_results.append(
+                    {
+                        "index": index,
+                        "success": True,
+                        "result": result,
+                        "account_alias": alias,
+                    }
+                )
                 success_count += 1
             except Exception as exc:
-                all_results.append({"index": index, "success": False, "error": str(exc), "trade": dict(payload), "account_alias": alias})
+                all_results.append(
+                    {
+                        "index": index,
+                        "success": False,
+                        "error": str(exc),
+                        "trade": dict(payload),
+                        "account_alias": alias,
+                    }
+                )
                 failure_count += 1
                 if stop_on_error:
                     break
@@ -831,7 +888,9 @@ class TradingModule:
                 "close_positions_by_tickets",
                 alias,
                 payload,
-                lambda: trading_service.close_positions_by_tickets(tickets, deviation=deviation, comment=comment),
+                lambda: trading_service.close_positions_by_tickets(
+                    tickets, deviation=deviation, comment=comment
+                ),
                 operation_id=action_id,
             )
 
@@ -911,7 +970,12 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute_command("modify_orders", alias, payload, lambda: trading_service.modify_orders(**kwargs))
+            return self._execute_command(
+                "modify_orders",
+                alias,
+                payload,
+                lambda: trading_service.modify_orders(**kwargs),
+            )
 
     def modify_positions(self, **kwargs: Any):
         with self._active_scope() as (
@@ -920,7 +984,12 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute_command("modify_positions", alias, payload, lambda: trading_service.modify_positions(**kwargs))
+            return self._execute_command(
+                "modify_positions",
+                alias,
+                payload,
+                lambda: trading_service.modify_positions(**kwargs),
+            )
 
     def get_positions(self, symbol: Optional[str] = None, magic: Optional[int] = None):
         with self._active_scope() as (
@@ -973,14 +1042,11 @@ class TradingModule:
             payload_comment = str(request_payload.get("comment") or "").strip()
             response_ticket = int(response_payload.get("ticket") or 0)
             live_comment = str(comment or "").strip()
-            if (
-                response_ticket != int(ticket)
-                and (
-                    not live_comment
-                    or (
-                        payload_comment != live_comment
-                        and not comments_share_request_tag(payload_comment, live_comment)
-                    )
+            if response_ticket != int(ticket) and (
+                not live_comment
+                or (
+                    payload_comment != live_comment
+                    and not comments_share_request_tag(payload_comment, live_comment)
                 )
             ):
                 continue
@@ -995,7 +1061,8 @@ class TradingModule:
                 "strategy": str(signal_meta.get("strategy") or ""),
                 "confidence": signal_meta.get("confidence"),
                 "regime": metadata.get(MK.REGIME),
-                "fill_price": response_payload.get("fill_price") or response_payload.get("price"),
+                "fill_price": response_payload.get("fill_price")
+                or response_payload.get("price"),
                 "comment": payload_comment or comment,
                 "source": "restored_signal_trade" if signal_meta else "restored_trade",
                 "entry_origin": self._trade_control.entry_origin(request_payload),

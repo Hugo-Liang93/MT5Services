@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from src.app_runtime.container import AppContainer
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
 
 
-def build_runtime_read_models(container: AppContainer) -> None:
-    """Build runtime read-model projections."""
+def build_runtime_read_models(
+    container: AppContainer,
+    *,
+    risk_config: Any = None,
+) -> None:
+    """Build runtime read-model projections.
+
+    risk_config 注入用于 ADR-014 combined_exposure_payload 的 limits 部分。
+    """
     container.runtime_read_model = RuntimeReadModel(
         health_monitor=container.health_monitor,
         market_service=container.market_service,
@@ -32,6 +41,7 @@ def build_runtime_read_models(container: AppContainer) -> None:
         tick_feature_bus=container.tick_feature_bus,
         runtime_mode_controller=container.runtime_mode_controller,
         runtime_identity=container.runtime_identity,
+        risk_config=risk_config,
         db_writer=(
             container.storage_writer.db
             if container.storage_writer is not None

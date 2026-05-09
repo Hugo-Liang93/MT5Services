@@ -18,13 +18,13 @@ class TestPerKeyTTL:
 
     def test_per_key_ttl_overrides_global(self):
         cache = SmartCache(maxsize=10, ttl=10)  # global=10s
-        cache.set("short", "val", ttl=1)        # per-key=1s
-        cache.set("long", "val", ttl=100)        # per-key=100s
+        cache.set("short", "val", ttl=1)  # per-key=1s
+        cache.set("long", "val", ttl=100)  # per-key=100s
         assert cache.get("short") == "val"
         assert cache.get("long") == "val"
         time.sleep(1.1)
-        assert cache.get("short") is None        # per-key expired
-        assert cache.get("long") == "val"         # still alive
+        assert cache.get("short") is None  # per-key expired
+        assert cache.get("long") == "val"  # still alive
 
     def test_cleanup_respects_per_key_ttl(self):
         cache = SmartCache(maxsize=10, ttl=10)

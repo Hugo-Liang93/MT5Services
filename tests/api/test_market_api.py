@@ -34,7 +34,9 @@ class _MarketService:
     def get_ohlc_closed(self, symbol, timeframe, limit):
         return [_Bar()]
 
-    def get_ohlc_history_result(self, symbol, timeframe, start_time, end_time, limit, strict=False):
+    def get_ohlc_history_result(
+        self, symbol, timeframe, start_time, end_time, limit, strict=False
+    ):
         return ([_Bar()], "cache")
 
 

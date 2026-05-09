@@ -49,7 +49,9 @@ class _MarketService:
 def test_indicator_static_routes_are_not_shadowed_by_dynamic_routes() -> None:
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_unified_indicator_manager] = lambda: _IndicatorManager()
+    app.dependency_overrides[get_unified_indicator_manager] = (
+        lambda: _IndicatorManager()
+    )
     app.dependency_overrides[get_market_service] = lambda: _MarketService()
     client = TestClient(app)
 
@@ -68,7 +70,9 @@ def test_indicator_static_routes_are_not_shadowed_by_dynamic_routes() -> None:
 def test_compute_indicators_rejects_unsupported_indicator_names() -> None:
     response = asyncio.run(
         compute_indicators(
-            IndicatorRequest(symbol="XAUUSD", timeframe="M1", indicators=["ema20", "close"]),
+            IndicatorRequest(
+                symbol="XAUUSD", timeframe="M1", indicators=["ema20", "close"]
+            ),
             manager=_IndicatorManager(),
             market_service=_MarketService(),
         )
@@ -82,7 +86,9 @@ def test_compute_indicators_rejects_unsupported_indicator_names() -> None:
 def test_compute_indicators_filters_none_results_for_response_validation() -> None:
     response = asyncio.run(
         compute_indicators(
-            IndicatorRequest(symbol="XAUUSD", timeframe="M1", indicators=["ema20", "atr14"]),
+            IndicatorRequest(
+                symbol="XAUUSD", timeframe="M1", indicators=["ema20", "atr14"]
+            ),
             manager=_IndicatorManager(),
             market_service=_MarketService(),
         )

@@ -30,8 +30,8 @@ from scipy import stats as scipy_stats
 from src.signals.evaluation.regime import RegimeType
 
 from ..core.config import OverfittingConfig, PredictivePowerConfig
-from ..core.data_matrix import DataMatrix
 from ..core.contracts import IndicatorPredictiveResult, RollingICResult
+from ..core.data_matrix import DataMatrix
 from ..core.overfitting import benjamini_hochberg_fdr, check_significance
 from ..core.permutation import PermutationTestSpec, run_permutation_test
 from ..core.statistics import (
@@ -223,7 +223,8 @@ def _compute_single(
             seed=42,
         )
         permutation_p = run_permutation_test(
-            spec, workers=pp_cfg.permutation_workers,
+            spec,
+            workers=pp_cfg.permutation_workers,
         ).p_value
 
     # L6: 统计效力 — 报告给定样本量可检测的最小 IC
@@ -276,7 +277,10 @@ def _apply_batch_correction(
             and provider_groups
         ):
             return _apply_grouped_fdr(
-                results, of_cfg, significance_level, n_total_attempted,
+                results,
+                of_cfg,
+                significance_level,
+                n_total_attempted,
                 provider_groups,
             )
 
@@ -429,9 +433,7 @@ def _compute_rolling_ic(
             continue
 
         try:
-            rho, _ = scipy_stats.spearmanr(
-                [v[0] for v in valid], [v[1] for v in valid]
-            )
+            rho, _ = scipy_stats.spearmanr([v[0] for v in valid], [v[1] for v in valid])
             ics.append(float(rho))
         except Exception:
             continue

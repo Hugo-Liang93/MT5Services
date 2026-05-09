@@ -8,6 +8,7 @@ shutdown_global_executor 教训 + R2 followup shutdown_global_pipeline 同问题
 对应的 ``shutdown_global_X`` / ``clear_global_X`` / ``close_global_X`` 函数体
 里包含 ``_global_X = None`` 的赋值语句。
 """
+
 from __future__ import annotations
 
 import ast
@@ -39,12 +40,18 @@ def _find_global_singleton_decls(tree: ast.AST) -> list[tuple[str, int]]:
         # _global_X: Optional[T] = None
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             name = node.target.id
-            if name.startswith("_global_") and isinstance(node.value, ast.Constant) and node.value.value is None:
+            if (
+                name.startswith("_global_")
+                and isinstance(node.value, ast.Constant)
+                and node.value.value is None
+            ):
                 found.append((name, node.lineno))
         # _global_X = None
         elif isinstance(node, ast.Assign):
             for target in node.targets:
-                if not isinstance(target, ast.Name) or not target.id.startswith("_global_"):
+                if not isinstance(target, ast.Name) or not target.id.startswith(
+                    "_global_"
+                ):
                     continue
                 if isinstance(node.value, ast.Constant) and node.value.value is None:
                     found.append((target.id, node.lineno))

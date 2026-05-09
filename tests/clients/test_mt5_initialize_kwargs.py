@@ -6,6 +6,7 @@
   不允许只返回 path（会导致 terminal 弹登录界面等人工，IPC 永远 timeout）。
 - _login_kwargs 仅作为账户切换备用接口（mt5.login() 调用），不参与 initialize。
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -15,8 +16,9 @@ import pytest
 from src.clients.base import MT5BaseClient
 
 
-def _make_settings(*, login=12345, password="pwd", server="Demo-Server",
-                   path="C:/MT5/terminal64.exe") -> SimpleNamespace:
+def _make_settings(
+    *, login=12345, password="pwd", server="Demo-Server", path="C:/MT5/terminal64.exe"
+) -> SimpleNamespace:
     return SimpleNamespace(
         mt5_login=login,
         mt5_password=password,

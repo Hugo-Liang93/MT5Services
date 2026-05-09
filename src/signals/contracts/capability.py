@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-
 MARKET_DATA_REQUIREMENT_KINDS = frozenset({"quote", "tick", "ohlc"})
 SIGNAL_SCOPES = frozenset({"confirmed", "intrabar", "tick_derived"})
 
@@ -70,7 +69,9 @@ class StrategyCapability:
         return cls(
             name=str(raw.get("name") or ""),
             valid_scopes=normalize_signal_scopes(raw.get("valid_scopes", ())),
-            needed_indicators=tuple(str(item) for item in raw.get("needed_indicators", ())),
+            needed_indicators=tuple(
+                str(item) for item in raw.get("needed_indicators", ())
+            ),
             needs_intrabar=bool(raw.get("needs_intrabar")),
             needs_htf=bool(raw.get("needs_htf")),
             regime_affinity=dict(raw.get("regime_affinity") or {}),

@@ -168,9 +168,7 @@ def stable_rules(
                 "avg_train_n_samples": _mean(
                     [float(v) for v in item["train_n_samples"]]
                 ),
-                "avg_barrier_top_hit_rate": _mean(
-                    item["barrier_top_hit_rates"]
-                ),
+                "avg_barrier_top_hit_rate": _mean(item["barrier_top_hit_rates"]),
             }
         )
     selected.sort(

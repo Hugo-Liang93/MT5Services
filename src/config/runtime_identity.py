@@ -22,7 +22,9 @@ def build_account_key(
     normalized_environment = normalize_environment(environment)
     if normalized_environment is None:
         raise ValueError("environment is required to build account_key")
-    normalized_server = str(mt5_server or "unknown-server").strip().lower() or "unknown-server"
+    normalized_server = (
+        str(mt5_server or "unknown-server").strip().lower() or "unknown-server"
+    )
     normalized_login = str(login or "unknown-login").strip() or "unknown-login"
     return f"{normalized_environment}:{normalized_server}:{normalized_login}"
 
@@ -55,9 +57,11 @@ def validate_mt5_topology() -> None:
 
     if assignment is None:
         environment = resolve_current_environment(instance_name=normalized_instance)
-        instance_name, environment, instance_role, live_topology_mode = _default_assignment(
-            normalized_instance,
-            environment,
+        instance_name, environment, instance_role, live_topology_mode = (
+            _default_assignment(
+                normalized_instance,
+                environment,
+            )
         )
     else:
         instance_name = assignment.instance_name
@@ -126,9 +130,11 @@ def _build_runtime_identity(account: MT5Settings) -> RuntimeIdentity:
     assignment = resolve_topology_assignment(account.instance_name)
     if assignment is None:
         environment = resolve_current_environment(instance_name=account.instance_name)
-        instance_name, environment, instance_role, live_topology_mode = _default_assignment(
-            account.instance_name,
-            environment,
+        instance_name, environment, instance_role, live_topology_mode = (
+            _default_assignment(
+                account.instance_name,
+                environment,
+            )
         )
     else:
         instance_name = assignment.instance_name

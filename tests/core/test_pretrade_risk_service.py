@@ -7,8 +7,8 @@ import pytest
 
 from src.config import EconomicConfig
 from src.config.centralized import RiskConfig
-from src.risk.service import PreTradeRiskBlockedError, PreTradeRiskService
 from src.risk.rules import TradeFrequencyQuotaExceeded
+from src.risk.service import PreTradeRiskBlockedError, PreTradeRiskService
 
 
 class DummyCalendar:
@@ -51,7 +51,16 @@ class DummyCalendar:
             "blocked": self.blocked,
             "currencies": ["USD"],
             "countries": ["United States"],
-            "active_windows": [{"window_start": "2026-03-16T00:00:00+00:00", "window_end": "2026-03-16T00:30:00+00:00"}] if self.blocked else [],
+            "active_windows": (
+                [
+                    {
+                        "window_start": "2026-03-16T00:00:00+00:00",
+                        "window_end": "2026-03-16T00:30:00+00:00",
+                    }
+                ]
+                if self.blocked
+                else []
+            ),
             "upcoming_windows": [],
             "importance_min": kwargs.get("importance_min") or 3,
         }
@@ -123,7 +132,9 @@ class CountingTradeFrequencyProvider:
         self.count = count
         self.calls: list[dict] = []
 
-    def count_trades_since(self, since: datetime, *, account_key: str | None = None) -> int:
+    def count_trades_since(
+        self, since: datetime, *, account_key: str | None = None
+    ) -> int:
         self.calls.append({"since": since, "account_key": account_key})
         return self.count
 
@@ -133,7 +144,9 @@ class ReservingTradeFrequencyProvider:
         self.reservations: list[dict] = []
         self.finalized: list[dict] = []
 
-    def count_trades_since(self, since: datetime, *, account_key: str | None = None) -> int:
+    def count_trades_since(
+        self, since: datetime, *, account_key: str | None = None
+    ) -> int:
         return len(
             [
                 item
@@ -169,7 +182,9 @@ class ReservingTradeFrequencyProvider:
 
 
 class RejectingTradeFrequencyProvider(ReservingTradeFrequencyProvider):
-    def count_trades_since(self, since: datetime, *, account_key: str | None = None) -> int:
+    def count_trades_since(
+        self, since: datetime, *, account_key: str | None = None
+    ) -> int:
         return 0
 
     def reserve_trade_slot(
@@ -198,7 +213,9 @@ def _settings(**overrides) -> EconomicConfig:
 def test_warns_when_calendar_health_is_degraded():
     service = PreTradeRiskService(
         economic_calendar_service=DummyCalendar(stale=True, provider_failures=3),
-        settings=_settings(trade_guard_mode="warn_only", trade_guard_calendar_health_mode="warn_only"),
+        settings=_settings(
+            trade_guard_mode="warn_only", trade_guard_calendar_health_mode="warn_only"
+        ),
         risk_settings=RiskConfig(market_order_protection="off"),
     )
 
@@ -213,7 +230,9 @@ def test_warns_when_calendar_health_is_degraded():
 def test_blocks_when_calendar_health_mode_is_fail_closed():
     service = PreTradeRiskService(
         economic_calendar_service=DummyCalendar(stale=True, provider_failures=3),
-        settings=_settings(trade_guard_mode="warn_only", trade_guard_calendar_health_mode="fail_closed"),
+        settings=_settings(
+            trade_guard_mode="warn_only", trade_guard_calendar_health_mode="fail_closed"
+        ),
         risk_settings=RiskConfig(),
     )
 
@@ -275,7 +294,7 @@ def test_recovery_budgeted_profile_skips_generic_trade_frequency_checks():
             max_trades_per_day=1,
             max_trades_per_hour=1,
             market_order_protection="off",
-            risk_profile_bindings={"tick_martingale_probe": "recovery_budgeted"},
+            risk_profile_bindings={"tick_recovery_probe": "recovery_budgeted"},
         ),
         trade_frequency_provider=provider,
         account_key="demo:broker:123",
@@ -285,7 +304,7 @@ def test_recovery_budgeted_profile_skips_generic_trade_frequency_checks():
         symbol="XAUUSD",
         volume=0.01,
         side="buy",
-        metadata={"strategy": "tick_martingale_probe"},
+        metadata={"strategy": "tick_recovery_probe"},
     )
 
     assert result["verdict"] == "allow"
@@ -306,7 +325,7 @@ def test_recovery_budgeted_profile_skips_trade_frequency_reservation():
         risk_settings=RiskConfig(
             max_trades_per_day=1,
             market_order_protection="off",
-            risk_profile_bindings={"tick_martingale_probe": "recovery_budgeted"},
+            risk_profile_bindings={"tick_recovery_probe": "recovery_budgeted"},
         ),
         trade_frequency_provider=provider,
         account_key="demo:broker:123",
@@ -316,7 +335,7 @@ def test_recovery_budgeted_profile_skips_trade_frequency_reservation():
         symbol="XAUUSD",
         volume=0.01,
         side="buy",
-        metadata={"strategy": "tick_martingale_probe"},
+        metadata={"strategy": "tick_recovery_probe"},
     )
 
     assert "trade_frequency_reservation_id" not in result
@@ -334,9 +353,7 @@ def test_custom_profile_rule_list_controls_pre_trade_pipeline():
                 "allowed_sessions": "london",
                 "max_trades_per_day": 1,
                 "market_order_protection": "off",
-                "risk_profile_bindings": {
-                    "tick_martingale_probe": "recovery_fast"
-                },
+                "risk_profile_bindings": {"tick_recovery_probe": "recovery_fast"},
                 "risk_profiles": {
                     "standard_kline": {
                         "policy": "standard_kline",
@@ -366,7 +383,7 @@ def test_custom_profile_rule_list_controls_pre_trade_pipeline():
         volume=0.01,
         side="buy",
         at_time=datetime.fromisoformat("2026-03-19T23:00:00+00:00"),
-        metadata={"strategy": "tick_martingale_probe"},
+        metadata={"strategy": "tick_recovery_probe"},
     )
 
     assert result["verdict"] == "allow"
@@ -392,7 +409,7 @@ def test_explicit_risk_profile_metadata_overrides_strategy_binding():
         risk_settings=RiskConfig(
             max_trades_per_day=1,
             market_order_protection="off",
-            risk_profile_bindings={"tick_martingale_probe": "standard_kline"},
+            risk_profile_bindings={"tick_recovery_probe": "standard_kline"},
         ),
         trade_frequency_provider=provider,
         account_key="demo:broker:123",
@@ -403,7 +420,7 @@ def test_explicit_risk_profile_metadata_overrides_strategy_binding():
         volume=0.01,
         side="buy",
         metadata={
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "risk_profile": "recovery_budgeted",
         },
     )
@@ -489,7 +506,9 @@ def test_blocks_when_position_limit_is_reached():
 
     assert result["verdict"] == "block"
     assert result["blocked"] is True
-    assert any(check["name"] == "max_positions_per_symbol" for check in result["checks"])
+    assert any(
+        check["name"] == "max_positions_per_symbol" for check in result["checks"]
+    )
 
 
 def test_blocks_when_symbol_volume_limit_would_be_exceeded():
@@ -637,6 +656,8 @@ def test_blocks_when_daily_loss_limit_is_reached() -> None:
 
     assert result["verdict"] == "block"
     assert result["blocked"] is True
-    check = next(item for item in result["checks"] if item["name"] == "daily_loss_limit")
+    check = next(
+        item for item in result["checks"] if item["name"] == "daily_loss_limit"
+    )
     assert check["reason"] == "daily_loss_limit_reached"
     assert check["details"]["source"] == "equity_balance_drawdown_proxy"

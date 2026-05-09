@@ -1,28 +1,28 @@
 """Unit tests for UnifiedIndicatorManager intrabar path fixes."""
+
 from __future__ import annotations
 
+import queue
 import threading
 import time
-import queue
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pytest
 
 from src.indicators.manager import UnifiedIndicatorManager
-from src.indicators.runtime import event_loops
-from src.indicators.runtime import intrabar_queue
+from src.indicators.runtime import event_loops, intrabar_queue
 from src.indicators.runtime.intrabar_metrics import (
     get_intrabar_metrics_snapshot,
     record_intrabar_drop,
-    record_intrabar_queue_age_ms,
     record_intrabar_processing_latency_ms,
+    record_intrabar_queue_age_ms,
 )
-
 
 # ---------------------------------------------------------------------------
 # Minimal stubs
 # ---------------------------------------------------------------------------
+
 
 class _Bar:
     def __init__(self, t: datetime, close: float = 1900.0, volume: float = 100.0):
@@ -53,7 +53,9 @@ class _FakeService:
         self._intrabar_listeners.append(listener)
 
     def remove_intrabar_listener(self, listener):
-        self._intrabar_listeners = [l for l in self._intrabar_listeners if l is not listener]
+        self._intrabar_listeners = [
+            l for l in self._intrabar_listeners if l is not listener
+        ]
 
     def get_ohlc(self, symbol, timeframe, count=None):
         return self._bars[-count:] if count else list(self._bars)
@@ -83,9 +85,11 @@ class _FakeService:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_bars(n: int = 60) -> List[_Bar]:
     now = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
     from datetime import timedelta
+
     return [_Bar(now + timedelta(minutes=i), close=1900.0 + i * 0.1) for i in range(n)]
 
 
@@ -102,6 +106,7 @@ def _make_manager(bars, storage_writer=None):
 # ---------------------------------------------------------------------------
 # Test: intrabar eligible 由策略推导注入
 # ---------------------------------------------------------------------------
+
 
 def test_intrabar_eligible_empty_without_override():
     """未注入 override 时（standalone 模式），intrabar eligible 为空集。"""
@@ -131,6 +136,7 @@ def test_intrabar_eligible_is_frozenset():
 # Test: _process_intrabar_event only computes eligible indicators
 # ---------------------------------------------------------------------------
 
+
 def test_process_intrabar_only_runs_eligible_indicators():
     """Pipeline 仅计算 override 注入的 intrabar eligible 指标。"""
     bars = _make_bars(60)
@@ -142,12 +148,23 @@ def test_process_intrabar_only_runs_eligible_indicators():
 
     original_pipeline_compute = mgr.pipeline.compute_staged
 
-    def spy_compute(symbol, timeframe, bar_data, indicators=None, on_level_complete=None, scope="confirmed"):
+    def spy_compute(
+        symbol,
+        timeframe,
+        bar_data,
+        indicators=None,
+        on_level_complete=None,
+        scope="confirmed",
+    ):
         if indicators is not None:
             computed_names.append(list(indicators))
         return original_pipeline_compute(
-            symbol, timeframe, bar_data,
-            indicators=indicators, on_level_complete=on_level_complete, scope=scope,
+            symbol,
+            timeframe,
+            bar_data,
+            indicators=indicators,
+            on_level_complete=on_level_complete,
+            scope=scope,
         )
 
     mgr.pipeline.compute_staged = spy_compute  # type: ignore[method-assign]
@@ -158,8 +175,9 @@ def test_process_intrabar_only_runs_eligible_indicators():
     assert computed_names, "pipeline.compute_staged was never called"
     for name_list in computed_names:
         allowed = {"rsi14", "boll20"}
-        assert set(name_list) <= allowed, \
-            f"Only {allowed} should be computed, got {name_list}"
+        assert (
+            set(name_list) <= allowed
+        ), f"Only {allowed} should be computed, got {name_list}"
 
 
 def test_apply_delta_metrics_uses_historical_indicator_values():
@@ -195,6 +213,7 @@ def test_apply_delta_metrics_skips_missing_history_gracefully():
 # Test: intrabar loop skips computation when no snapshot listeners
 # ---------------------------------------------------------------------------
 
+
 def test_intrabar_loop_skips_when_no_listeners(monkeypatch):
     bars = _make_bars(60)
     mgr, _ = _make_manager(bars)
@@ -229,7 +248,9 @@ def test_intrabar_loop_skips_when_no_listeners(monkeypatch):
     else:
         mgr._process_intrabar_event(item.symbol, item.timeframe, item.bar)
 
-    assert call_count["n"] == 0, "_process_intrabar_event must not be called with no listeners"
+    assert (
+        call_count["n"] == 0
+    ), "_process_intrabar_event must not be called with no listeners"
 
 
 def test_enqueue_intrabar_event_records_dropped_count():

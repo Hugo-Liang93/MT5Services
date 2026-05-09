@@ -27,7 +27,11 @@ class TestBuildBacktestComponents:
     ) -> None:
         """build_backtest_components 应返回 signal_module, pipeline 等核心组件。"""
         mock_db_settings.return_value = SimpleNamespace(
-            host="localhost", port=5432, dbname="test", user="test", password="test",
+            host="localhost",
+            port=5432,
+            dbname="test",
+            user="test",
+            password="test",
         )
         mock_signal_config.return_value = SimpleNamespace(
             strategy_params={},
@@ -65,7 +69,11 @@ class TestBuildBacktestComponents:
     ) -> None:
         """strategy_params 覆盖应传递到 SignalModule。"""
         mock_db_settings.return_value = SimpleNamespace(
-            host="localhost", port=5432, dbname="test", user="test", password="test",
+            host="localhost",
+            port=5432,
+            dbname="test",
+            user="test",
+            password="test",
         )
         mock_signal_config.return_value = SimpleNamespace(
             strategy_params={"rsi_reversion__overbought": 75},

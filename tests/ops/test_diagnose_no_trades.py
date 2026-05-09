@@ -45,7 +45,5 @@ def test_diagnose_threads_tf_and_hours_into_recent_query() -> None:
     assert "timeframe" in source, "应传 timeframe= query 参数"
     # from 是 alias，路由侧 query 名是 'from'；接受 'from=' 字面或 params={'from':...}
     assert (
-        '"from"' in source
-        or "'from'" in source
-        or "from=" in source
+        '"from"' in source or "'from'" in source or "from=" in source
     ), "应传 from= query 参数（alias）"

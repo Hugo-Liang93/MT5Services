@@ -22,10 +22,7 @@ from src.research.analyzers.rule_mining import (
     RuleMiningConfig,
     mine_rules,
 )
-from src.research.core.barrier import (
-    BarrierConfig,
-    compute_barrier_returns,
-)
+from src.research.core.barrier import BarrierConfig, compute_barrier_returns
 from src.research.core.config import OverfittingConfig
 from src.research.core.data_matrix import DataMatrix
 from src.signals.evaluation.regime import RegimeType
@@ -104,12 +101,22 @@ def _build_matrix_with_barrier(
         )
         barrier_configs = configs
         barrier_long = compute_barrier_returns(
-            opens=opens, highs=highs, lows=lows, closes=closes,
-            indicators=indicators, configs=configs, direction="long",
+            opens=opens,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            indicators=indicators,
+            configs=configs,
+            direction="long",
         )
         barrier_short = compute_barrier_returns(
-            opens=opens, highs=highs, lows=lows, closes=closes,
-            indicators=indicators, configs=configs, direction="short",
+            opens=opens,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            indicators=indicators,
+            configs=configs,
+            direction="short",
         )
 
     return DataMatrix(

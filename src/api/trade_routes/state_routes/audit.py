@@ -22,7 +22,9 @@ from .common import (
 router = APIRouter(tags=["trade"])
 
 
-@router.get("/trade/command-audits", response_model=ApiResponse[list[TradeCommandAuditView]])
+@router.get(
+    "/trade/command-audits", response_model=ApiResponse[list[TradeCommandAuditView]]
+)
 def trade_command_audits(
     command_type: Optional[str] = Query(default=None, description="command type"),
     status: Optional[str] = Query(default=None, description="operation status"),
@@ -30,9 +32,16 @@ def trade_command_audits(
     signal_id: Optional[str] = Query(default=None, description="signal id filter"),
     trace_id: Optional[str] = Query(default=None, description="trace id filter"),
     actor: Optional[str] = Query(default=None, description="actor filter"),
-    audit_id: Optional[str] = Query(default=None, description="audit/operation id (=trade_command_audits.operation_id)"),
-    action_id: Optional[str] = Query(default=None, description="action id (operator_commands.action_id)"),
-    idempotency_key: Optional[str] = Query(default=None, description="idempotency key for mutation receipts"),
+    audit_id: Optional[str] = Query(
+        default=None,
+        description="audit/operation id (=trade_command_audits.operation_id)",
+    ),
+    action_id: Optional[str] = Query(
+        default=None, description="action id (operator_commands.action_id)"
+    ),
+    idempotency_key: Optional[str] = Query(
+        default=None, description="idempotency key for mutation receipts"
+    ),
     from_time: Optional[datetime] = Query(default=None, alias="from"),
     to_time: Optional[datetime] = Query(default=None, alias="to"),
     page: int = Query(default=1, ge=1),
@@ -158,7 +167,9 @@ async def get_sl_tp_history(
     try:
         db = read_model.db_writer
         rows = db.fetch_position_sl_tp_history(
-            position_ticket=ticket, limit=limit, offset=offset,
+            position_ticket=ticket,
+            limit=limit,
+            offset=offset,
         )
         for row in rows:
             val = row.get("recorded_at")

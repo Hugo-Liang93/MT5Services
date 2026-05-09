@@ -424,9 +424,7 @@ def load_research_config(ini_path: Optional[str] = None) -> ResearchConfig:
                     _get("state_edge_model", "timeframes", "H4,H1,M30,M15")
                 )
             ],
-            model_kind=_get(
-                "state_edge_model", "model_kind", "hist_gradient_boosting"
-            ),
+            model_kind=_get("state_edge_model", "model_kind", "hist_gradient_boosting"),
             label_policy=_get(
                 "state_edge_model", "label_policy", "best_cost_after_barrier"
             ),

@@ -28,9 +28,7 @@ def build_filter_simulator(engine: "BacktestEngine") -> BacktestFilterSimulator:
         volatility_spike_multiplier=f.volatility_spike_multiplier,
         spread_filter_enabled=f.spread_enabled,
         max_spread_points=f.max_spread_points,
-        economic_filter_enabled=(
-            f.economic_enabled and economic_provider is not None
-        ),
+        economic_filter_enabled=(f.economic_enabled and economic_provider is not None),
         economic_provider=economic_provider,
         economic_lookahead_minutes=f.economic_lookahead_minutes,
         economic_lookback_minutes=f.economic_lookback_minutes,
@@ -42,12 +40,15 @@ def build_filter_simulator(engine: "BacktestEngine") -> BacktestFilterSimulator:
 def load_economic_provider(engine: "BacktestEngine") -> Any:
     """从 DB 加载回测期间的经济事件，构建 BacktestTradeGuardProvider。"""
     try:
-        from .economic import BacktestTradeGuardProvider, _SimpleSettings
         from src.calendar import infer_symbol_context
         from src.calendar.economic_loader import load_economic_events_window
         from src.config.database import load_db_settings
         from src.persistence.db import TimescaleWriter
-        from src.persistence.repositories.economic_repo import EconomicCalendarRepository
+        from src.persistence.repositories.economic_repo import (
+            EconomicCalendarRepository,
+        )
+
+        from .economic import BacktestTradeGuardProvider, _SimpleSettings
 
         settings = load_db_settings()
         writer = TimescaleWriter(settings, min_conn=1, max_conn=2)
@@ -64,7 +65,9 @@ def load_economic_provider(engine: "BacktestEngine") -> Any:
         writer.close()
 
         if not events:
-            logger.info("No economic events found for backtest period, economic filter disabled")
+            logger.info(
+                "No economic events found for backtest period, economic filter disabled"
+            )
             return None
 
         try:

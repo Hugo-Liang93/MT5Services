@@ -46,7 +46,9 @@ class _AccountService:
         ]
 
 
-def test_account_positions_serializes_dataclass_time_without_duplicate_keyword() -> None:
+def test_account_positions_serializes_dataclass_time_without_duplicate_keyword() -> (
+    None
+):
     response = account_positions(symbol="XAUUSD", svc=_AccountService())
 
     assert response.success is True

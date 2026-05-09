@@ -32,6 +32,7 @@
   4. 18 ≤ ADX < 23 → UNCERTAIN
   5. 无 ADX 数据 → UNCERTAIN（返回保守状态）
 """
+
 from __future__ import annotations
 
 import logging
@@ -89,8 +90,7 @@ class SoftRegimeResult:
     def from_dict(cls, payload: Dict[str, Any]) -> "SoftRegimeResult":
         probabilities = payload.get("probabilities", {})
         normalized = {
-            regime: float(probabilities.get(regime.value, 0.0))
-            for regime in RegimeType
+            regime: float(probabilities.get(regime.value, 0.0)) for regime in RegimeType
         }
         dominant = payload.get("dominant_regime", RegimeType.UNCERTAIN.value)
         return cls(
@@ -99,9 +99,7 @@ class SoftRegimeResult:
             adx=_safe_float(payload.get("adx")),
             bb_width_pct=_safe_float(payload.get("bb_width_pct")),
             is_kc_bb_squeeze=payload.get("is_kc_bb_squeeze"),
-            adx_trending_threshold=float(
-                payload.get("adx_trending_threshold", 23.0)
-            ),
+            adx_trending_threshold=float(payload.get("adx_trending_threshold", 23.0)),
             adx_ranging_threshold=float(payload.get("adx_ranging_threshold", 18.0)),
             bb_tight_pct=float(payload.get("bb_tight_pct", 0.008)),
         )
@@ -277,9 +275,7 @@ class MarketRegimeDetector:
             half_span = max(span / 2.0, 1e-6)
             trend_transition = self._clamp((adx - self._adx_ranging) / span)
             range_transition = self._clamp((self._adx_trending - adx) / span)
-            uncertain_transition = self._clamp(
-                1.0 - abs(adx - midpoint) / half_span
-            )
+            uncertain_transition = self._clamp(1.0 - abs(adx - midpoint) / half_span)
             trend_excess = max(adx - self._adx_trending, 0.0) / max(
                 self._adx_trending, 1.0
             )
@@ -310,7 +306,9 @@ class MarketRegimeDetector:
 
         tightness = 0.0
         if bb_width_pct is not None and self._bb_tight_pct > 0:
-            tightness = self._clamp((self._bb_tight_pct - bb_width_pct) / self._bb_tight_pct)
+            tightness = self._clamp(
+                (self._bb_tight_pct - bb_width_pct) / self._bb_tight_pct
+            )
         scores[RegimeType.BREAKOUT] += 0.10 + tightness * 1.00
 
         if is_squeeze:
@@ -359,7 +357,8 @@ class MarketRegimeDetector:
             logger.warning(
                 "Soft regime scores near zero (total=%.2e, clamped=%s), "
                 "falling back to uniform distribution",
-                total, clamped,
+                total,
+                clamped,
             )
             probabilities = {regime: 0.25 for regime in RegimeType}
         else:
@@ -423,9 +422,7 @@ class MarketRegimeDetector:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_adx(
-        indicators: Dict[str, Dict[str, Any]]
-    ) -> Optional[float]:
+    def _extract_adx(indicators: Dict[str, Dict[str, Any]]) -> Optional[float]:
         for name in ("adx14", "adx"):
             payload = indicators.get(name)
             if isinstance(payload, dict):
@@ -448,9 +445,7 @@ class MarketRegimeDetector:
         return None
 
     @staticmethod
-    def _extract_rsi(
-        indicators: Dict[str, Dict[str, Any]]
-    ) -> Optional[float]:
+    def _extract_rsi(indicators: Dict[str, Dict[str, Any]]) -> Optional[float]:
         for name in ("rsi14", "rsi"):
             payload = indicators.get(name)
             if isinstance(payload, dict):
@@ -563,9 +558,13 @@ class RegimeTracker:
         """返回当前跟踪状态，用于监控端点。"""
         with self._lock:
             return {
-                "current_regime": self._current_regime.value if self._current_regime else None,
+                "current_regime": (
+                    self._current_regime.value if self._current_regime else None
+                ),
                 "consecutive_bars": self._consecutive_bars,
-                "stability_multiplier": self._compute_multiplier(self._consecutive_bars),
+                "stability_multiplier": self._compute_multiplier(
+                    self._consecutive_bars
+                ),
                 "min_bars_for_full_stability": self._min_bars,
                 "max_multiplier": self._max_multiplier,
             }

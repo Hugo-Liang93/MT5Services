@@ -106,7 +106,10 @@ def run(
     for name, series in sorted(utilization_series.items()):
         first = first_drops.get(name, {})
         last = last_drops.get(name, {})
-        delta = {k: last.get(k, 0) - first.get(k, 0) for k in ("drops_oldest", "drops_newest", "blocked_puts", "full_errors")}
+        delta = {
+            k: last.get(k, 0) - first.get(k, 0)
+            for k in ("drops_oldest", "drops_newest", "blocked_puts", "full_errors")
+        }
         channels.append(
             {
                 "name": name,
@@ -131,8 +134,12 @@ def run(
 
 def _print_text(report: dict[str, Any]) -> None:
     print(f"Endpoint:       {report['endpoint']}")
-    print(f"Duration:       {report['duration_seconds']}s @ every {report['interval_seconds']}s")
-    print(f"Samples:        {report['samples_collected']} ({report['fetch_errors']} errors)")
+    print(
+        f"Duration:       {report['duration_seconds']}s @ every {report['interval_seconds']}s"
+    )
+    print(
+        f"Samples:        {report['samples_collected']} ({report['fetch_errors']} errors)"
+    )
     print()
     header = (
         f"{'channel':<28} {'p50':>6} {'p95':>6} {'peak':>6} "
@@ -154,17 +161,25 @@ def _print_text(report: dict[str, Any]) -> None:
         )
     # 高亮异常
     print()
-    hotspots = [ch for ch in report["channels"] if ch["util_peak_pct"] >= 80.0 or any(ch["drops_delta"].values())]
+    hotspots = [
+        ch
+        for ch in report["channels"]
+        if ch["util_peak_pct"] >= 80.0 or any(ch["drops_delta"].values())
+    ]
     if hotspots:
         print("饱和/丢失热点:")
         for ch in hotspots:
-            print(f"  - {ch['name']}: peak={ch['util_peak_pct']}%, drops={ch['drops_delta']}")
+            print(
+                f"  - {ch['name']}: peak={ch['util_peak_pct']}%, drops={ch['drops_delta']}"
+            )
     else:
         print("本次采样期无饱和/丢失事件。")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="StorageWriter queue saturation sampler")
+    parser = argparse.ArgumentParser(
+        description="StorageWriter queue saturation sampler"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8808)
     parser.add_argument("--duration", type=int, default=60, help="采样总时长（秒）")

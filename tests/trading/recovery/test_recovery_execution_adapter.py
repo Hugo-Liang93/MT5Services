@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+from src.risk.service import PreTradeRiskBlockedError
+from src.trading.application.module import TradingModule
 from src.trading.recovery import (
     PositionScalingIntent,
     RecoveryCycleState,
@@ -7,9 +9,7 @@ from src.trading.recovery import (
     RecoveryExecutionCanaryPolicy,
     RecoveryPolicy,
 )
-from src.risk.service import PreTradeRiskBlockedError
 from tests.trading.test_trading_module import DummyDBWriter, DummyRegistry
-from src.trading.application.module import TradingModule
 
 
 class DummyTradingPort:
@@ -106,7 +106,7 @@ def _cycle(**overrides) -> RecoveryCycleState:
         "started_at": now,
         "updated_at": now,
         "last_step_at": now,
-        "strategy": "tick_martingale_probe",
+        "strategy": "tick_recovery_probe",
         "timeframe": "TICK",
         "source_signal_id": "sig-1",
     }
@@ -120,7 +120,7 @@ def _intent(**overrides) -> PositionScalingIntent:
         "account_key": "demo:broker:1001",
         "symbol": "XAUUSD",
         "direction": "buy",
-        "strategy": "tick_martingale_probe",
+        "strategy": "tick_recovery_probe",
         "timeframe": "TICK",
         "source_signal_id": "sig-1",
         "step_index": 2,

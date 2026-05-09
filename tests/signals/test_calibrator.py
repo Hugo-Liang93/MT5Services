@@ -294,9 +294,9 @@ def test_confidence_calibrator_refresh_hours_param_is_one_shot() -> None:
     # 一次性传 24h；调用主窗口必须按 24h 拉
     calibrator.refresh(hours=24)
     main_query_hours = fetch_history[0]
-    assert main_query_hours == 24, (
-        f"refresh(hours=24) 主查询窗口必须 = 24；got {main_query_hours}"
-    )
+    assert (
+        main_query_hours == 24
+    ), f"refresh(hours=24) 主查询窗口必须 = 24；got {main_query_hours}"
 
     # 内部 _refresh_hours 不应被永久改掉
     after_state = calibrator.describe()
@@ -308,6 +308,6 @@ def test_confidence_calibrator_refresh_hours_param_is_one_shot() -> None:
     # 后续不带 hours 的 refresh 必须回到默认 168h
     fetch_history.clear()
     calibrator.refresh()
-    assert fetch_history[0] == 168, (
-        f"后续无参 refresh() 必须用默认 168；got {fetch_history[0]}"
-    )
+    assert (
+        fetch_history[0] == 168
+    ), f"后续无参 refresh() 必须用默认 168；got {fetch_history[0]}"

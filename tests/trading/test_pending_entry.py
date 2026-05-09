@@ -188,7 +188,9 @@ class TestPendingEntryManager:
         now = datetime.now(timezone.utc)
         return PendingEntry(
             signal_event=_make_signal_event(
-                signal_id=signal_id, direction=direction, category=category,
+                signal_id=signal_id,
+                direction=direction,
+                category=category,
             ),
             trade_params=_make_trade_params(),
             cost_metrics={},
@@ -272,14 +274,16 @@ class TestPendingEntryManager:
         price_shift = fill_price - original.entry_price  # +0.50
         assert updated_params.entry_price == fill_price
         assert updated_params.stop_loss == round(original.stop_loss + price_shift, 2)
-        assert updated_params.take_profit == round(original.take_profit + price_shift, 2)
+        assert updated_params.take_profit == round(
+            original.take_profit + price_shift, 2
+        )
         # SL/TP 距离保持不变
-        assert abs(updated_params.entry_price - updated_params.stop_loss) == pytest.approx(
-            abs(original.entry_price - original.stop_loss), abs=0.01
-        )
-        assert abs(updated_params.take_profit - updated_params.entry_price) == pytest.approx(
-            abs(original.take_profit - original.entry_price), abs=0.01
-        )
+        assert abs(
+            updated_params.entry_price - updated_params.stop_loss
+        ) == pytest.approx(abs(original.entry_price - original.stop_loss), abs=0.01)
+        assert abs(
+            updated_params.take_profit - updated_params.entry_price
+        ) == pytest.approx(abs(original.take_profit - original.entry_price), abs=0.01)
 
     def test_no_fill_when_price_outside_zone(self) -> None:
         execute_fn = MagicMock()
@@ -308,7 +312,9 @@ class TestPendingEntryManager:
 
         # 超短超时
         pending = self._make_pending(
-            entry_low=2649.0, entry_high=2651.0, timeout_seconds=0.05,
+            entry_low=2649.0,
+            entry_high=2651.0,
+            timeout_seconds=0.05,
         )
         mgr.submit(pending)
 
@@ -327,7 +333,9 @@ class TestPendingEntryManager:
         mgr = self._make_manager(market_service=market, execute_fn=execute_fn)
 
         pending = self._make_pending(
-            direction="sell", entry_low=2649.0, entry_high=2651.0,
+            direction="sell",
+            entry_low=2649.0,
+            entry_high=2651.0,
         )
         mgr.submit(pending)
 
@@ -548,7 +556,9 @@ class TestPendingEntryManager:
 
         mgr._check_mt5_order_expiry()
 
-        assert cancellation_port.cancel_orders_by_tickets.call_args_list[0].args[0] == [7010]
+        assert cancellation_port.cancel_orders_by_tickets.call_args_list[0].args[0] == [
+            7010
+        ]
         assert mgr._mt5_orders == {}
         assert mgr.status()["stats"]["mt5_orders_expired"] == 1
 
@@ -610,7 +620,9 @@ class TestPendingEntryManager:
         )
 
         assert cancelled == 1
-        assert cancellation_port.cancel_orders_by_tickets.call_args_list[0].args[0] == [7005]
+        assert cancellation_port.cancel_orders_by_tickets.call_args_list[0].args[0] == [
+            7005
+        ]
         assert "sig-buy" in mgr._mt5_orders
         assert "sig-sell" not in mgr._mt5_orders
 
@@ -758,6 +770,6 @@ class TestSubmitDuplicateSignalId:
         # status()["entries"] 的 zone 字段是 [low, high] tuple
         entries = mgr.status()["entries"]
         assert len(entries) == 1
-        assert float(entries[0]["zone"][0]) == 200.0, (
-            f"新项必须替换旧项，但当前是 {entries[0]!r}"
-        )
+        assert (
+            float(entries[0]["zone"][0]) == 200.0
+        ), f"新项必须替换旧项，但当前是 {entries[0]!r}"

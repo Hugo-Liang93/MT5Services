@@ -65,7 +65,9 @@ def _get_cache_section() -> configparser.SectionProxy | None:
     return parser["cache"]
 
 
-def _cache_int(section: configparser.SectionProxy | None, key: str, default: int) -> int:
+def _cache_int(
+    section: configparser.SectionProxy | None, key: str, default: int
+) -> int:
     if section is None:
         return default
     try:

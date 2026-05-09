@@ -42,10 +42,15 @@ def _end_of_day(value: date) -> datetime:
     return _service_end_of_day(value)
 
 
-def fetch_existing_by_uid(service, events: Sequence[EconomicCalendarEvent]) -> Dict[str, EconomicCalendarEvent]:
+def fetch_existing_by_uid(
+    service, events: Sequence[EconomicCalendarEvent]
+) -> Dict[str, EconomicCalendarEvent]:
     event_uids = sorted({event.event_uid for event in events})
     rows = service.db.fetch_economic_calendar_by_uids(event_uids)
-    return {event.event_uid: event for event in (EconomicCalendarEvent.from_db_row(row) for row in rows)}
+    return {
+        event.event_uid: event
+        for event in (EconomicCalendarEvent.from_db_row(row) for row in rows)
+    }
 
 
 def store_with_backpressure_control(service, channel: str, rows: List[tuple]) -> None:
@@ -80,7 +85,9 @@ def write_events(
     newly_released: List[EconomicCalendarEvent] = []
     for event in events:
         existing = existing_map.get(event.event_uid)
-        prepared = service._apply_lifecycle(event, existing, observed_at, value_check=value_check)
+        prepared = service._apply_lifecycle(
+            event, existing, observed_at, value_check=value_check
+        )
         if existing and existing.scheduled_at != prepared.scheduled_at:
             delete_keys.append((existing.scheduled_at, existing.event_uid))
         reason = service._snapshot_reason(existing, prepared)
@@ -94,9 +101,8 @@ def write_events(
                 )
             )
         # 检测状态变为 released 的事件
-        if (
-            prepared.status == "released"
-            and (existing is None or existing.status != "released")
+        if prepared.status == "released" and (
+            existing is None or existing.status != "released"
         ):
             newly_released.append(prepared)
 
@@ -109,7 +115,9 @@ def write_events(
                 service.db.write_economic_calendar_updates(update_rows)
         else:
             store_with_backpressure_control(service, "economic_calendar", rows)
-            store_with_backpressure_control(service, "economic_calendar_updates", update_rows)
+            store_with_backpressure_control(
+                service, "economic_calendar_updates", update_rows
+            )
 
     # 通知 MarketImpactAnalyzer 有新 released 事件
     analyzer = getattr(service, "market_impact_analyzer", None)
@@ -147,17 +155,28 @@ def fetch_job_events(
         if provider_obj is None or not provider_obj.is_configured():
             continue
         try:
-            fetched = service._fetch_from_provider(provider, start_at.date(), end_at.date(), countries)
+            fetched = service._fetch_from_provider(
+                provider, start_at.date(), end_at.date(), countries
+            )
             provider_counts[provider] = len(fetched)
             events.extend(fetched)
         except Exception as exc:
             provider_errors[provider] = str(exc)
     if provider_errors and not provider_counts:
-        raise EconomicCalendarError(f"All economic calendar providers failed: {provider_errors}")
+        raise EconomicCalendarError(
+            f"All economic calendar providers failed: {provider_errors}"
+        )
 
     enriched_events = service._enrich_events(events)
-    filtered = [event for event in enriched_events if service._event_within_bounds(event, start_at, end_at)]
-    deduped = {event.event_uid: event for event in sorted(filtered, key=lambda item: item.scheduled_at)}
+    filtered = [
+        event
+        for event in enriched_events
+        if service._event_within_bounds(event, start_at, end_at)
+    ]
+    deduped = {
+        event.event_uid: event
+        for event in sorted(filtered, key=lambda item: item.scheduled_at)
+    }
     return list(deduped.values()), provider_counts, provider_errors
 
 
@@ -192,7 +211,9 @@ def job_summary(
     }
 
 
-def schedule_next_run(service, job_type: str, *, from_time: Optional[datetime] = None) -> None:
+def schedule_next_run(
+    service, job_type: str, *, from_time: Optional[datetime] = None
+) -> None:
     if job_type == "release_watch":
         # 三档自适应：根据最近事件动态计算下次轮询间隔
         base_interval = service._job_interval(job_type)
@@ -202,12 +223,20 @@ def schedule_next_run(service, job_type: str, *, from_time: Optional[datetime] =
         try:
             interval = service.compute_release_watch_interval()
         except Exception as exc:
-            logger.warning("compute_release_watch_interval() failed, using idle: %s", exc)
+            logger.warning(
+                "compute_release_watch_interval() failed, using idle: %s", exc
+            )
             interval = float(service.settings.release_watch_idle_interval_seconds)
-        service._next_run_at[job_type] = (from_time or _utc_now()) + timedelta(seconds=interval)
+        service._next_run_at[job_type] = (from_time or _utc_now()) + timedelta(
+            seconds=interval
+        )
         return
     interval = service._job_interval(job_type)
-    service._next_run_at[job_type] = None if interval <= 0 else (from_time or _utc_now()) + timedelta(seconds=interval)
+    service._next_run_at[job_type] = (
+        None
+        if interval <= 0
+        else (from_time or _utc_now()) + timedelta(seconds=interval)
+    )
 
 
 def runtime_task_details(service, job_type: str) -> Dict[str, Any]:
@@ -226,7 +255,11 @@ def runtime_task_details(service, job_type: str) -> Dict[str, Any]:
 def runtime_task_row(service, job_type: str) -> tuple:
     job_state = service._job_state[job_type]
     updated_at = _utc_now()
-    started_at = datetime.fromisoformat(job_state["last_started_at"]) if job_state.get("last_started_at") else None
+    started_at = (
+        datetime.fromisoformat(job_state["last_started_at"])
+        if job_state.get("last_started_at")
+        else None
+    )
     completed_at = (
         datetime.fromisoformat(job_state["last_completed_at"])
         if job_state.get("last_completed_at")
@@ -273,7 +306,9 @@ def persist_job_state(service, job_type: str) -> None:
     try:
         service.db.write_runtime_task_status([runtime_task_row(service, job_type)])
     except Exception as exc:  # pragma: no cover
-        logger.debug("Failed to persist economic runtime task status for %s: %s", job_type, exc)
+        logger.debug(
+            "Failed to persist economic runtime task status for %s: %s", job_type, exc
+        )
 
 
 def update_job_state(
@@ -334,25 +369,49 @@ def restore_job_state(service) -> None:
     latest_attempt: Optional[Dict[str, Any]] = None
     max_consecutive_failures = 0
     for row in rows:
-        _, task_name, _, state, started_at, completed_at, next_run_at, duration_ms, success_count, failure_count, consecutive_failures, last_error, details = row
+        (
+            _,
+            task_name,
+            _,
+            state,
+            started_at,
+            completed_at,
+            next_run_at,
+            duration_ms,
+            success_count,
+            failure_count,
+            consecutive_failures,
+            last_error,
+            details,
+        ) = row
         if task_name not in service._job_state:
             continue
         job_state = service._job_state[task_name]
         job_state["last_status"] = state
         job_state["last_started_at"] = started_at.isoformat() if started_at else None
-        job_state["last_completed_at"] = completed_at.isoformat() if completed_at else None
+        job_state["last_completed_at"] = (
+            completed_at.isoformat() if completed_at else None
+        )
         job_state["last_duration_ms"] = duration_ms
         job_state["success_count"] = int(success_count or 0)
         job_state["failure_count"] = int(failure_count or 0)
         job_state["consecutive_failures"] = int(consecutive_failures or 0)
         job_state["last_error"] = last_error
-        max_consecutive_failures = max(max_consecutive_failures, job_state["consecutive_failures"])
+        max_consecutive_failures = max(
+            max_consecutive_failures, job_state["consecutive_failures"]
+        )
         if isinstance(details, dict):
             effective_result_status = details.get("last_result_status") or state
             job_state["last_result_status"] = effective_result_status
-            job_state["last_fetched"] = int(details.get("last_fetched", job_state["last_fetched"]))
-            job_state["last_written"] = int(details.get("last_written", job_state["last_written"]))
-            job_state["last_snapshots"] = int(details.get("last_snapshots", job_state["last_snapshots"]))
+            job_state["last_fetched"] = int(
+                details.get("last_fetched", job_state["last_fetched"])
+            )
+            job_state["last_written"] = int(
+                details.get("last_written", job_state["last_written"])
+            )
+            job_state["last_snapshots"] = int(
+                details.get("last_snapshots", job_state["last_snapshots"])
+            )
         else:
             effective_result_status = state
         if next_run_at is not None:
@@ -368,14 +427,21 @@ def restore_job_state(service) -> None:
             }
             if latest_attempt is None or completed_at > latest_attempt["completed_at"]:
                 latest_attempt = candidate
-            if effective_result_status in {
-                RuntimeTaskState.OK.value,
-                RuntimeTaskState.PARTIAL.value,
-                RuntimeTaskState.COMPLETED.value,
-                RuntimeTaskState.READY.value,
-                RuntimeTaskState.IDLE.value,
-            } or int(success_count or 0) > 0:
-                if latest_success is None or completed_at > latest_success["completed_at"]:
+            if (
+                effective_result_status
+                in {
+                    RuntimeTaskState.OK.value,
+                    RuntimeTaskState.PARTIAL.value,
+                    RuntimeTaskState.COMPLETED.value,
+                    RuntimeTaskState.READY.value,
+                    RuntimeTaskState.IDLE.value,
+                }
+                or int(success_count or 0) > 0
+            ):
+                if (
+                    latest_success is None
+                    or completed_at > latest_success["completed_at"]
+                ):
                     latest_success = candidate
     service._consecutive_failures = max_consecutive_failures
     if latest_success is not None:
@@ -395,10 +461,14 @@ def startup_schedule_time(service, job_type: str, now: datetime) -> Optional[dat
     interval = service._job_interval(job_type)
     if interval <= 0:
         return None
-    jitter = min(max(0.0, float(service.settings.refresh_jitter_seconds)), max(0.0, interval))
+    jitter = min(
+        max(0.0, float(service.settings.refresh_jitter_seconds)), max(0.0, interval)
+    )
     delay_seconds = interval
     if job_type == "calendar_sync" and service.settings.startup_refresh:
-        delay_seconds = max(0.0, float(service.settings.startup_calendar_sync_delay_seconds))
+        delay_seconds = max(
+            0.0, float(service.settings.startup_calendar_sync_delay_seconds)
+        )
     scheduled_at = now + timedelta(seconds=delay_seconds)
     if jitter > 0:
         scheduled_at += timedelta(seconds=random.uniform(0.0, jitter))
@@ -454,7 +524,9 @@ def run_job(
         service._last_refresh_started_at = started_at
         service._last_refresh_completed_at = completed_at
         service._last_refresh_duration_ms = duration_ms
-        service._last_refresh_error = None if not provider_errors else str(provider_errors)
+        service._last_refresh_error = (
+            None if not provider_errors else str(provider_errors)
+        )
         service._last_refresh_summary = summary
         service._consecutive_failures = 0
         update_job_state(
@@ -535,15 +607,30 @@ def refresh_service(
     service._refresh_in_progress = True
     try:
         default_start_at, default_end_at = service._job_window(job_type)
-        start_at = service._coerce_datetime(start_date) if start_date is not None else default_start_at
-        end_at = service._coerce_datetime(end_date) if end_date is not None else default_end_at
+        start_at = (
+            service._coerce_datetime(start_date)
+            if start_date is not None
+            else default_start_at
+        )
+        end_at = (
+            service._coerce_datetime(end_date)
+            if end_date is not None
+            else default_end_at
+        )
         if start_at is None or end_at is None:
             raise EconomicCalendarError("Economic calendar refresh window is invalid")
         if isinstance(start_date, date) and not isinstance(start_date, datetime):
             start_at = _start_of_day(start_date)
         if isinstance(end_date, date) and not isinstance(end_date, datetime):
             end_at = _end_of_day(end_date)
-        return run_job(service, job_type=job_type, start_at=start_at, end_at=end_at, countries=countries, sources=sources)
+        return run_job(
+            service,
+            job_type=job_type,
+            start_at=start_at,
+            end_at=end_at,
+            countries=countries,
+            sources=sources,
+        )
     finally:
         service._refresh_in_progress = False
         service._refresh_lock.release()
@@ -568,7 +655,9 @@ def run_scheduler(service) -> None:
         due_jobs = [
             job_type
             for job_type, next_run in service._next_run_at.items()
-            if next_run is not None and next_run <= now and service._job_interval(job_type) > 0
+            if next_run is not None
+            and next_run <= now
+            and service._job_interval(job_type) > 0
         ]
         if due_jobs:
             for job_type in sorted(due_jobs, key=service._job_interval):
@@ -581,10 +670,19 @@ def run_scheduler(service) -> None:
                 except Exception:
                     logger.exception("MarketImpactAnalyzer.tick() failed")
             continue
-        upcoming = [next_run for next_run in service._next_run_at.values() if next_run is not None]
+        upcoming = [
+            next_run
+            for next_run in service._next_run_at.values()
+            if next_run is not None
+        ]
         wait_seconds = 5.0
         if upcoming:
-            wait_seconds = max(1.0, min(5.0, min((next_run - now).total_seconds() for next_run in upcoming)))
+            wait_seconds = max(
+                1.0,
+                min(
+                    5.0, min((next_run - now).total_seconds() for next_run in upcoming)
+                ),
+            )
         if service._stop_event.wait(wait_seconds):
             break
 
@@ -613,7 +711,9 @@ def start_service(service) -> None:
     now = _utc_now()
     service._scheduler_started_at = now
     startup_immediate_jobs = (
-        {"near_term_sync", "release_watch"} if service.settings.startup_refresh else set()
+        {"near_term_sync", "release_watch"}
+        if service.settings.startup_refresh
+        else set()
     )
     startup_schedule: Dict[str, Optional[datetime]] = {}
     for job_type in _JOB_LABELS:
@@ -627,7 +727,11 @@ def start_service(service) -> None:
             service._next_run_at[job_type] = now
         elif restored_next_run is None or restored_next_run <= now:
             service._next_run_at[job_type] = scheduled_at
-        elif job_type == "calendar_sync" and service.settings.startup_refresh and scheduled_at is not None:
+        elif (
+            job_type == "calendar_sync"
+            and service.settings.startup_refresh
+            and scheduled_at is not None
+        ):
             service._next_run_at[job_type] = max(restored_next_run, scheduled_at)
         persist_job_state(service, job_type)
     bootstrap_anchor = None
@@ -674,9 +778,7 @@ def stop_service(service) -> None:
     if service._worker and service._worker.is_alive():
         service._worker.join(timeout=5.0)
 
-    worker_still_alive = (
-        service._worker is not None and service._worker.is_alive()
-    )
+    worker_still_alive = service._worker is not None and service._worker.is_alive()
     if worker_still_alive:
         logger.error(
             "Economic calendar worker still alive after 5s join timeout; "

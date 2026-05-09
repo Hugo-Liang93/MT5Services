@@ -302,14 +302,66 @@ class MarketStructureAnalyzer:
         if close_price is None:
             return "none", None, []
         checks = (
-            ("above_previous_day_high", previous_day_high, close_price > previous_day_high if previous_day_high is not None else False),
-            ("below_previous_day_low", previous_day_low, close_price < previous_day_low if previous_day_low is not None else False),
-            ("above_asia_high", asia_range_high, close_price > asia_range_high if asia_range_high is not None else False),
-            ("below_asia_low", asia_range_low, close_price < asia_range_low if asia_range_low is not None else False),
-            ("above_london_open_high", london_open_high, close_price > london_open_high if london_open_high is not None else False),
-            ("below_london_open_low", london_open_low, close_price < london_open_low if london_open_low is not None else False),
-            ("above_new_york_open_high", new_york_open_high, close_price > new_york_open_high if new_york_open_high is not None else False),
-            ("below_new_york_open_low", new_york_open_low, close_price < new_york_open_low if new_york_open_low is not None else False),
+            (
+                "above_previous_day_high",
+                previous_day_high,
+                (
+                    close_price > previous_day_high
+                    if previous_day_high is not None
+                    else False
+                ),
+            ),
+            (
+                "below_previous_day_low",
+                previous_day_low,
+                (
+                    close_price < previous_day_low
+                    if previous_day_low is not None
+                    else False
+                ),
+            ),
+            (
+                "above_asia_high",
+                asia_range_high,
+                close_price > asia_range_high if asia_range_high is not None else False,
+            ),
+            (
+                "below_asia_low",
+                asia_range_low,
+                close_price < asia_range_low if asia_range_low is not None else False,
+            ),
+            (
+                "above_london_open_high",
+                london_open_high,
+                (
+                    close_price > london_open_high
+                    if london_open_high is not None
+                    else False
+                ),
+            ),
+            (
+                "below_london_open_low",
+                london_open_low,
+                close_price < london_open_low if london_open_low is not None else False,
+            ),
+            (
+                "above_new_york_open_high",
+                new_york_open_high,
+                (
+                    close_price > new_york_open_high
+                    if new_york_open_high is not None
+                    else False
+                ),
+            ),
+            (
+                "below_new_york_open_low",
+                new_york_open_low,
+                (
+                    close_price < new_york_open_low
+                    if new_york_open_low is not None
+                    else False
+                ),
+            ),
         )
         breached_levels = [state for state, _level, matched in checks if matched]
         for state, level, matched in checks:
@@ -344,58 +396,82 @@ class MarketStructureAnalyzer:
             (
                 "bearish_reclaim_previous_day_high",
                 previous_day_high,
-                float(last_bar.high) > previous_day_high and close_price < previous_day_high
-                if previous_day_high is not None
-                else False,
+                (
+                    float(last_bar.high) > previous_day_high
+                    and close_price < previous_day_high
+                    if previous_day_high is not None
+                    else False
+                ),
             ),
             (
                 "bullish_reclaim_previous_day_low",
                 previous_day_low,
-                float(last_bar.low) < previous_day_low and close_price > previous_day_low
-                if previous_day_low is not None
-                else False,
+                (
+                    float(last_bar.low) < previous_day_low
+                    and close_price > previous_day_low
+                    if previous_day_low is not None
+                    else False
+                ),
             ),
             (
                 "bearish_reclaim_asia_high",
                 asia_range_high,
-                float(last_bar.high) > asia_range_high and close_price < asia_range_high
-                if asia_range_high is not None
-                else False,
+                (
+                    float(last_bar.high) > asia_range_high
+                    and close_price < asia_range_high
+                    if asia_range_high is not None
+                    else False
+                ),
             ),
             (
                 "bullish_reclaim_asia_low",
                 asia_range_low,
-                float(last_bar.low) < asia_range_low and close_price > asia_range_low
-                if asia_range_low is not None
-                else False,
+                (
+                    float(last_bar.low) < asia_range_low
+                    and close_price > asia_range_low
+                    if asia_range_low is not None
+                    else False
+                ),
             ),
             (
                 "bearish_reclaim_london_open_high",
                 london_open_high,
-                float(last_bar.high) > london_open_high and close_price < london_open_high
-                if london_open_high is not None
-                else False,
+                (
+                    float(last_bar.high) > london_open_high
+                    and close_price < london_open_high
+                    if london_open_high is not None
+                    else False
+                ),
             ),
             (
                 "bullish_reclaim_london_open_low",
                 london_open_low,
-                float(last_bar.low) < london_open_low and close_price > london_open_low
-                if london_open_low is not None
-                else False,
+                (
+                    float(last_bar.low) < london_open_low
+                    and close_price > london_open_low
+                    if london_open_low is not None
+                    else False
+                ),
             ),
             (
                 "bearish_reclaim_new_york_open_high",
                 new_york_open_high,
-                float(last_bar.high) > new_york_open_high and close_price < new_york_open_high
-                if new_york_open_high is not None
-                else False,
+                (
+                    float(last_bar.high) > new_york_open_high
+                    and close_price < new_york_open_high
+                    if new_york_open_high is not None
+                    else False
+                ),
             ),
             (
                 "bullish_reclaim_new_york_open_low",
                 new_york_open_low,
-                float(last_bar.low) < new_york_open_low and close_price > new_york_open_low
-                if new_york_open_low is not None
-                else False,
+                (
+                    float(last_bar.low) < new_york_open_low
+                    and close_price > new_york_open_low
+                    if new_york_open_low is not None
+                    else False
+                ),
             ),
         )
         swept_levels = [state for state, _level, matched in checks if matched]
@@ -408,14 +484,14 @@ class MarketStructureAnalyzer:
         self,
         bars: list[OHLC],
     ) -> tuple[str, float | None, float | None]:
-        required = self.config.compression_window_bars + self.config.compression_reference_bars
+        required = (
+            self.config.compression_window_bars + self.config.compression_reference_bars
+        )
         if len(bars) < required:
             return "unknown", None, None
         ranges = [float(bar.high) - float(bar.low) for bar in bars]
         recent_values = ranges[-self.config.compression_window_bars :]
-        baseline_values = ranges[
-            -required : -self.config.compression_window_bars
-        ]
+        baseline_values = ranges[-required : -self.config.compression_window_bars]
         recent_avg = mean(recent_values)
         baseline_avg = mean(baseline_values) if baseline_values else None
         if baseline_avg is None or baseline_avg <= 0:

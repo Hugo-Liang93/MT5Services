@@ -105,10 +105,10 @@ from .ticks import MIGRATION_SQL as TICKS_MIGRATION_SQL
 # ── Trading State ────────────────────────────────────────────────
 from .trade_command_audits import DDL as TRADE_COMMAND_AUDITS_DDL
 from .trade_command_audits import INSERT_SQL as INSERT_TRADE_COMMAND_AUDITS_SQL
-from .trade_frequency_reservations import DDL as TRADE_FREQUENCY_RESERVATIONS_DDL
 from .trade_control_state import DDL as TRADE_CONTROL_STATE_DDL
 from .trade_control_state import MIGRATION_SQL as TRADE_CONTROL_STATE_MIGRATION_SQL
 from .trade_control_state import UPSERT_SQL as UPSERT_TRADE_CONTROL_STATE_SQL
+from .trade_frequency_reservations import DDL as TRADE_FREQUENCY_RESERVATIONS_DDL
 from .trade_outcomes import DDL as TRADE_OUTCOMES_DDL
 from .trade_outcomes import INSERT_SQL as INSERT_TRADE_OUTCOMES_SQL
 

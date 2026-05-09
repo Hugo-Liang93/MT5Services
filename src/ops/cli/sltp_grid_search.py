@@ -9,17 +9,22 @@
     临时覆盖 sizing.py 的 TIMEFRAME_SL_TP 表，对每个 (SL, TP) 组合跑一次回测。
     输出按 Sharpe 排序的结果矩阵。
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 
 import warnings
+
 warnings.filterwarnings("ignore")
 import logging
+
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timezone
@@ -46,6 +51,7 @@ def _run_with_sltp(
 
     try:
         from tools.backtest_runner import _run_single
+
         overrides = dict(config_overrides or {})
         # 禁用 Monte Carlo（加速搜索）
         overrides["monte_carlo_enabled"] = False
@@ -104,21 +110,23 @@ def main() -> None:
             try:
                 data = _run_with_sltp(tf, args.start, args.end, sl, tp)
                 m = data["metrics"]
-                results.append({
-                    "sl": sl,
-                    "tp": tp,
-                    "ratio": round(tp / sl, 2),
-                    "trades": m["trades"],
-                    "wr": m["win_rate"],
-                    "pnl": m["pnl"],
-                    "pf": m["pf"],
-                    "sharpe": m["sharpe"],
-                    "max_dd": m["max_dd"],
-                    "avg_win": m["avg_win"],
-                    "avg_loss": m["avg_loss"],
-                    "wl": m["win_loss_ratio"],
-                    "exp": m["expectancy"],
-                })
+                results.append(
+                    {
+                        "sl": sl,
+                        "tp": tp,
+                        "ratio": round(tp / sl, 2),
+                        "trades": m["trades"],
+                        "wr": m["win_rate"],
+                        "pnl": m["pnl"],
+                        "pf": m["pf"],
+                        "sharpe": m["sharpe"],
+                        "max_dd": m["max_dd"],
+                        "avg_win": m["avg_win"],
+                        "avg_loss": m["avg_loss"],
+                        "wl": m["win_loss_ratio"],
+                        "exp": m["expectancy"],
+                    }
+                )
             except Exception as e:
                 sys.stderr.write(f"    FAILED: {e}\n")
 
@@ -174,4 +182,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

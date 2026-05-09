@@ -91,7 +91,9 @@ class _SignalRepo:
 
 
 class _TradeRepo:
-    def fetch_trace_operations(self, *, account_alias: str, signal_id: str, limit: int = 100):
+    def fetch_trace_operations(
+        self, *, account_alias: str, signal_id: str, limit: int = 100
+    ):
         return [
             {
                 "recorded_at": datetime(2026, 1, 1, 8, 16, 30, tzinfo=timezone.utc),
@@ -109,10 +111,14 @@ class _TradeRepo:
             }
         ]
 
-    def fetch_trace_operations_by_trace_id(self, *, account_alias: str, trace_id: str, limit: int = 100):
+    def fetch_trace_operations_by_trace_id(
+        self, *, account_alias: str, trace_id: str, limit: int = 100
+    ):
         return []
 
-    def fetch_trace_operations_by_action_id(self, *, account_alias: str, action_id: str, limit: int = 100):
+    def fetch_trace_operations_by_action_id(
+        self, *, account_alias: str, action_id: str, limit: int = 100
+    ):
         if action_id != "act-close":
             return []
         return [
@@ -137,7 +143,9 @@ class _TradeRepo:
             }
         ]
 
-    def fetch_trace_operations_by_command_id(self, *, account_alias: str, command_id: str, limit: int = 100):
+    def fetch_trace_operations_by_command_id(
+        self, *, account_alias: str, command_id: str, limit: int = 100
+    ):
         if command_id != "cmd-close":
             return []
         return [
@@ -165,12 +173,16 @@ class _TradeRepo:
 
 
 class _RecoveryTraceTradeRepo(_TradeRepo):
-    def fetch_trace_operations(self, *, account_alias: str, signal_id: str, limit: int = 100):
+    def fetch_trace_operations(
+        self, *, account_alias: str, signal_id: str, limit: int = 100
+    ):
         if signal_id != "sig-1":
             return []
         return [self._recovery_operation()]
 
-    def fetch_trace_operations_by_trace_id(self, *, account_alias: str, trace_id: str, limit: int = 100):
+    def fetch_trace_operations_by_trace_id(
+        self, *, account_alias: str, trace_id: str, limit: int = 100
+    ):
         if trace_id != "sig-1":
             return []
         return [self._recovery_operation()]
@@ -203,12 +215,16 @@ class _RecoveryTraceTradeRepo(_TradeRepo):
 
 
 class _ClosedRecoveryTraceTradeRepo(_TradeRepo):
-    def fetch_trace_operations(self, *, account_alias: str, signal_id: str, limit: int = 100):
+    def fetch_trace_operations(
+        self, *, account_alias: str, signal_id: str, limit: int = 100
+    ):
         if signal_id != "sig-1":
             return []
         return self._operations()
 
-    def fetch_trace_operations_by_trace_id(self, *, account_alias: str, trace_id: str, limit: int = 100):
+    def fetch_trace_operations_by_trace_id(
+        self, *, account_alias: str, trace_id: str, limit: int = 100
+    ):
         if trace_id != "sig-1":
             return []
         return self._operations()
@@ -440,7 +456,9 @@ class _PipelineTraceRepo:
 
 
 class _TradingStateRepo:
-    def fetch_pending_order_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+    def fetch_pending_order_states(
+        self, *, account_alias=None, statuses=None, signal_id=None, limit=500
+    ):
         return [
             {
                 "order_ticket": 7001,
@@ -451,7 +469,9 @@ class _TradingStateRepo:
             }
         ]
 
-    def fetch_position_runtime_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+    def fetch_position_runtime_states(
+        self, *, account_alias=None, statuses=None, signal_id=None, limit=500
+    ):
         return [
             {
                 "position_ticket": 8001,
@@ -544,7 +564,7 @@ class _RecoveryTradingStateRepo(_TradingStateRepo):
                 "cycle_id": "cycle-1",
                 "symbol": "XAUUSD",
                 "direction": "buy",
-                "strategy": "tick_martingale_probe",
+                "strategy": "tick_recovery_probe",
                 "timeframe": "TICK",
                 "source_signal_id": "sig-1",
                 "status": "open",
@@ -566,10 +586,14 @@ class _RecoveryTradingStateRepo(_TradingStateRepo):
 
 
 class _ClosedRecoveryTradingStateRepo(_RecoveryTradingStateRepo):
-    def fetch_pending_order_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+    def fetch_pending_order_states(
+        self, *, account_alias=None, statuses=None, signal_id=None, limit=500
+    ):
         return []
 
-    def fetch_position_runtime_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+    def fetch_position_runtime_states(
+        self, *, account_alias=None, statuses=None, signal_id=None, limit=500
+    ):
         return []
 
     def fetch_position_sl_tp_history(
@@ -633,7 +657,9 @@ class _NoSignalRepo:
     def fetch_signal_event_by_id(self, *, signal_id: str, scope: str = "confirmed"):
         return None
 
-    def fetch_signal_events_by_trace_id(self, *, trace_id: str, scope="confirmed", limit=50):
+    def fetch_signal_events_by_trace_id(
+        self, *, trace_id: str, scope="confirmed", limit=50
+    ):
         return []
 
     def fetch_auto_executions(
@@ -691,7 +717,9 @@ def test_trade_trace_projection_aggregates_signal_to_outcome_chain() -> None:
     assert len(trace["graph"]["edges"]) == len(trace["timeline"]) - 1
 
 
-def test_trade_trace_projection_builds_trade_lifecycle_from_position_and_audits() -> None:
+def test_trade_trace_projection_builds_trade_lifecycle_from_position_and_audits() -> (
+    None
+):
     read_model = TradingFlowTraceReadModel(
         signal_repo=_SignalRepo(),
         command_audit_repo=_TradeRepo(),
@@ -827,7 +855,9 @@ def test_trade_trace_projection_supports_execution_identifier_lookup() -> None:
     assert trace["summary"]["admission"]["intent_id"] == "intent-1"
 
 
-def test_trade_trace_projection_resolves_action_and_command_from_command_audits() -> None:
+def test_trade_trace_projection_resolves_action_and_command_from_command_audits() -> (
+    None
+):
     read_model = TradingFlowTraceReadModel(
         signal_repo=_NoSignalRepo(),
         command_audit_repo=_TradeRepo(),
@@ -953,7 +983,9 @@ class _MultiAccountSignalRepo:
     def fetch_signal_event_by_id(self, *, signal_id: str, scope: str = "confirmed"):
         return None
 
-    def fetch_signal_events_by_trace_id(self, *, trace_id: str, scope="confirmed", limit=50):
+    def fetch_signal_events_by_trace_id(
+        self, *, trace_id: str, scope="confirmed", limit=50
+    ):
         return []
 
     def fetch_auto_executions(
@@ -1032,14 +1064,20 @@ class _EmptyPipelineTraceRepo:
 
 
 class _EmptyTradingStateRepo:
-    def fetch_pending_order_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+    def fetch_pending_order_states(
+        self, *, account_alias=None, statuses=None, signal_id=None, limit=500
+    ):
         return []
 
-    def fetch_position_runtime_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+    def fetch_position_runtime_states(
+        self, *, account_alias=None, statuses=None, signal_id=None, limit=500
+    ):
         return []
 
 
-def test_trace_by_signal_id_does_not_mix_other_accounts_executions_and_outcomes() -> None:
+def test_trace_by_signal_id_does_not_mix_other_accounts_executions_and_outcomes() -> (
+    None
+):
     """P2 §0v 回归：旧 trace_by_signal_id 对 auto_executions / trade_outcomes
     只按 signal_id 拉全局数据 → 多账户共享 signal_id 时把别人的执行/结果混进
     当前账户 facts/timeline。
@@ -1059,15 +1097,17 @@ def test_trace_by_signal_id_does_not_mix_other_accounts_executions_and_outcomes(
     aliases_auto = {row.get("account_alias") for row in auto}
     aliases_outcome = {row.get("account_alias") for row in outcomes}
 
-    assert aliases_auto == {"acct_a"}, (
-        f"trace 只能含当前账户 auto_executions；got aliases={aliases_auto!r}"
-    )
-    assert aliases_outcome == {"acct_a"}, (
-        f"trace 只能含当前账户 trade_outcomes；got aliases={aliases_outcome!r}"
-    )
+    assert aliases_auto == {
+        "acct_a"
+    }, f"trace 只能含当前账户 auto_executions；got aliases={aliases_auto!r}"
+    assert aliases_outcome == {
+        "acct_a"
+    }, f"trace 只能含当前账户 trade_outcomes；got aliases={aliases_outcome!r}"
 
 
-def test_fetch_by_signal_ids_dedup_preserves_cross_account_same_timestamp_events() -> None:
+def test_fetch_by_signal_ids_dedup_preserves_cross_account_same_timestamp_events() -> (
+    None
+):
     """P3 §0v 回归：旧 _fetch_by_signal_ids 去重键仅 (signal_id, timestamp)，
     无 account 维度 → 两账户同时刻同 signal_id 的执行/结果 → 第二条静默被丢。
     即使将来加上账户过滤，这个 helper 仍需具备正确处理跨账户同刻事件的能力。
@@ -1098,6 +1138,7 @@ def test_fetch_by_signal_ids_dedup_preserves_cross_account_same_timestamp_events
         limit=10,
     )
     aliases = {row.get("account_alias") for row in rows_out}
-    assert aliases == {"acct_a", "acct_b"}, (
-        f"两账户同时刻不同 row 不能被去重掉一个；got aliases={aliases!r}, rows_out={rows_out!r}"
-    )
+    assert aliases == {
+        "acct_a",
+        "acct_b",
+    }, f"两账户同时刻不同 row 不能被去重掉一个；got aliases={aliases!r}, rows_out={rows_out!r}"

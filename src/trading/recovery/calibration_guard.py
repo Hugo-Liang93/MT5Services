@@ -46,9 +46,7 @@ class RecoveryCostCalibrationGuard:
             "max_target_shortfall_p90_points": float(
                 settings.max_target_shortfall_p90_points
             ),
-            "min_net_margin_p50_points": float(
-                settings.min_net_margin_p50_points
-            ),
+            "min_net_margin_p50_points": float(settings.min_net_margin_p50_points),
         }
         if not settings.enabled:
             return RecoveryCostCalibrationDecision(
@@ -91,10 +89,7 @@ class RecoveryCostCalibrationGuard:
                 "calibration_guard_target_shortfall_missing",
                 metadata,
             )
-        if (
-            target_shortfall_p90
-            > float(settings.max_target_shortfall_p90_points)
-        ):
+        if target_shortfall_p90 > float(settings.max_target_shortfall_p90_points):
             return RecoveryCostCalibrationDecision(
                 False,
                 "calibration_guard_target_shortfall",

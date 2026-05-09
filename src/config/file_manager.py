@@ -263,7 +263,14 @@ class FileConfigManager:
             value = self._convert_type(value, schema.get("type", "str"))
             value = self._validate_value(value, schema)
 
-        logger.debug("Config get: %s[%s].%s = %r (source: %s)", filename, section, key, value, source)
+        logger.debug(
+            "Config get: %s[%s].%s = %r (source: %s)",
+            filename,
+            section,
+            key,
+            value,
+            source,
+        )
         return value
 
     def _convert_type(self, value: Any, type_name: str) -> Any:
@@ -284,12 +291,16 @@ class FileConfigManager:
                 return [str(value)]
             return str(value)
         except (ValueError, TypeError) as exc:
-            logger.error("Failed to convert value %r to type %s: %s", value, type_name, exc)
+            logger.error(
+                "Failed to convert value %r to type %s: %s", value, type_name, exc
+            )
             return value
 
     def _validate_value(self, value: Any, schema: Dict[str, Any]) -> Any:
         if "allowed" in schema and value not in schema["allowed"]:
-            logger.warning("Value %r not in allowed values: %s", value, schema["allowed"])
+            logger.warning(
+                "Value %r not in allowed values: %s", value, schema["allowed"]
+            )
             return schema.get("default", value)
         if isinstance(value, (int, float)):
             if "min" in schema and value < schema["min"]:
@@ -315,7 +326,9 @@ class FileConfigManager:
             if not config.has_section(section):
                 return {}
 
-            return {key: self.get(filename, section, key) for key in config.options(section)}
+            return {
+                key: self.get(filename, section, key) for key in config.options(section)
+            }
 
     def set(self, filename: str, section: str, key: str, value: Any):
         """Mutate the in-memory config snapshot only."""
@@ -350,7 +363,9 @@ class FileConfigManager:
             try:
                 cb(filename)
             except Exception:
-                logger.exception("Config change callback failed for %s: %s", filename, cb)
+                logger.exception(
+                    "Config change callback failed for %s: %s", filename, cb
+                )
 
     def _get_json_node(self, config: Any, section: str) -> Any:
         if not isinstance(config, dict):

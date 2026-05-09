@@ -17,7 +17,6 @@ from src.calendar.economic_calendar.gold_relevance import (
     build_relevance_matcher,
 )
 
-
 KEYWORDS = "Fed,NFP,FOMC,CPI,Non-Farm,Core PCE,Powell"
 CATEGORIES = "Central Bank,Inflation,Employment"
 
@@ -90,9 +89,7 @@ class TestWordBoundary:
 
     def test_fed_does_not_match_federal_prefix(self) -> None:
         m = _matcher()
-        assert not m.is_relevant(
-            EventSummary(name="Federal Reserve of India Speech")
-        )
+        assert not m.is_relevant(EventSummary(name="Federal Reserve of India Speech"))
 
     def test_nfp_boundary(self) -> None:
         m = _matcher()
@@ -128,23 +125,17 @@ class TestCategoryWhitelist:
     def test_category_miss_falls_back_to_keyword(self) -> None:
         m = _matcher()
         # category 不命中 + 名称命中 → 相关
-        assert m.is_relevant(
-            EventSummary(name="US NFP", category="Agriculture")
-        )
+        assert m.is_relevant(EventSummary(name="US NFP", category="Agriculture"))
 
     def test_both_miss(self) -> None:
         m = _matcher()
         assert not m.is_relevant(
-            EventSummary(
-                name="New Zealand Dairy Auction", category="Agriculture"
-            )
+            EventSummary(name="New Zealand Dairy Auction", category="Agriculture")
         )
 
     def test_category_case_insensitive(self) -> None:
         m = _matcher()
-        assert m.is_relevant(
-            EventSummary(name="Event", category="CENTRAL BANK")
-        )
+        assert m.is_relevant(EventSummary(name="Event", category="CENTRAL BANK"))
 
 
 @pytest.mark.parametrize(

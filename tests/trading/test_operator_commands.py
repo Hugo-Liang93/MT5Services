@@ -65,10 +65,18 @@ def test_operator_command_service_enqueue_emits_command_submitted(monkeypatch):
             ),
         },
     )
+
     # §0dn B3：write_with_idempotency_fn 模拟 atomic ledger+主表（test 中
     # 直接成功 commit；ledger 由 _find_existing 测试覆盖）。
-    def _write_with_idempotency(*, target_account_key, command_type,
-                                 idempotency_key, command_id, created_at, row):
+    def _write_with_idempotency(
+        *,
+        target_account_key,
+        command_type,
+        idempotency_key,
+        command_id,
+        created_at,
+        row,
+    ):
         rows.append(row)
         return True
 
@@ -195,7 +203,9 @@ def test_operator_command_consumer_process_command_emits_completed_trace():
     assert received[0].trace_id == "trace-command-2"
     assert received[0].payload["command_id"] == "command-1"
     assert received[0].payload["claimed_by_instance_id"] == "executor-live-exec-a"
-    assert received[0].payload["account_key"] == build_account_key("live", "Broker-Live", 1002)
+    assert received[0].payload["account_key"] == build_account_key(
+        "live", "Broker-Live", 1002
+    )
     assert received[0].payload["audit_id"] == "audit-command-1"
 
 
@@ -232,7 +242,9 @@ def test_operator_command_consumer_worker_emits_dead_lettered_failure(monkeypatc
                 {
                     "command_id": "command-dead",
                     "command_type": "close_position",
-                    "target_account_key": build_account_key("live", "Broker-Live", 1002),
+                    "target_account_key": build_account_key(
+                        "live", "Broker-Live", 1002
+                    ),
                     "target_account_alias": "exec_a",
                     "payload": {"trace_id": "trace-command-dead", "ticket": 42},
                     "last_error_code": "command_attempts_exhausted",
@@ -241,7 +253,9 @@ def test_operator_command_consumer_worker_emits_dead_lettered_failure(monkeypatc
         }
 
     consumer._claim_fn = _claim_fn
-    monkeypatch.setattr("src.trading.commands.consumer.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "src.trading.commands.consumer.time.sleep", lambda *_args, **_kwargs: None
+    )
 
     consumer._worker()
 

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 ARTIFACT_FILENAME = "entry_meta_artifact.json"
 ARTIFACT_TYPE = "entry_meta"
 
@@ -52,7 +51,9 @@ class EntryMetaPrediction:
             direction=str(data["direction"]),
             take_entry_prob=float(data["take_entry_prob"]),
             block_entry_prob=float(data["block_entry_prob"]),
-            threshold_context=dict(threshold_context) if threshold_context is not None else None,
+            threshold_context=(
+                dict(threshold_context) if threshold_context is not None else None
+            ),
         )
 
 
@@ -94,7 +95,9 @@ class EntryMetaArtifact:
     def from_dict(cls, data: dict[str, Any]) -> EntryMetaArtifact:
         artifact_type = data.get("artifact_type")
         if artifact_type is not None and artifact_type != ARTIFACT_TYPE:
-            raise ValueError(f"entry meta artifact has unsupported artifact_type: {artifact_type}")
+            raise ValueError(
+                f"entry meta artifact has unsupported artifact_type: {artifact_type}"
+            )
         _require_keys(
             data,
             {
@@ -127,9 +130,12 @@ class EntryMetaArtifact:
             backend=str(data["backend"]),
             model_kind=str(data["model_kind"]),
             feature_keys=[str(item) for item in data["feature_keys"]],
-            label_summary={str(key): int(value) for key, value in data["label_summary"].items()},
+            label_summary={
+                str(key): int(value) for key, value in data["label_summary"].items()
+            },
             sample_weight_summary={
-                str(key): float(value) for key, value in data["sample_weight_summary"].items()
+                str(key): float(value)
+                for key, value in data["sample_weight_summary"].items()
             },
             metrics=dict(data["metrics"]),
             predictions=[EntryMetaPrediction.from_dict(item) for item in predictions],
@@ -143,7 +149,9 @@ def save_artifact(artifact: EntryMetaArtifact, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / ARTIFACT_FILENAME
     tmp_path = path.with_name(f"{path.name}.tmp")
-    payload = json.dumps(artifact.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+    payload = json.dumps(
+        artifact.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+    )
     tmp_path.write_text(f"{payload}\n", encoding="utf-8")
     tmp_path.replace(path)
     return path
@@ -161,4 +169,6 @@ def load_artifact(path: Path) -> EntryMetaArtifact:
 def _require_keys(data: dict[str, Any], required: set[str]) -> None:
     missing = sorted(required - data.keys())
     if missing:
-        raise ValueError(f"entry meta artifact missing required fields: {', '.join(missing)}")
+        raise ValueError(
+            f"entry meta artifact missing required fields: {', '.join(missing)}"
+        )

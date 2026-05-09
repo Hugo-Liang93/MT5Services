@@ -22,13 +22,14 @@ from src.config.models.runtime import RiskConfig
 from src.risk.models import TradeIntent
 from src.risk.rules import RuleContext, TradeFrequencyRule
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 class FakeOHLC:
     """Minimal OHLC stub for MarketDataService tests."""
+
     def __init__(self, t: datetime, o: float, h: float, l: float, c: float):
         self.time = t
         self.open = o
@@ -42,6 +43,7 @@ class FakeOHLC:
 
 class FakeQuote:
     """Minimal Quote stub."""
+
     def __init__(self, symbol: str, bid: float, ask: float):
         self.symbol = symbol
         self.bid = bid
@@ -54,6 +56,7 @@ class FakeQuote:
 
 class FakeTick:
     """Minimal Tick stub."""
+
     def __init__(self, t: datetime, bid: float, ask: float):
         self.time = t
         self.time_msc = int(t.timestamp() * 1000)
@@ -84,6 +87,7 @@ def _freq_ctx(
 # ---------------------------------------------------------------------------
 # TradeFrequencyRule concurrency
 # ---------------------------------------------------------------------------
+
 
 class TestTradeFrequencyRuleConcurrency:
     """Verify TradeFrequencyRule is safe under concurrent writes + reads."""
@@ -148,6 +152,7 @@ class TestTradeFrequencyRuleConcurrency:
 # MarketDataService concurrency
 # ---------------------------------------------------------------------------
 
+
 class TestMarketDataServiceConcurrency:
     """Stress test MarketDataService with concurrent writes and reads."""
 
@@ -156,6 +161,7 @@ class TestMarketDataServiceConcurrency:
         """Create a MarketDataService with a mocked client."""
         from src.config.runtime import MarketSettings
         from src.market.service import MarketDataService
+
         mock_client = MagicMock()
         mock_client.list_symbols.return_value = ["XAUUSD"]
         # get_quote fallback returns None to avoid MagicMock comparison issues
@@ -248,7 +254,10 @@ class TestMarketDataServiceConcurrency:
                 try:
                     bar = FakeOHLC(
                         base_time + timedelta(minutes=i + idx * 100),
-                        3000.0, 3005.0, 2995.0, 3002.0 + i * 0.1,
+                        3000.0,
+                        3005.0,
+                        2995.0,
+                        3002.0 + i * 0.1,
                     )
                     service.set_ohlc_closed("XAUUSD", "M1", [bar])
                 except Exception as exc:
@@ -303,7 +312,10 @@ class TestMarketDataServiceConcurrency:
                 try:
                     bar = FakeOHLC(
                         base_time + timedelta(minutes=i),
-                        3000.0, 3005.0, 2995.0, 3002.0,
+                        3000.0,
+                        3005.0,
+                        2995.0,
+                        3002.0,
                     )
                     service.set_ohlc_closed("XAUUSD", "M1", [bar])
                     service.get_ohlc_closed("XAUUSD", "M1")
@@ -316,7 +328,10 @@ class TestMarketDataServiceConcurrency:
                 try:
                     bar = FakeOHLC(
                         base_time + timedelta(seconds=i * 5),
-                        3000.0, 3005.0, 2995.0, 3002.0 + i * 0.01,
+                        3000.0,
+                        3005.0,
+                        2995.0,
+                        3002.0 + i * 0.01,
                     )
                     service.set_intrabar("XAUUSD", "M1", bar)
                 except Exception as exc:
@@ -340,20 +355,23 @@ class TestMarketDataServiceConcurrency:
 # Indicator computation under load
 # ---------------------------------------------------------------------------
 
+
 class TestIndicatorComputationConcurrency:
     """Stress test indicator functions under concurrent calls."""
 
     def test_concurrent_hma_computation(self):
         """HMA computed from multiple threads simultaneously."""
-        from src.indicators.core.mean import hma
         from src.indicators.cache.incremental import SimpleOHLC
+        from src.indicators.core.mean import hma
 
         base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
         bars = [
             SimpleOHLC(
                 base_time + timedelta(minutes=i),
-                3000.0 + i * 0.5, 3005.0 + i * 0.5,
-                2995.0 + i * 0.5, 3002.0 + i * 0.5,
+                3000.0 + i * 0.5,
+                3005.0 + i * 0.5,
+                2995.0 + i * 0.5,
+                3002.0 + i * 0.5,
             )
             for i in range(50)
         ]
@@ -384,19 +402,23 @@ class TestIndicatorComputationConcurrency:
         assert len(results) == 800
         # All results should be identical (same input)
         first = results[0]
-        assert all(r == first for r in results), "HMA results diverged under concurrency"
+        assert all(
+            r == first for r in results
+        ), "HMA results diverged under concurrency"
 
     def test_concurrent_stoch_rsi_computation(self):
         """StochRSI computed from multiple threads simultaneously."""
-        from src.indicators.core.momentum import stoch_rsi
         from src.indicators.cache.incremental import SimpleOHLC
+        from src.indicators.core.momentum import stoch_rsi
 
         base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
         bars = [
             SimpleOHLC(
                 base_time + timedelta(minutes=i),
-                3000.0 + i * 0.3, 3005.0 + i * 0.3,
-                2995.0 + i * 0.3, 3002.0 + i * 0.3,
+                3000.0 + i * 0.3,
+                3005.0 + i * 0.3,
+                2995.0 + i * 0.3,
+                3002.0 + i * 0.3,
             )
             for i in range(80)
         ]
@@ -430,15 +452,17 @@ class TestIndicatorComputationConcurrency:
 
     def test_concurrent_rsi_computation(self):
         """RSI computed from multiple threads — pure function, no shared state."""
-        from src.indicators.core.momentum import rsi
         from src.indicators.cache.incremental import SimpleOHLC
+        from src.indicators.core.momentum import rsi
 
         base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
         bars = [
             SimpleOHLC(
                 base_time + timedelta(minutes=i),
-                3000.0 + i * 0.2, 3005.0 + i * 0.2,
-                2995.0 + i * 0.2, 3002.0 + i * 0.2,
+                3000.0 + i * 0.2,
+                3005.0 + i * 0.2,
+                2995.0 + i * 0.2,
+                3002.0 + i * 0.2,
             )
             for i in range(60)
         ]

@@ -2,6 +2,7 @@
 
 SessionEventFeatureProvider 单元测试。
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -12,7 +13,6 @@ import pytest
 
 from src.research.features.protocol import FeatureRole
 from src.research.features.session_event import SessionEventProvider
-
 
 # ---------------------------------------------------------------------------
 # Mock DataMatrix helpers
@@ -287,7 +287,9 @@ class TestBarsToAndSinceEvent:
         """H1 TF，bar 在 09:00，事件在 11:00 → delta = 2 bars。"""
         bar_time = _utc(2024, 1, 2, 9, 0)
         event_time = _utc(2024, 1, 2, 11, 0)
-        m = _make_matrix([bar_time], high_impact_event_times=(event_time,), timeframe="H1")
+        m = _make_matrix(
+            [bar_time], high_impact_event_times=(event_time,), timeframe="H1"
+        )
         p = SessionEventProvider()
         result = p.compute(m)
         vals = result[("session_event", "bars_to_next_high_impact_event")]
@@ -297,7 +299,9 @@ class TestBarsToAndSinceEvent:
         """H1 TF，bar 在 13:00，事件在 11:00 → delta = 2 bars。"""
         bar_time = _utc(2024, 1, 2, 13, 0)
         event_time = _utc(2024, 1, 2, 11, 0)
-        m = _make_matrix([bar_time], high_impact_event_times=(event_time,), timeframe="H1")
+        m = _make_matrix(
+            [bar_time], high_impact_event_times=(event_time,), timeframe="H1"
+        )
         p = SessionEventProvider()
         result = p.compute(m)
         vals = result[("session_event", "bars_since_last_high_impact_event")]

@@ -5,15 +5,15 @@ API defaults to reading from cache only; ingestion owns writes into the cache.
 
 from __future__ import annotations
 
-from collections import deque
 import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Tuple
 
+from src.clients.mt5_market import OHLC, MT5MarketClient, Quote, SymbolInfo, Tick
 from src.config import MarketSettings, get_runtime_market_settings
-from src.clients.mt5_market import MT5MarketClient, OHLC, Quote, SymbolInfo, Tick
 from src.market.event_bus import MarketEventBus, QuoteEvent, TickBatchEvent
 from src.utils.common import ohlc_key
 
@@ -61,7 +61,11 @@ class MarketDataService:
     def get_symbol_info(self, symbol: str) -> SymbolInfo:
         info = self.client.get_symbol_info(symbol)
         try:
-            raw_point = info.get("point", 0.0) if isinstance(info, dict) else getattr(info, "point", 0.0)
+            raw_point = (
+                info.get("point", 0.0)
+                if isinstance(info, dict)
+                else getattr(info, "point", 0.0)
+            )
             point = float(raw_point or 0.0)
         except (TypeError, ValueError):
             point = 0.0
@@ -82,7 +86,11 @@ class MarketDataService:
             logger.debug("Failed to resolve symbol point for %s", symbol, exc_info=True)
             return None
         try:
-            raw_point = info.get("point", 0.0) if isinstance(info, dict) else getattr(info, "point", 0.0)
+            raw_point = (
+                info.get("point", 0.0)
+                if isinstance(info, dict)
+                else getattr(info, "point", 0.0)
+            )
             point = float(raw_point or 0.0)
         except (TypeError, ValueError):
             point = 0.0
@@ -100,7 +108,9 @@ class MarketDataService:
         try:
             live_quote = self.client.get_quote(symbol)
         except Exception:
-            logger.debug("Failed to refresh quote from MT5 for %s", symbol, exc_info=True)
+            logger.debug(
+                "Failed to refresh quote from MT5 for %s", symbol, exc_info=True
+            )
             return cached
         self.set_quote(symbol, live_quote)
         return live_quote
@@ -123,7 +133,9 @@ class MarketDataService:
         limit: int,
         strict: bool = False,
     ) -> List[Quote]:
-        quotes, _source = self.get_quote_history_result(symbol, start_time, end_time, limit, strict=strict)
+        quotes, _source = self.get_quote_history_result(
+            symbol, start_time, end_time, limit, strict=strict
+        )
         return quotes
 
     def get_quote_history_result(
@@ -149,20 +161,26 @@ class MarketDataService:
             return (
                 [
                     self._row_to_quote(row)
-                    for row in storage.db.fetch_quotes(symbol, start_time, end_time, limit)
+                    for row in storage.db.fetch_quotes(
+                        symbol, start_time, end_time, limit
+                    )
                 ],
                 "timescaledb",
             )
         except Exception:
             logger.exception("Failed to load quote history from storage for %s", symbol)
             if strict:
-                raise RuntimeError(f"Failed to load quote history from storage for {symbol}")
+                raise RuntimeError(
+                    f"Failed to load quote history from storage for {symbol}"
+                )
             latest = self.get_quote(symbol)
             if latest is None:
                 return [], "cache"
             return self._filter_quotes_by_time([latest], start_time, end_time), "cache"
 
-    def get_ticks(self, symbol: Optional[str], limit: Optional[int] = None) -> List[Tick]:
+    def get_ticks(
+        self, symbol: Optional[str], limit: Optional[int] = None
+    ) -> List[Tick]:
         symbol = symbol or self.market_settings.default_symbol
         limit = limit or self.market_settings.tick_limit
         with self._lock:
@@ -200,7 +218,9 @@ class MarketDataService:
         limit: int,
         strict: bool = False,
     ) -> List[Tick]:
-        ticks, _source = self.get_ticks_history_result(symbol, start_time, end_time, limit, strict=strict)
+        ticks, _source = self.get_ticks_history_result(
+            symbol, start_time, end_time, limit, strict=strict
+        )
         return ticks
 
     def get_ticks_history_result(
@@ -224,14 +244,18 @@ class MarketDataService:
             return (
                 [
                     self._row_to_tick(row)
-                    for row in storage.db.fetch_ticks(symbol, start_time, end_time, limit)
+                    for row in storage.db.fetch_ticks(
+                        symbol, start_time, end_time, limit
+                    )
                 ],
                 "timescaledb",
             )
         except Exception:
             logger.exception("Failed to load tick history from storage for %s", symbol)
             if strict:
-                raise RuntimeError(f"Failed to load tick history from storage for {symbol}")
+                raise RuntimeError(
+                    f"Failed to load tick history from storage for {symbol}"
+                )
             ticks = self.get_ticks(symbol, limit=limit)
             return self._filter_ticks_by_time(ticks, start_time, end_time), "cache"
 
@@ -305,7 +329,9 @@ class MarketDataService:
                 for row in storage.db.fetch_recent_ohlc(symbol, timeframe, limit)
             ]
         except Exception:
-            logger.exception("Failed to load OHLC from storage for %s/%s", symbol, timeframe)
+            logger.exception(
+                "Failed to load OHLC from storage for %s/%s", symbol, timeframe
+            )
             return cached[-limit:]
         merged = self._merge_bars(persisted, cached)
         if merged:
@@ -333,19 +359,31 @@ class MarketDataService:
             cached = list(self._ohlc_closed_cache.get(key, []))
 
         cached_window = [bar for bar in cached if bar.time <= end_time]
-        if cached_window and cached_window[-1].time == end_time and len(cached_window) >= limit:
+        if (
+            cached_window
+            and cached_window[-1].time == end_time
+            and len(cached_window) >= limit
+        ):
             return cached_window[-limit:]
 
         storage = self._storage()
         if storage is None:
             if strict:
-                raise RuntimeError(f"Historical OHLC storage is unavailable for {symbol}/{timeframe}")
-            return cached_window[-limit:] if cached_window and cached_window[-1].time == end_time else []
+                raise RuntimeError(
+                    f"Historical OHLC storage is unavailable for {symbol}/{timeframe}"
+                )
+            return (
+                cached_window[-limit:]
+                if cached_window and cached_window[-1].time == end_time
+                else []
+            )
 
         try:
             persisted = [
                 self._row_to_ohlc(row)
-                for row in storage.db.fetch_ohlc_before(symbol, timeframe, end_time, limit)
+                for row in storage.db.fetch_ohlc_before(
+                    symbol, timeframe, end_time, limit
+                )
             ]
         except Exception:
             logger.exception(
@@ -355,21 +393,33 @@ class MarketDataService:
                 end_time,
             )
             if strict:
-                raise RuntimeError(f"Failed to load OHLC window from storage for {symbol}/{timeframe}")
-            return cached_window[-limit:] if cached_window and cached_window[-1].time == end_time else []
+                raise RuntimeError(
+                    f"Failed to load OHLC window from storage for {symbol}/{timeframe}"
+                )
+            return (
+                cached_window[-limit:]
+                if cached_window and cached_window[-1].time == end_time
+                else []
+            )
 
         if persisted:
             self.set_ohlc_closed(symbol, timeframe, persisted)
             if persisted[-1].time == end_time:
                 return persisted[-limit:]
 
-        return cached_window[-limit:] if cached_window and cached_window[-1].time == end_time else []
+        return (
+            cached_window[-limit:]
+            if cached_window and cached_window[-1].time == end_time
+            else []
+        )
 
     def get_latest_ohlc(self, symbol: Optional[str], timeframe: str) -> Optional[OHLC]:
         bars = self.get_ohlc_closed(symbol, timeframe, limit=1)
         return bars[-1] if bars else None
 
-    def has_cached_ohlc(self, symbol: Optional[str], timeframe: str, minimum_bars: int = 1) -> bool:
+    def has_cached_ohlc(
+        self, symbol: Optional[str], timeframe: str, minimum_bars: int = 1
+    ) -> bool:
         symbol = symbol or self.market_settings.default_symbol
         key = ohlc_key(symbol, timeframe)
         with self._lock:
@@ -409,18 +459,26 @@ class MarketDataService:
         storage = self._storage()
         if storage is None:
             if strict:
-                raise RuntimeError(f"Historical OHLC storage is unavailable for {symbol}/{timeframe}")
+                raise RuntimeError(
+                    f"Historical OHLC storage is unavailable for {symbol}/{timeframe}"
+                )
             bars = self.get_ohlc_closed(symbol, timeframe, limit=limit)
             return self._filter_bars_by_time(bars, start_time, end_time), "cache"
         try:
             bars = [
                 self._row_to_ohlc(row)
-                for row in storage.db.fetch_ohlc_range(symbol, timeframe, start_time, end_time, limit)
+                for row in storage.db.fetch_ohlc_range(
+                    symbol, timeframe, start_time, end_time, limit
+                )
             ]
         except Exception:
-            logger.exception("Failed to load OHLC history from storage for %s/%s", symbol, timeframe)
+            logger.exception(
+                "Failed to load OHLC history from storage for %s/%s", symbol, timeframe
+            )
             if strict:
-                raise RuntimeError(f"Failed to load OHLC history from storage for {symbol}/{timeframe}")
+                raise RuntimeError(
+                    f"Failed to load OHLC history from storage for {symbol}/{timeframe}"
+                )
             bars = self.get_ohlc_closed(symbol, timeframe, limit=limit)
             return self._filter_bars_by_time(bars, start_time, end_time), "cache"
         if bars:
@@ -437,7 +495,9 @@ class MarketDataService:
             for bar in bars:
                 existing_bar = merged.get(bar.time)
                 incoming_indicators = getattr(bar, "indicators", None)
-                existing_indicators = getattr(existing_bar, "indicators", None) if existing_bar else None
+                existing_indicators = (
+                    getattr(existing_bar, "indicators", None) if existing_bar else None
+                )
                 if incoming_indicators is None and existing_indicators:
                     bar.indicators = dict(existing_indicators)
                 elif incoming_indicators is None:
@@ -446,7 +506,9 @@ class MarketDataService:
                     bar.indicators = {**existing_indicators, **incoming_indicators}
                 merged[bar.time] = bar
             sorted_bars = sorted(merged.values(), key=lambda b: b.time)
-            keep_limit = max(self.market_settings.ohlc_limit, self.market_settings.ohlc_cache_limit)
+            keep_limit = max(
+                self.market_settings.ohlc_limit, self.market_settings.ohlc_cache_limit
+            )
             self._ohlc_closed_cache[key] = sorted_bars[-keep_limit:]
 
     def set_intrabar(
@@ -473,7 +535,7 @@ class MarketDataService:
             else:
                 existing.append(bar)
                 if len(existing) > self._intrabar_max_points:
-                    del existing[:-self._intrabar_max_points]
+                    del existing[: -self._intrabar_max_points]
             if metadata is not None:
                 payload = dict(metadata)
                 payload.setdefault("bar_time", self._as_utc(bar.time).isoformat())
@@ -507,22 +569,32 @@ class MarketDataService:
 
     # ── Event facade (delegates to event_bus) ─────────────────
 
-    def add_ohlc_close_listener(self, listener: Callable[[str, str, datetime], None]) -> None:
+    def add_ohlc_close_listener(
+        self, listener: Callable[[str, str, datetime], None]
+    ) -> None:
         self.event_bus.add_ohlc_close_listener(listener)
 
-    def remove_ohlc_close_listener(self, listener: Callable[[str, str, datetime], None]) -> None:
+    def remove_ohlc_close_listener(
+        self, listener: Callable[[str, str, datetime], None]
+    ) -> None:
         self.event_bus.remove_ohlc_close_listener(listener)
 
     def add_intrabar_listener(self, listener: Callable[[str, str, OHLC], None]) -> None:
         self.event_bus.add_intrabar_listener(listener)
 
-    def remove_intrabar_listener(self, listener: Callable[[str, str, OHLC], None]) -> None:
+    def remove_intrabar_listener(
+        self, listener: Callable[[str, str, OHLC], None]
+    ) -> None:
         self.event_bus.remove_intrabar_listener(listener)
 
-    def add_tick_batch_listener(self, listener: Callable[[TickBatchEvent], None]) -> None:
+    def add_tick_batch_listener(
+        self, listener: Callable[[TickBatchEvent], None]
+    ) -> None:
         self.event_bus.add_tick_batch_listener(listener)
 
-    def remove_tick_batch_listener(self, listener: Callable[[TickBatchEvent], None]) -> None:
+    def remove_tick_batch_listener(
+        self, listener: Callable[[TickBatchEvent], None]
+    ) -> None:
         self.event_bus.remove_tick_batch_listener(listener)
 
     def add_quote_listener(self, listener: Callable[[QuoteEvent], None]) -> None:
@@ -538,11 +610,14 @@ class MarketDataService:
         return self.event_bus.quote_stats()
 
     def set_ohlc_event_sink(
-        self, sink: Optional[Callable[[str, str, datetime], None]],
+        self,
+        sink: Optional[Callable[[str, str, datetime], None]],
     ) -> None:
         self.event_bus.set_ohlc_event_sink(sink)
 
-    def enqueue_ohlc_closed_event(self, symbol: str, timeframe: str, bar_time: datetime) -> None:
+    def enqueue_ohlc_closed_event(
+        self, symbol: str, timeframe: str, bar_time: datetime
+    ) -> None:
         self.event_bus.dispatch_ohlc_closed(symbol, timeframe, bar_time)
 
     def get_ohlc_event(self, timeout: Optional[float] = None) -> Optional[tuple]:
@@ -567,7 +642,9 @@ class MarketDataService:
                 if indicators:
                     merged = dict(existing)
                     for name, payload in indicators.items():
-                        if isinstance(payload, dict) and isinstance(merged.get(name), dict):
+                        if isinstance(payload, dict) and isinstance(
+                            merged.get(name), dict
+                        ):
                             merged[name] = {**merged[name], **payload}
                         else:
                             merged[name] = payload
@@ -654,15 +731,37 @@ class MarketDataService:
     @staticmethod
     def _merge_ticks(base: List[Tick], overlay: List[Tick]) -> List[Tick]:
         merged = {
-            (tick.time, tick.time_msc, tick.bid, tick.ask, tick.last, tick.volume, tick.flags): tick
+            (
+                tick.time,
+                tick.time_msc,
+                tick.bid,
+                tick.ask,
+                tick.last,
+                tick.volume,
+                tick.flags,
+            ): tick
             for tick in base
         }
         for tick in overlay:
-            merged[(tick.time, tick.time_msc, tick.bid, tick.ask, tick.last, tick.volume, tick.flags)] = tick
+            merged[
+                (
+                    tick.time,
+                    tick.time_msc,
+                    tick.bid,
+                    tick.ask,
+                    tick.last,
+                    tick.volume,
+                    tick.flags,
+                )
+            ] = tick
         return sorted(
             merged.values(),
             key=lambda item: (
-                item.time_msc if item.time_msc is not None else int(item.time.timestamp() * 1000),
+                (
+                    item.time_msc
+                    if item.time_msc is not None
+                    else int(item.time.timestamp() * 1000)
+                ),
                 item.time,
             ),
         )
@@ -672,9 +771,17 @@ class MarketDataService:
         merged = {bar.time: bar for bar in base}
         for bar in overlay:
             existing = merged.get(bar.time)
-            if existing and getattr(existing, "indicators", None) and getattr(bar, "indicators", None):
+            if (
+                existing
+                and getattr(existing, "indicators", None)
+                and getattr(bar, "indicators", None)
+            ):
                 bar.indicators = {**existing.indicators, **bar.indicators}
-            elif existing and getattr(existing, "indicators", None) and getattr(bar, "indicators", None) is None:
+            elif (
+                existing
+                and getattr(existing, "indicators", None)
+                and getattr(bar, "indicators", None) is None
+            ):
                 bar.indicators = dict(existing.indicators)
             merged[bar.time] = bar
         return sorted(merged.values(), key=lambda item: item.time)

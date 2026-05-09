@@ -19,6 +19,7 @@ Usage:
 
 Idempotent: daily_external_ohlc has ON CONFLICT (symbol, date) DO UPDATE.
 """
+
 from __future__ import annotations
 
 import argparse

@@ -6,7 +6,12 @@ from typing import Any
 
 from src.market.tick_features.models import TickFeatureSnapshot
 
-from .models import RecoveryCycleState, RecoveryDecision, RecoveryMarketSnapshot, RecoveryPolicy
+from .models import (
+    RecoveryCycleState,
+    RecoveryDecision,
+    RecoveryMarketSnapshot,
+    RecoveryPolicy,
+)
 
 
 @dataclass(frozen=True)
@@ -141,7 +146,9 @@ class RecoveryDirectionPolicy:
             "min_pressure_delta": float(policy.min_pressure_delta),
         }
         if fallback is None:
-            return RecoveryDirectionDecision(None, "fallback_direction_invalid", metadata)
+            return RecoveryDirectionDecision(
+                None, "fallback_direction_invalid", metadata
+            )
         if mode == "fixed":
             return RecoveryDirectionDecision(fallback, "fixed_direction", metadata)
 
@@ -149,7 +156,9 @@ class RecoveryDirectionPolicy:
         if price_change is None:
             return RecoveryDirectionDecision(None, "direction_signal_missing", metadata)
         if abs(float(price_change)) < float(policy.min_directional_move_points):
-            return RecoveryDirectionDecision(None, "direction_signal_too_weak", metadata)
+            return RecoveryDirectionDecision(
+                None, "direction_signal_too_weak", metadata
+            )
         max_move = float(policy.max_directional_move_points)
         if max_move > 0 and abs(float(price_change)) > max_move:
             return RecoveryDirectionDecision(
@@ -162,15 +171,21 @@ class RecoveryDirectionPolicy:
         metadata["pressure_delta"] = pressure_delta
         min_pressure_delta = float(policy.min_pressure_delta)
         if min_pressure_delta > 0 and pressure_delta is None:
-            return RecoveryDirectionDecision(None, "direction_pressure_missing", metadata)
+            return RecoveryDirectionDecision(
+                None, "direction_pressure_missing", metadata
+            )
 
         if float(price_change) > 0:
             if pressure_delta is not None and pressure_delta < min_pressure_delta:
-                return RecoveryDirectionDecision(None, "direction_pressure_mismatch", metadata)
+                return RecoveryDirectionDecision(
+                    None, "direction_pressure_mismatch", metadata
+                )
             return RecoveryDirectionDecision("buy", "auto_direction_buy", metadata)
 
         if pressure_delta is not None and pressure_delta > -min_pressure_delta:
-            return RecoveryDirectionDecision(None, "direction_pressure_mismatch", metadata)
+            return RecoveryDirectionDecision(
+                None, "direction_pressure_mismatch", metadata
+            )
         return RecoveryDirectionDecision("sell", "auto_direction_sell", metadata)
 
 

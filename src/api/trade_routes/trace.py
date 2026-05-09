@@ -61,7 +61,9 @@ def trade_trace_by_signal_id(
     )
 
 
-@router.get("/trade/trace/by-trace/{trace_id}", response_model=ApiResponse[TradeTraceView])
+@router.get(
+    "/trade/trace/by-trace/{trace_id}", response_model=ApiResponse[TradeTraceView]
+)
 def trade_trace_by_trace_id(
     trace_id: str,
     trace_views: TradingFlowTraceReadModel = Depends(get_trade_trace_read_model),
@@ -75,7 +77,9 @@ def trade_trace_by_trace_id(
     )
 
 
-@router.get("/trade/trace/by-intent/{intent_id}", response_model=ApiResponse[TradeTraceView])
+@router.get(
+    "/trade/trace/by-intent/{intent_id}", response_model=ApiResponse[TradeTraceView]
+)
 def trade_trace_by_intent_id(
     intent_id: str,
     trace_views: TradingFlowTraceReadModel = Depends(get_trade_trace_read_model),
@@ -89,7 +93,9 @@ def trade_trace_by_intent_id(
     )
 
 
-@router.get("/trade/trace/by-command/{command_id}", response_model=ApiResponse[TradeTraceView])
+@router.get(
+    "/trade/trace/by-command/{command_id}", response_model=ApiResponse[TradeTraceView]
+)
 def trade_trace_by_command_id(
     command_id: str,
     trace_views: TradingFlowTraceReadModel = Depends(get_trade_trace_read_model),
@@ -103,7 +109,9 @@ def trade_trace_by_command_id(
     )
 
 
-@router.get("/trade/trace/by-action/{action_id}", response_model=ApiResponse[TradeTraceView])
+@router.get(
+    "/trade/trace/by-action/{action_id}", response_model=ApiResponse[TradeTraceView]
+)
 def trade_trace_by_action_id(
     action_id: str,
     trace_views: TradingFlowTraceReadModel = Depends(get_trade_trace_read_model),
@@ -192,16 +200,12 @@ def trade_traces(
             "from": (
                 result_from_time
                 if result_from_time is not None
-                else normalized_from_time.isoformat()
-                if normalized_from_time
-                else None
+                else normalized_from_time.isoformat() if normalized_from_time else None
             ),
             "to": (
                 result_to_time
                 if result_to_time is not None
-                else normalized_to_time.isoformat()
-                if normalized_to_time
-                else None
+                else normalized_to_time.isoformat() if normalized_to_time else None
             ),
             "default_window_applied": bool(result.get("default_window_applied")),
         },

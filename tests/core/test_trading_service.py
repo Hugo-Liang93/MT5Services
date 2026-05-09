@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from src.risk.service import PreTradeRiskBlockedError
+from src.trading.application.trading_service import TradingService
 from src.trading.broker.comment_codec import build_trade_comment
 from src.trading.models import TradeExecutionDetails
-from src.trading.application.trading_service import TradingService
 
 
 class DummyTradingClient:
@@ -65,7 +65,9 @@ class DummyTradingClient:
         if kwargs.get("tp") == -2:
             raise RuntimeError("Take profit must be above entry price for buy orders")
         return {
-            "order_type": self.side_and_kind_to_order_type(kwargs["side"], kwargs.get("order_kind", "market")),
+            "order_type": self.side_and_kind_to_order_type(
+                kwargs["side"], kwargs.get("order_kind", "market")
+            ),
             "request_price": kwargs.get("price") or 2345.6,
             "pending": False,
         }
@@ -73,7 +75,9 @@ class DummyTradingClient:
     def check_broker_constraints(self, **kwargs):
         return []
 
-    def close_position(self, ticket: int, deviation: int = 20, comment: str = "", volume=None):
+    def close_position(
+        self, ticket: int, deviation: int = 20, comment: str = "", volume=None
+    ):
         return True
 
     def close_positions_by_tickets(self, tickets, deviation=20, comment="close_batch"):
@@ -130,7 +134,9 @@ class DummyAccountClient:
     def positions(self, symbol=None):
         if symbol is None:
             return list(self._positions)
-        return [row for row in self._positions if getattr(row, "symbol", None) == symbol]
+        return [
+            row for row in self._positions if getattr(row, "symbol", None) == symbol
+        ]
 
     def orders(self, symbol=None):
         if symbol is None:
@@ -195,9 +201,9 @@ def test_execute_trade_returns_structured_execution_details():
     assert result["ticket"] == 12345
     assert result["estimated_margin"] == 512.5
     assert result["pre_trade_risk"]["verdict"] == "allow"
-    assert result["pre_trade_risk"]["intent"]["metadata"]["market_structure"]["structure_bias"] == (
-        "bullish_pullback"
-    )
+    assert result["pre_trade_risk"]["intent"]["metadata"]["market_structure"][
+        "structure_bias"
+    ] == ("bullish_pullback")
     assert client.open_trade_details_calls[0]["sl"] == 2340.0
     assert result["state_consistency"]["positions_count"] == 0
     assert result["state_consistency"]["orders_count"] == 0
@@ -483,7 +489,9 @@ def test_close_positions_by_tickets_uses_client_batch_method():
     client = DummyTradingClient()
     service = TradingService(client=client)
 
-    result = service.close_positions_by_tickets([101, 102], deviation=15, comment="batch_close")
+    result = service.close_positions_by_tickets(
+        [101, 102], deviation=15, comment="batch_close"
+    )
 
     assert result["closed"] == [101, 102]
     assert client.close_batch_calls == [([101, 102], 15, "batch_close")]

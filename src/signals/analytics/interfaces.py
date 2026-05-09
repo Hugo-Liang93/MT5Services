@@ -15,8 +15,7 @@ class DiagnosticsEngine(Protocol):
         timeframe: str | None,
         scope: str,
         thresholds: DiagnosticThresholds,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
     def build_daily_quality_report(
         self,
@@ -27,5 +26,4 @@ class DiagnosticsEngine(Protocol):
         scope: str,
         thresholds: DiagnosticThresholds,
         now: datetime | None = None,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...

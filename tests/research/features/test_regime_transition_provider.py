@@ -2,6 +2,7 @@
 
 RegimeTransitionFeatureProvider 单元测试。
 """
+
 from __future__ import annotations
 
 import math
@@ -13,7 +14,6 @@ import pytest
 from src.research.features.protocol import FeatureRole
 from src.research.features.regime_transition import RegimeTransitionFeatureProvider
 from src.signals.evaluation.regime import RegimeType
-
 
 # ---------------------------------------------------------------------------
 # Mock DataMatrix helpers
@@ -322,7 +322,9 @@ class TestProbAndEntropyDelta:
         p = RegimeTransitionFeatureProvider()
         result = p.compute(m)
         key_options = [
-            k for k in result if k[0] == "regime_transition" and "trending_prob_delta" in k[1]
+            k
+            for k in result
+            if k[0] == "regime_transition" and "trending_prob_delta" in k[1]
         ]
         assert key_options, "trending_prob_delta_* 列不存在"
         col = result[key_options[0]]

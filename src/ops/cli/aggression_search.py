@@ -11,6 +11,7 @@
 
 每个 combo 独立运行完整回测（~17s/次），简单可靠。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -18,7 +19,9 @@ import os
 import sys
 import time
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 
 import warnings
 
@@ -29,9 +32,9 @@ import logging
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timezone
-from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict, List, Optional
 
+from src.utils.timezone import parse_iso_to_utc
 
 # ── 默认 aggression 值 ──────────────────────────────────────────────
 
@@ -75,7 +78,9 @@ def _run_single(
 
     _OPTIMIZER_ONLY_KEYS = {"search_mode", "max_combinations", "sort_metric"}
     defaults = {
-        k: v for k, v in get_backtest_defaults().items() if k not in _OPTIMIZER_ONLY_KEYS
+        k: v
+        for k, v in get_backtest_defaults().items()
+        if k not in _OPTIMIZER_ONLY_KEYS
     }
     signal_config = _load_signal_config_snapshot()
 
@@ -130,9 +135,7 @@ def _run_single(
 
 def _extract_strategy_stats(trades: list, strategy_name: str) -> Dict[str, Any]:
     """从交易列表中提取指定策略的统计。"""
-    strat_trades = [
-        t for t in trades if getattr(t, "strategy", "") == strategy_name
-    ]
+    strat_trades = [t for t in trades if getattr(t, "strategy", "") == strategy_name]
     if not strat_trades:
         return {"n": 0, "w": 0, "wr": 0.0, "pnl": 0.0, "pf": 0.0, "avg_pnl": 0.0}
 
@@ -143,7 +146,11 @@ def _extract_strategy_stats(trades: list, strategy_name: str) -> Dict[str, Any]:
     total_pnl = sum(getattr(t, "pnl", 0) or 0 for t in strat_trades)
     gross_profit = sum(getattr(t, "pnl", 0) or 0 for t in wins) if wins else 0
     gross_loss = abs(sum(getattr(t, "pnl", 0) or 0 for t in losses)) if losses else 0
-    pf = gross_profit / gross_loss if gross_loss > 0 else (99.0 if gross_profit > 0 else 0.0)
+    pf = (
+        gross_profit / gross_loss
+        if gross_loss > 0
+        else (99.0 if gross_profit > 0 else 0.0)
+    )
 
     return {
         "n": n,
@@ -247,7 +254,11 @@ def _render_results(
                 note += " [DEFAULT]"
             if r["aggression"] == best["aggression"]:
                 note += " *BEST-PnL"
-            if valid and r["aggression"] == best_pf["aggression"] and best_pf["aggression"] != best["aggression"]:
+            if (
+                valid
+                and r["aggression"] == best_pf["aggression"]
+                and best_pf["aggression"] != best["aggression"]
+            ):
                 note += " *BEST-PF"
 
             lines.append(
@@ -257,9 +268,7 @@ def _render_results(
             )
 
         # 推荐摘要
-        default_pnl = next(
-            (r["pnl"] for r in strat_results if r["is_default"]), 0
-        )
+        default_pnl = next((r["pnl"] for r in strat_results if r["is_default"]), 0)
         if best["pnl"] > 0:
             improvement = best["pnl"] - default_pnl
             lines.append(
@@ -280,9 +289,7 @@ def _render_results(
         if not strat_results:
             continue
         default_aggr = _DEFAULTS.get(strat_name, 0.50)
-        default_pnl = next(
-            (r["pnl"] for r in strat_results if r["is_default"]), 0
-        )
+        default_pnl = next((r["pnl"] for r in strat_results if r["is_default"]), 0)
         best = max(strat_results, key=lambda x: x["pnl"])
         delta = best["pnl"] - default_pnl
         marker = " OK" if delta > 0 else ""
@@ -322,9 +329,7 @@ def main() -> None:
 
     timeframes = [t.strip().upper() for t in args.tf.split(",")]
     strategies = (
-        [s.strip() for s in args.strategies.split(",")]
-        if args.strategies
-        else None
+        [s.strip() for s in args.strategies.split(",")] if args.strategies else None
     )
 
     for tf in timeframes:

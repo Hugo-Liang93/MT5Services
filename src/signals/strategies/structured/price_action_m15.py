@@ -246,6 +246,45 @@ class StructuredPriceAction(StructuredStrategyBase):
         # 放量：1.0→0, 1.5→0.5, 2.0→1.0
         return self._linear_score(vr, low=1.0, high=2.0)
 
+    # T9: tick pressure 修正阈值
+    _tick_pressure_threshold: float = 0.55  # 顺向压力低于此值时降权
+    _tick_pressure_penalty: float = 0.7  # 降权乘数
+
+    def _post_confidence_modifier(self, ctx: SignalContext, direction: str) -> float:
+        """T9: 当 tick_features 显示顺向压力不足时降权 PA confidence。
+
+        SignalRuntime 在 confirmed bar 评估时把最近的 tick feature 注入
+        ctx.indicators["tick_features"]（若可用）。本 hook 读 buy_pressure /
+        sell_pressure，方向一致性不足时返回 _tick_pressure_penalty 乘数。
+
+        无 tick_features 时返回 1.0（向后兼容）。
+        """
+        tick_feats = ctx.indicators.get("tick_features", {})
+        if not tick_feats:
+            return 1.0
+        pressure_key = "buy_pressure" if direction == "buy" else "sell_pressure"
+        pressure = tick_feats.get(pressure_key)
+        if pressure is None:
+            return 1.0
+        try:
+            pressure_value = float(pressure)
+        except (TypeError, ValueError):
+            return 1.0
+        threshold = get_tf_param(
+            self,
+            "tick_pressure_threshold",
+            ctx.timeframe,
+            self._tick_pressure_threshold,
+        )
+        if pressure_value < threshold:
+            return get_tf_param(
+                self,
+                "tick_pressure_penalty",
+                ctx.timeframe,
+                self._tick_pressure_penalty,
+            )
+        return 1.0
+
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         """BARRIER 模式：固定 SL/TP/Time，不用 Chandelier trail。"""
         sl = get_tf_param(self, "sl_atr", ctx.timeframe, self._sl_atr)

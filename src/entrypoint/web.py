@@ -7,7 +7,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from src.config import get_api_config, get_system_config, reload_configs
-from src.config.instance_context import get_current_instance_name, resolve_instance_scoped_dir
+from src.config.instance_context import (
+    get_current_instance_name,
+    resolve_instance_scoped_dir,
+)
 from src.entrypoint.logging_context import (
     inject_logging_context,
     install_log_record_context,
@@ -38,6 +41,7 @@ def _force_utf8_stdio() -> None:
         except Exception:
             # 少数终端不支持 reconfigure，静默降级
             pass
+
 
 APP_TARGET = "src.api:app"
 DEFAULT_PORT = 8808
@@ -122,7 +126,9 @@ def _setup_file_logging(
 
 def launch() -> None:
     import uvicorn
-    from src.utils.timezone import LocalTimeFormatter, configure as configure_tz
+
+    from src.utils.timezone import LocalTimeFormatter
+    from src.utils.timezone import configure as configure_tz
 
     _force_utf8_stdio()
     reload_configs()
@@ -160,7 +166,13 @@ def launch() -> None:
         port,
         instance_name or "default",
     )
-    uvicorn.run(app_target, host=host, port=port, reload=False, access_log=api_config.access_log_enabled)
+    uvicorn.run(
+        app_target,
+        host=host,
+        port=port,
+        reload=False,
+        access_log=api_config.access_log_enabled,
+    )
 
 
 if __name__ == "__main__":

@@ -28,7 +28,9 @@ def record_intrabar_drop(manager: "UnifiedIndicatorManager") -> None:
         manager.state.intrabar_dropped_count += 1
 
 
-def record_intrabar_queue_age_ms(manager: "UnifiedIndicatorManager", value_ms: float) -> None:
+def record_intrabar_queue_age_ms(
+    manager: "UnifiedIndicatorManager", value_ms: float
+) -> None:
     with manager.state.intrabar_metrics_lock:
         manager.state.intrabar_queue_age_samples_ms.append(float(value_ms))
 
@@ -41,7 +43,9 @@ def record_intrabar_processing_latency_ms(
         manager.state.intrabar_process_latency_samples_ms.append(float(value_ms))
 
 
-def get_intrabar_metrics_snapshot(manager: "UnifiedIndicatorManager") -> dict[str, int | float]:
+def get_intrabar_metrics_snapshot(
+    manager: "UnifiedIndicatorManager",
+) -> dict[str, int | float]:
     with manager.state.intrabar_metrics_lock:
         dropped = manager.state.intrabar_dropped_count
         ages = list(manager.state.intrabar_queue_age_samples_ms)

@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List, Optional, Tuple
 
-from src.clients.base import MT5BaseClient, mt5
-from src.clients.base import MT5TradeError
+from src.clients.base import MT5BaseClient, MT5TradeError, mt5
 
 
 @dataclass
@@ -67,8 +66,10 @@ class MT5AccountClientError(MT5TradeError):
 class MT5AccountClient(MT5BaseClient):
     # 对只读账户/持仓查询进行短 TTL 缓存，减少高并发下的 MT5 API 序列化压力。
     # 缓存仅用于读路径；写操作（下单/平仓）会主动使缓存失效。
-    _ACCOUNT_INFO_TTL = 10.0  # seconds — SSE polls every 3s, no need for sub-10s freshness
-    _POSITIONS_TTL = 3.0      # seconds
+    _ACCOUNT_INFO_TTL = (
+        10.0  # seconds — SSE polls every 3s, no need for sub-10s freshness
+    )
+    _POSITIONS_TTL = 3.0  # seconds
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -82,12 +83,17 @@ class MT5AccountClient(MT5BaseClient):
 
     def account_info(self) -> AccountInfo:
         cached = self._account_info_cache
-        if cached is not None and (time.monotonic() - cached[0]) < self._ACCOUNT_INFO_TTL:
+        if (
+            cached is not None
+            and (time.monotonic() - cached[0]) < self._ACCOUNT_INFO_TTL
+        ):
             return cached[1]
         self.connect()
         info = mt5.account_info()
         if info is None:
-            raise MT5AccountClientError(f"Failed to get account info: {mt5.last_error()}")
+            raise MT5AccountClientError(
+                f"Failed to get account info: {mt5.last_error()}"
+            )
         result = AccountInfo(
             login=info.login,
             balance=info.balance,

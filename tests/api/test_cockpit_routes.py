@@ -22,7 +22,11 @@ class _StubCockpitReadModel:
         ]
         payload: dict[str, Any] = {
             "observed_at": "2026-04-20T10:00:00+00:00",
-            "source": {"kind": "live", "fallback_applied": False, "fallback_reason": None},
+            "source": {
+                "kind": "live",
+                "fallback_applied": False,
+                "fallback_reason": None,
+            },
             "freshness_hints": {},
             "accounts": [
                 {
@@ -45,8 +49,15 @@ def test_cockpit_overview_returns_all_blocks_by_default() -> None:
     assert response.success is True
     assert read_model.last_include is None
     # 7 个业务块 + observed_at/source/freshness_hints/accounts
-    blocks = {"decision", "triage_queue", "market_guard", "data_health",
-              "exposure_map", "opportunity_queue", "safe_actions"}
+    blocks = {
+        "decision",
+        "triage_queue",
+        "market_guard",
+        "data_health",
+        "exposure_map",
+        "opportunity_queue",
+        "safe_actions",
+    }
     assert blocks.issubset(response.data.keys())
     assert response.metadata["source_kind"] == "live"
     assert response.metadata["account_count"] == 1

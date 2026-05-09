@@ -7,7 +7,9 @@ import src.config.mt5 as mt5_config
 import src.config.runtime as runtime_views
 
 
-def _parser_with_section(section: str, values: dict[str, object]) -> configparser.ConfigParser:
+def _parser_with_section(
+    section: str, values: dict[str, object]
+) -> configparser.ConfigParser:
     parser = configparser.ConfigParser()
     parser.add_section(section)
     for key, value in values.items():
@@ -37,7 +39,9 @@ def test_runtime_loaders_use_merged_ini(monkeypatch):
         ),
     }
 
-    def fake_load_config_with_base(config_name: str, base_config: str = "app.ini", base_dir=None):
+    def fake_load_config_with_base(
+        config_name: str, base_config: str = "app.ini", base_dir=None
+    ):
         return config_name, parsers.get(config_name)
 
     monkeypatch.setattr(
@@ -48,7 +52,9 @@ def test_runtime_loaders_use_merged_ini(monkeypatch):
             None,
         ),
     )
-    monkeypatch.setattr(runtime_views, "load_config_with_base", fake_load_config_with_base)
+    monkeypatch.setattr(
+        runtime_views, "load_config_with_base", fake_load_config_with_base
+    )
 
     mt5_config.load_mt5_settings.cache_clear()
     runtime_views.get_runtime_market_settings.cache_clear()
@@ -68,11 +74,15 @@ def test_runtime_loaders_use_merged_ini(monkeypatch):
 def test_reload_configs_clears_runtime_loader_caches(monkeypatch):
     state = {"login": 1001, "tick_cache_size": 111}
 
-    def fake_load_config_with_base(config_name: str, base_config: str = "app.ini", base_dir=None):
+    def fake_load_config_with_base(
+        config_name: str, base_config: str = "app.ini", base_dir=None
+    ):
         if config_name == "mt5.ini":
             return config_name, _parser_with_section("mt5", {"login": state["login"]})
         if config_name == "cache.ini":
-            return config_name, _parser_with_section("cache", {"tick_cache_size": state["tick_cache_size"]})
+            return config_name, _parser_with_section(
+                "cache", {"tick_cache_size": state["tick_cache_size"]}
+            )
         return config_name, None
 
     monkeypatch.setattr(
@@ -83,7 +93,9 @@ def test_reload_configs_clears_runtime_loader_caches(monkeypatch):
             None,
         ),
     )
-    monkeypatch.setattr(runtime_views, "load_config_with_base", fake_load_config_with_base)
+    monkeypatch.setattr(
+        runtime_views, "load_config_with_base", fake_load_config_with_base
+    )
 
     mt5_config.load_mt5_settings.cache_clear()
     runtime_views.get_runtime_market_settings.cache_clear()
@@ -172,7 +184,9 @@ def test_provenance_reports_local_ini_sources(monkeypatch):
         ("economic.ini", "jin10", "token"): "economic.local.ini[jin10].token",
     }
 
-    monkeypatch.setattr(centralized, "get_merged_config", lambda name: config_map.get(name, {}))
+    monkeypatch.setattr(
+        centralized, "get_merged_config", lambda name: config_map.get(name, {})
+    )
     monkeypatch.setattr(
         centralized,
         "get_merged_option_source",
@@ -215,7 +229,9 @@ def test_effective_config_snapshot_masks_jin10_token(monkeypatch):
         "cache.ini": {},
     }
 
-    monkeypatch.setattr(centralized, "get_merged_config", lambda name: config_map.get(name, {}))
+    monkeypatch.setattr(
+        centralized, "get_merged_config", lambda name: config_map.get(name, {})
+    )
     source_map = {
         ("economic.ini", "jin10", "enabled"): "economic.local.ini[jin10].enabled",
         ("economic.ini", "jin10", "token"): "economic.local.ini[jin10].token",
@@ -235,5 +251,7 @@ def test_effective_config_snapshot_masks_jin10_token(monkeypatch):
 
     assert snapshot["api"]["api_key"] == "***"
     assert snapshot["economic"]["jin10_token"] == "***"
-    assert provenance["economic"]["jin10_enabled"] == "economic.local.ini[jin10].enabled"
+    assert (
+        provenance["economic"]["jin10_enabled"] == "economic.local.ini[jin10].enabled"
+    )
     assert provenance["economic"]["jin10_token"] == "economic.local.ini[jin10].token"

@@ -37,7 +37,9 @@ def test_startup_summary_emits_identity_and_mode(caplog):
     with caplog.at_level(logging.INFO, logger="src.app_runtime.runtime"):
         rt._log_startup_summary()
 
-    records = [r.getMessage() for r in caplog.records if "startup_summary" in r.getMessage()]
+    records = [
+        r.getMessage() for r in caplog.records if "startup_summary" in r.getMessage()
+    ]
     assert len(records) == 1
     msg = records[0]
     assert "instance=live-main" in msg
@@ -64,7 +66,9 @@ def test_startup_summary_reads_signal_config(caplog):
     with caplog.at_level(logging.INFO, logger="src.app_runtime.runtime"):
         rt._log_startup_summary()
 
-    msg = next(r.getMessage() for r in caplog.records if "startup_summary" in r.getMessage())
+    msg = next(
+        r.getMessage() for r in caplog.records if "startup_summary" in r.getMessage()
+    )
     assert "auto_trade=True" in msg
     assert "intrabar_enabled=False" in msg
     # sorted 保证可复现
@@ -81,7 +85,9 @@ def test_startup_summary_degrades_on_loader_failure(caplog):
     with caplog.at_level(logging.INFO, logger="src.app_runtime.runtime"):
         rt._log_startup_summary()  # 不应抛
 
-    msg = next(r.getMessage() for r in caplog.records if "startup_summary" in r.getMessage())
+    msg = next(
+        r.getMessage() for r in caplog.records if "startup_summary" in r.getMessage()
+    )
     assert "auto_trade=?" in msg
     assert "active_strategies=[]" in msg
     assert "account_bindings={}" in msg
@@ -105,5 +111,7 @@ def test_startup_summary_degrades_on_mode_failure(caplog):
     with caplog.at_level(logging.INFO, logger="src.app_runtime.runtime"):
         rt._log_startup_summary()
 
-    msg = next(r.getMessage() for r in caplog.records if "startup_summary" in r.getMessage())
+    msg = next(
+        r.getMessage() for r in caplog.records if "startup_summary" in r.getMessage()
+    )
     assert "mode=error" in msg

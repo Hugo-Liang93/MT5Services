@@ -1,5 +1,16 @@
+from .margin_guard import (
+    MarginGuard,
+    MarginGuardConfig,
+    MarginGuardSnapshot,
+    MarginLevel,
+    load_margin_guard_config,
+)
 from .models import RiskAssessment, RiskCheckResult, TradeIntent
-from .ports import MarginGuardExecutorPort, MarginGuardPositionPort, MarginGuardTradePort
+from .ports import (
+    MarginGuardExecutorPort,
+    MarginGuardPositionPort,
+    MarginGuardTradePort,
+)
 from .profiles import (
     RiskProfileResolutionError,
     RiskProfileResolver,
@@ -8,7 +19,6 @@ from .profiles import (
     resolve_recovery_risk_profile_contract,
     validate_strategy_risk_profile_binding,
 )
-from .runtime import wire_margin_guard
 from .rules import (
     AccountSnapshotRule,
     CalendarHealthRule,
@@ -16,8 +26,13 @@ from .rules import (
     ProtectionRule,
     RuleContext,
 )
-from .margin_guard import MarginGuard, MarginGuardConfig, MarginGuardSnapshot, MarginLevel, load_margin_guard_config
-from .service import EconomicCalendarProvider, PreTradeRiskBlockedError, PreTradeRiskService, resolve_risk_failure_key
+from .runtime import wire_margin_guard
+from .service import (
+    EconomicCalendarProvider,
+    PreTradeRiskBlockedError,
+    PreTradeRiskService,
+    resolve_risk_failure_key,
+)
 
 __all__ = [
     "MarginGuard",

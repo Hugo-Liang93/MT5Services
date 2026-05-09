@@ -49,9 +49,7 @@ class PipelineGateAuditReadModel:
             if str(item or "").strip()
         }
         source_filter = {
-            str(item).strip()
-            for item in (sources or [])
-            if str(item or "").strip()
+            str(item).strip() for item in (sources or []) if str(item or "").strip()
         }
         rows = self._pipeline_trace_repo.fetch_gate_events(
             from_time=effective_from,
@@ -60,10 +58,7 @@ class PipelineGateAuditReadModel:
             timeframes=timeframes,
             limit=limit,
         )
-        normalized_rows = [
-            self._normalize_row(row)
-            for row in rows
-        ]
+        normalized_rows = [self._normalize_row(row) for row in rows]
         normalized_rows = [
             row
             for row in normalized_rows
@@ -194,12 +189,14 @@ class PipelineGateAuditReadModel:
                     key_name: bucket[key_name],
                     "events": events,
                     "trace_count": len(bucket["trace_ids"]),
-                    "share_pct": round(
-                        (events / total_events) * 100.0,
-                        2,
-                    )
-                    if total_events > 0
-                    else 0.0,
+                    "share_pct": (
+                        round(
+                            (events / total_events) * 100.0,
+                            2,
+                        )
+                        if total_events > 0
+                        else 0.0
+                    ),
                     "categories": dict(bucket["categories"]),
                     "sources": dict(bucket["sources"]),
                     "timeframes": dict(bucket["timeframes"]),
@@ -273,6 +270,7 @@ class PipelineGateAuditReadModel:
                 "events": count,
                 "trace_count": len(buckets.get(key, set())),
             }
-            for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+            for key, count in sorted(
+                counts.items(), key=lambda item: (-item[1], item[0])
+            )
         ]
-

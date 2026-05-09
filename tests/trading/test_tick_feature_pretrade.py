@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.signals.models import SignalEvent
 from src.market.tick_features.health import TickFeatureHealth
-from src.trading.execution.tick_feature_health import build_execution_tick_feature_health
+from src.signals.models import SignalEvent
 from src.trading.execution.executor import ExecutorConfig, TradeExecutor
 from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
 from src.trading.execution.reasons import (
     REASON_TICK_FEATURE_HEALTH_BLOCKED,
     REASON_TICK_FEATURE_HEALTH_UNAVAILABLE,
+)
+from src.trading.execution.tick_feature_health import (
+    build_execution_tick_feature_health,
 )
 
 

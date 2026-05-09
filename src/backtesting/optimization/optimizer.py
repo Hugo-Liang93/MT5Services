@@ -18,8 +18,8 @@ from ..engine.runner import BacktestEngine
 from ..models import (
     BacktestConfig,
     BacktestResult,
-    ParamRobustness,
     ParameterSpace,
+    ParamRobustness,
     RobustnessResult,
 )
 
@@ -137,6 +137,7 @@ class ParameterOptimizer:
             # 构建带参数覆盖的配置
             if position_overrides:
                 from ..models import _FLAT_FIELD_MAP, _SUB_CONFIG_CLASSES
+
                 # 将平铺的 position_overrides 路由到对应子配置
                 sub_buckets: Dict[str, Dict[str, Any]] = {}
                 for k, v in position_overrides.items():
@@ -155,7 +156,8 @@ class ParameterOptimizer:
                 )
             else:
                 config = replace(
-                    self._base_config, strategy_params=strategy_params,
+                    self._base_config,
+                    strategy_params=strategy_params,
                 )
 
             # 构建独立的 SignalModule
@@ -211,15 +213,21 @@ class ParameterOptimizer:
                     logger.info(
                         "Optimizer: best Sharpe %.4f is SIGNIFICANT after %d trials "
                         "(DSR=%.4f, p=%.4f, expected_max=%.4f)",
-                        best.metrics.sharpe_ratio, total,
-                        dsr.deflated_sharpe, dsr.p_value, dsr.expected_max_sharpe,
+                        best.metrics.sharpe_ratio,
+                        total,
+                        dsr.deflated_sharpe,
+                        dsr.p_value,
+                        dsr.expected_max_sharpe,
                     )
                 else:
                     logger.warning(
                         "Optimizer: best Sharpe %.4f NOT significant after %d trials "
                         "(DSR=%.4f, p=%.4f, expected_max=%.4f)",
-                        best.metrics.sharpe_ratio, total,
-                        dsr.deflated_sharpe, dsr.p_value, dsr.expected_max_sharpe,
+                        best.metrics.sharpe_ratio,
+                        total,
+                        dsr.deflated_sharpe,
+                        dsr.p_value,
+                        dsr.expected_max_sharpe,
                     )
 
         return results
@@ -413,9 +421,9 @@ class ParameterOptimizer:
             min_sharpe = min(perturbed_sharpes)
 
             if mean_sharpe > 0:
-                variance = sum(
-                    (s - mean_sharpe) ** 2 for s in perturbed_sharpes
-                ) / len(perturbed_sharpes)
+                variance = sum((s - mean_sharpe) ** 2 for s in perturbed_sharpes) / len(
+                    perturbed_sharpes
+                )
                 std_sharpe = variance**0.5
                 cv = std_sharpe / mean_sharpe
             else:
@@ -504,7 +512,9 @@ def _extract_regime_affinity_overrides(
             continue
         serialized: Dict[str, float] = {}
         for regime, value in affinity_map.items():
-            regime_key = regime.value if isinstance(regime, RegimeType) else str(regime).lower()
+            regime_key = (
+                regime.value if isinstance(regime, RegimeType) else str(regime).lower()
+            )
             try:
                 serialized[regime_key] = float(value)
             except (TypeError, ValueError):

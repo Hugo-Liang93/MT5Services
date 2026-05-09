@@ -37,11 +37,36 @@ _T = TypeVar("_T")
 
 
 TRADE_TRIGGER_METHODS = [
-    {"id": "trade_api_direct", "type": "api", "path": "/v1/trade", "description": "直接交易下单入口"},
-    {"id": "trade_api_dispatch", "type": "api", "path": "/v1/trade/dispatch", "description": "统一调度入口，operation=trade"},
-    {"id": "trade_api_batch", "type": "api", "path": "/v1/trade/batch", "description": "批量交易入口"},
-    {"id": "signal_api_execute_trade", "type": "api", "path": "/v1/trade/from-signal", "description": "按 signal_id 从交易模块触发交易"},
-    {"id": "signal_runtime_auto_trade", "type": "event", "path": "SignalRuntime -> TradeExecutor -> dispatch_operation('trade')", "description": "信号确认后的自动交易链路"},
+    {
+        "id": "trade_api_direct",
+        "type": "api",
+        "path": "/v1/trade",
+        "description": "直接交易下单入口",
+    },
+    {
+        "id": "trade_api_dispatch",
+        "type": "api",
+        "path": "/v1/trade/dispatch",
+        "description": "统一调度入口，operation=trade",
+    },
+    {
+        "id": "trade_api_batch",
+        "type": "api",
+        "path": "/v1/trade/batch",
+        "description": "批量交易入口",
+    },
+    {
+        "id": "signal_api_execute_trade",
+        "type": "api",
+        "path": "/v1/trade/from-signal",
+        "description": "按 signal_id 从交易模块触发交易",
+    },
+    {
+        "id": "signal_runtime_auto_trade",
+        "type": "event",
+        "path": "SignalRuntime -> TradeExecutor -> dispatch_operation('trade')",
+        "description": "信号确认后的自动交易链路",
+    },
 ]
 
 
@@ -52,11 +77,20 @@ def _utc_now() -> str:
 def _safe_check_call(label: str, fn):
     try:
         return fn(), None
-    except (AssertionError, AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+    except (
+        AssertionError,
+        AttributeError,
+        KeyError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         logger.warning("%s check failed: %s", label, exc)
         return None, str(exc)
     except Exception as exc:
-        logger.error("%s check failed with unexpected error: %s", label, exc, exc_info=True)
+        logger.error(
+            "%s check failed with unexpected error: %s", label, exc, exc_info=True
+        )
         return None, str(exc)
 
 
@@ -71,7 +105,14 @@ def _execute_health_call(
         return operation()
     except HTTPException:
         raise
-    except (AssertionError, AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+    except (
+        AssertionError,
+        AttributeError,
+        KeyError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         logger.warning("%s failed with expected error: %s", label, exc)
         if allow_fallback:
             return fallback
@@ -206,8 +247,13 @@ async def health_ready() -> Dict[str, Any]:
             "pending_entry",
             lambda: get_pending_entry_manager().is_running(),
         )
-        checks["pending_entry"] = "ok" if pending_err is None and bool(pending_manager) else "degraded"
-        details["pending_entry"] = {"running": bool(pending_manager), "error": pending_err}
+        checks["pending_entry"] = (
+            "ok" if pending_err is None and bool(pending_manager) else "degraded"
+        )
+        details["pending_entry"] = {
+            "running": bool(pending_manager),
+            "error": pending_err,
+        }
 
         position_manager, position_err = _safe_check_call(
             "position_manager",
@@ -216,7 +262,10 @@ async def health_ready() -> Dict[str, Any]:
         checks["position_manager"] = (
             "ok" if position_err is None and bool(position_manager) else "degraded"
         )
-        details["position_manager"] = {"running": bool(position_manager), "error": position_err}
+        details["position_manager"] = {
+            "running": bool(position_manager),
+            "error": position_err,
+        }
 
         account_risk_state, risk_err = _safe_check_call(
             "account_risk_state",
@@ -224,10 +273,16 @@ async def health_ready() -> Dict[str, Any]:
         )
         checks["account_risk_state"] = (
             "ok"
-            if risk_err is None and isinstance(account_risk_state, dict) and bool(account_risk_state)
+            if risk_err is None
+            and isinstance(account_risk_state, dict)
+            and bool(account_risk_state)
             else "degraded"
         )
-        details["account_risk_state"] = account_risk_state if isinstance(account_risk_state, dict) else {"error": risk_err}
+        details["account_risk_state"] = (
+            account_risk_state
+            if isinstance(account_risk_state, dict)
+            else {"error": risk_err}
+        )
     else:
         market_data_health, market_data_err = _safe_check_call(
             "market_data_health",
@@ -245,7 +300,9 @@ async def health_ready() -> Dict[str, Any]:
             get_indicator_manager().get_performance_stats,
         )
         if perf_err is None and isinstance(perf, dict):
-            checks["indicator_engine"] = "ok" if perf.get("event_loop_running") else "degraded"
+            checks["indicator_engine"] = (
+                "ok" if perf.get("event_loop_running") else "degraded"
+            )
             details["indicator_engine"] = perf
         else:
             checks["indicator_engine"] = "error"
@@ -261,13 +318,9 @@ async def health_ready() -> Dict[str, Any]:
             "tick_feature_health",
             tick_feature_health_fn,
         )
-        if (
-            tick_feature_err is not None
-            or (
-                isinstance(tick_feature_health, dict)
-                and str(tick_feature_health.get("status") or "").lower()
-                != "not_required"
-            )
+        if tick_feature_err is not None or (
+            isinstance(tick_feature_health, dict)
+            and str(tick_feature_health.get("status") or "").lower() != "not_required"
         ):
             _record_health_check(
                 checks,
@@ -287,12 +340,8 @@ async def health_ready() -> Dict[str, Any]:
             "recovery_runner",
             recovery_runner_fn,
         )
-        if (
-            recovery_runner_err is not None
-            or (
-                isinstance(recovery_runner, dict)
-                and bool(recovery_runner.get("enabled"))
-            )
+        if recovery_runner_err is not None or (
+            isinstance(recovery_runner, dict) and bool(recovery_runner.get("enabled"))
         ):
             _record_health_check(
                 checks,
@@ -302,7 +351,9 @@ async def health_ready() -> Dict[str, Any]:
                 recovery_runner_err,
             )
 
-    failed_checks = [name for name, status in checks.items() if status in {"degraded", "error"}]
+    failed_checks = [
+        name for name, status in checks.items() if status in {"degraded", "error"}
+    ]
     if failed_checks:
         raise HTTPException(
             status_code=503,
@@ -339,10 +390,17 @@ async def get_health_status(hours: int = 24) -> ApiResponse[Dict[str, Any]]:
 async def get_performance_stats() -> ApiResponse[Dict[str, Any]]:
     runtime_read_model = get_runtime_read_model()
     runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
-    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+    if (
+        runtime_identity is not None
+        and getattr(runtime_identity, "instance_role", None) == "executor"
+    ):
         return ApiResponse.success_response({"status": "disabled", "role": "executor"})
     return ApiResponse.success_response(
-        _execute_health_call("indicator performance stats", get_indicator_manager().get_performance_stats, fallback={})
+        _execute_health_call(
+            "indicator performance stats",
+            get_indicator_manager().get_performance_stats,
+            fallback={},
+        )
     )
 
 
@@ -350,7 +408,10 @@ async def get_performance_stats() -> ApiResponse[Dict[str, Any]]:
 async def get_event_stats() -> ApiResponse[Dict[str, Any]]:
     runtime_read_model = get_runtime_read_model()
     runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
-    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+    if (
+        runtime_identity is not None
+        and getattr(runtime_identity, "instance_role", None) == "executor"
+    ):
         return ApiResponse.success_response({"status": "disabled", "role": "executor"})
     return ApiResponse.success_response(
         _execute_health_call(
@@ -365,18 +426,27 @@ async def get_event_stats() -> ApiResponse[Dict[str, Any]]:
 async def get_queue_stats() -> ApiResponse[Dict[str, Any]]:
     runtime_read_model = get_runtime_read_model()
     runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
-    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+    if (
+        runtime_identity is not None
+        and getattr(runtime_identity, "instance_role", None) == "executor"
+    ):
         return ApiResponse.success_response(runtime_read_model.storage_summary())
     return ApiResponse.success_response(
-        _execute_health_call("queue stats", lambda: get_ingestor().queue_stats() or {}, fallback={})
+        _execute_health_call(
+            "queue stats", lambda: get_ingestor().queue_stats() or {}, fallback={}
+        )
     )
 
 
 @router.get("/metrics/{component}/{metric_name}", summary="获取最近指标数据")
-async def get_metrics(component: str, metric_name: str, limit: int = 100) -> ApiResponse[List[Dict[str, Any]]]:
+async def get_metrics(
+    component: str, metric_name: str, limit: int = 100
+) -> ApiResponse[List[Dict[str, Any]]]:
     data = _execute_health_call(
         f"metrics for {component}.{metric_name}",
-        lambda: get_health_monitor_instance().get_recent_metrics(component, metric_name, limit),
+        lambda: get_health_monitor_instance().get_recent_metrics(
+            component, metric_name, limit
+        ),
         fallback=[],
     )
     return ApiResponse.success_response(data)
@@ -386,15 +456,23 @@ async def get_metrics(component: str, metric_name: str, limit: int = 100) -> Api
 async def trigger_consistency_check() -> ApiResponse[RuntimeActionView]:
     runtime_read_model = get_runtime_read_model()
     runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
-    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
-        raise HTTPException(status_code=409, detail="indicator consistency check is disabled for executor")
+    if (
+        runtime_identity is not None
+        and getattr(runtime_identity, "instance_role", None) == "executor"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="indicator consistency check is disabled for executor",
+        )
     _execute_health_call(
         "consistency check trigger",
         get_indicator_manager().trigger_consistency_check,
         fallback=None,
     )
     return ApiResponse.success_response(
-        RuntimeActionView(status="success", message="Consistency check triggered").model_dump()
+        RuntimeActionView(
+            status="success", message="Consistency check triggered"
+        ).model_dump()
     )
 
 
@@ -402,7 +480,10 @@ async def trigger_consistency_check() -> ApiResponse[RuntimeActionView]:
 async def reset_failed_events() -> ApiResponse[FailedEventsResetView]:
     runtime_read_model = get_runtime_read_model()
     runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
-    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+    if (
+        runtime_identity is not None
+        and getattr(runtime_identity, "instance_role", None) == "executor"
+    ):
         return ApiResponse.success_response(
             FailedEventsResetView(
                 status="disabled",
@@ -429,7 +510,10 @@ async def reset_failed_events() -> ApiResponse[FailedEventsResetView]:
 async def cleanup_old_events(days_to_keep: int = 7) -> ApiResponse[RuntimeActionView]:
     runtime_read_model = get_runtime_read_model()
     runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
-    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+    if (
+        runtime_identity is not None
+        and getattr(runtime_identity, "instance_role", None) == "executor"
+    ):
         return ApiResponse.success_response(
             RuntimeActionView(
                 status="disabled",
@@ -450,17 +534,26 @@ async def cleanup_old_events(days_to_keep: int = 7) -> ApiResponse[RuntimeAction
 
 
 @router.post("/alerts/resolve/{component}/{metric_name}", summary="手动解决告警")
-async def resolve_alert(component: str, metric_name: str, resolved_by: str = "api") -> ApiResponse[AlertResolutionView]:
+async def resolve_alert(
+    component: str, metric_name: str, resolved_by: str = "api"
+) -> ApiResponse[AlertResolutionView]:
     success = _execute_health_call(
         "alert resolve",
-        lambda: get_health_monitor_instance().resolve_alert(component, metric_name, resolved_by),
+        lambda: get_health_monitor_instance().resolve_alert(
+            component, metric_name, resolved_by
+        ),
         fallback=False,
         allow_fallback=True,
     )
     if success:
-        view = AlertResolutionView(status="success", message=f"Alert resolved for {component}.{metric_name}")
+        view = AlertResolutionView(
+            status="success", message=f"Alert resolved for {component}.{metric_name}"
+        )
     else:
-        view = AlertResolutionView(status="not_found", message=f"No active alert found for {component}.{metric_name}")
+        view = AlertResolutionView(
+            status="not_found",
+            message=f"No active alert found for {component}.{metric_name}",
+        )
     return ApiResponse.success_response(view.model_dump())
 
 
@@ -504,5 +597,9 @@ async def get_monitored_components() -> ApiResponse[MonitoredComponentsView]:
 @router.get("/trading/trigger-methods", summary="获取交易触发入口")
 async def get_trading_trigger_methods() -> ApiResponse[TradingTriggerMethodsView]:
     return ApiResponse.success_response(
-        TradingTriggerMethodsView(status="success", count=len(TRADE_TRIGGER_METHODS), methods=TRADE_TRIGGER_METHODS).model_dump()
+        TradingTriggerMethodsView(
+            status="success",
+            count=len(TRADE_TRIGGER_METHODS),
+            methods=TRADE_TRIGGER_METHODS,
+        ).model_dump()
     )

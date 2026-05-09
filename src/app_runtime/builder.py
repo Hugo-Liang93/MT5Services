@@ -172,7 +172,7 @@ def build_app_container(
     )
 
     # Phase 5: runtime read-models
-    build_runtime_read_models(container)
+    build_runtime_read_models(container, risk_config=risk_config)
 
     # Phase 5.5: notifications (subscribes to pipeline bus + health monitor
     # that are now wired up)

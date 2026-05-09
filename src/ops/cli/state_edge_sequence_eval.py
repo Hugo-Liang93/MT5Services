@@ -42,7 +42,9 @@ def _parse_threshold_grid(raw: str) -> list[float]:
 
 
 def _parse_state_edge_directions(raw: str) -> list[str]:
-    values = [part.strip().lower() for part in str(raw or "").split(",") if part.strip()]
+    values = [
+        part.strip().lower() for part in str(raw or "").split(",") if part.strip()
+    ]
     return values or ["buy", "sell"]
 
 

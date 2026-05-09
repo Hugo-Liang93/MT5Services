@@ -5,13 +5,13 @@ from src.config import (
     get_ingest_config,
     get_interval_config,
     get_limit_config,
-    get_tick_feature_config,
     get_runtime_ingest_settings,
     get_runtime_market_settings,
     get_shared_default_symbol,
     get_shared_symbols,
     get_shared_timeframes,
     get_system_config,
+    get_tick_feature_config,
     get_trading_config,
     validate_config_consistency,
 )
@@ -72,7 +72,10 @@ def test_runtime_views_align_with_centralized_config():
 
     assert ingest_settings.ingest_symbols == ["XAUUSD"]
     assert ingest_settings.ingest_poll_interval == 0.5
-    assert "M5" in ingest_settings.ingest_ohlc_timeframes or "H1" in ingest_settings.ingest_ohlc_timeframes
+    assert (
+        "M5" in ingest_settings.ingest_ohlc_timeframes
+        or "H1" in ingest_settings.ingest_ohlc_timeframes
+    )
     assert ingest_settings.ingest_ohlc_intervals["M1"] <= 5.0
     assert ingest_settings.ingest_ohlc_intervals["M5"] <= 10.0
     assert ingest_settings.ingest_ohlc_intervals["D1"] >= 60.0

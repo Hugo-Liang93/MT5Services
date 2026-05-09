@@ -13,13 +13,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
-from src.readmodels.freshness import (
-    age_seconds as _age_seconds,
-    build_freshness_block,
-    freshness_state as _freshness_state_shared,
-    iso_or_none as _iso,
-)
-
+from src.readmodels.freshness import age_seconds as _age_seconds
+from src.readmodels.freshness import build_freshness_block
+from src.readmodels.freshness import freshness_state as _freshness_state_shared
+from src.readmodels.freshness import iso_or_none as _iso
 
 INTEL_MAX_QUEUE_SIZE: int = 50
 INTEL_STALE_AFTER_SECONDS: int = 60
@@ -69,9 +66,7 @@ class IntelReadModel:
         total = int(page_result.get("total") or 0)
 
         strategy_to_accounts = self._strategy_to_accounts_index()
-        entries = [
-            self._build_entry(row, strategy_to_accounts) for row in rows
-        ]
+        entries = [self._build_entry(row, strategy_to_accounts) for row in rows]
         last_generated = rows[0].get("generated_at") if rows else None
         freshness = build_freshness_block(
             observed_at=observed_at,
@@ -139,7 +134,9 @@ class IntelReadModel:
             "confidence": row.get("confidence"),
             "account_candidates": account_candidates,
             "recommended_action": (
-                "execute_from_signal" if account_candidates else "review_strategy_deployment"
+                "execute_from_signal"
+                if account_candidates
+                else "review_strategy_deployment"
             ),
             "generated_at": generated_at_iso,
             "freshness": {

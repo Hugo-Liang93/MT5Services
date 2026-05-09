@@ -56,7 +56,10 @@ class RecoveryPreTradeGuard:
             return RecoveryPreTradeDecision(False, "step_index_mismatch", details)
         if intent.step_index > policy.max_steps:
             return RecoveryPreTradeDecision(False, "max_steps_exceeded", details)
-        if policy.max_next_volume is not None and intent.volume > policy.max_next_volume:
+        if (
+            policy.max_next_volume is not None
+            and intent.volume > policy.max_next_volume
+        ):
             return RecoveryPreTradeDecision(False, "max_next_volume_exceeded", details)
         if details["projected_total_volume"] > policy.max_total_volume:
             return RecoveryPreTradeDecision(False, "max_total_volume_exceeded", details)

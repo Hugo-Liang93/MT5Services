@@ -7,12 +7,12 @@ uses bid/ask side prices for execution-cost checks.
 
 from .data_loader import TickReplayDataLoader
 from .execution import BidAskTickExecutionModel, TickReplayFill, TickReplayOrder
+from .recovery import RecoveryReplayFill, RecoveryReplayReport, TickRecoveryReplayRunner
 from .recovery_canary import (
     RecoveryCanaryGate,
     RecoveryCanaryGateDecision,
     RecoveryCanaryGatePolicy,
 )
-from .recovery import RecoveryReplayFill, RecoveryReplayReport, TickRecoveryReplayRunner
 from .runner import TickReplayReport, TickReplayRunner
 
 __all__ = [

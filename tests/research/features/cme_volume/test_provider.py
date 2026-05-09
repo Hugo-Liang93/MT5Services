@@ -7,6 +7,7 @@ Output features (4 fields):
   cme_volume_ratio       (WHY)   — today's volume / yesterday's volume
   cme_volume_pct_rank    (WHEN)  — today's volume percentile rank in trailing 60d
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
@@ -71,6 +72,7 @@ def test_compute_returns_none_when_volume_lookup_missing() -> None:
 def test_zscore_increases_when_today_volume_spikes() -> None:
     bars = _bar_times_h1(days=22)
     matrix = _FakeMatrix(bars)
+
     # 20 days of 100k, last 2 days 500k spike
     def lookup(d: date) -> float:
         idx = (d - bars[0].date()).days

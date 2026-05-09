@@ -73,7 +73,11 @@ def generate_report(monitor: Any, hours: int = 24) -> Dict[str, Any]:
         key = (component, metric_name)
         bucket = grouped.get(key)
         if bucket is None:
-            bucket = {"values": [], "latest": float(metric_value), "last_updated": timestamp}
+            bucket = {
+                "values": [],
+                "latest": float(metric_value),
+                "last_updated": timestamp,
+            }
             grouped[key] = bucket
         bucket["values"].append(float(metric_value))
         bucket["latest"] = float(metric_value)

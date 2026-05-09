@@ -63,7 +63,9 @@ def build_blocked_trade_precheck_result(
         "intent": {},
         "request_id": request_id,
         "executable": False,
-        "suggested_adjustment": dict(suggested_adjustment) if suggested_adjustment else None,
+        "suggested_adjustment": (
+            dict(suggested_adjustment) if suggested_adjustment else None
+        ),
     }
 
 
@@ -102,8 +104,12 @@ def build_trade_precheck_result(
     warnings: Any = None,
     estimated_margin: float | None = None,
 ) -> dict[str, Any]:
-    merged_checks = _normalize_checks(checks) + _normalize_checks(assessment.get("checks"))
-    merged_warnings = _normalize_warnings(warnings) + _normalize_warnings(assessment.get("warnings"))
+    merged_checks = _normalize_checks(checks) + _normalize_checks(
+        assessment.get("checks")
+    )
+    merged_warnings = _normalize_warnings(warnings) + _normalize_warnings(
+        assessment.get("warnings")
+    )
     if estimated_margin is None:
         merged_warnings = [*merged_warnings, "Margin estimate unavailable"]
 
@@ -119,7 +125,9 @@ def build_trade_precheck_result(
         "active_windows": list(assessment.get("active_windows") or []),
         "upcoming_windows": list(assessment.get("upcoming_windows") or []),
         "warnings": merged_warnings,
-        "calendar_health_mode": str(assessment.get("calendar_health_mode") or "warn_only"),
+        "calendar_health_mode": str(
+            assessment.get("calendar_health_mode") or "warn_only"
+        ),
         "calendar_health": _normalize_mapping(assessment.get("calendar_health")),
         "checks": merged_checks,
         "estimated_margin": estimated_margin,

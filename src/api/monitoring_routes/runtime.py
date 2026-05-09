@@ -66,8 +66,17 @@ def _execute_monitored_call(
         logger.warning("%s unavailable: %s", label, exc)
         if allow_fallback:
             return fallback
-        raise HTTPException(status_code=404, detail=f"{label} not found: {exc}") from exc
-    except (AssertionError, AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=404, detail=f"{label} not found: {exc}"
+        ) from exc
+    except (
+        AssertionError,
+        AttributeError,
+        KeyError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         logger.warning("%s failed with expected error: %s", label, exc)
         if allow_fallback:
             return fallback
@@ -95,7 +104,11 @@ def _pending_entries_effective_state(runtime_views: RuntimeReadModel) -> dict[st
     return summary if isinstance(summary, dict) else {}
 
 
-@router.get("/config/effective", response_model=ApiResponse[EffectiveRuntimeConfigView], summary="获取当前有效运行配置")
+@router.get(
+    "/config/effective",
+    response_model=ApiResponse[EffectiveRuntimeConfigView],
+    summary="获取当前有效运行配置",
+)
 async def get_effective_runtime_config() -> ApiResponse[EffectiveRuntimeConfigView]:
     indicator_manager = _execute_monitored_call(
         "indicator manager",
@@ -115,7 +128,9 @@ async def get_effective_runtime_config() -> ApiResponse[EffectiveRuntimeConfigVi
         "indicator_reload_interval": indicator_manager.config.reload_interval,
         "indicator_poll_interval": indicator_manager.config.pipeline.poll_interval,
         "indicator_cache_maxsize": indicator_manager.config.pipeline.cache_maxsize,
-        "indicator_cache_strategy": _enum_or_raw(indicator_manager.config.pipeline.cache_strategy),
+        "indicator_cache_strategy": _enum_or_raw(
+            indicator_manager.config.pipeline.cache_strategy
+        ),
     }
     return ApiResponse.success_response(EffectiveRuntimeConfigView(**snapshot))
 
@@ -136,7 +151,9 @@ async def get_economic_calendar_monitoring() -> ApiResponse[Dict[str, Any]]:
         {
             "service": service.stats(),
             "metrics": {
-                "staleness": health_monitor.get_recent_metrics("economic_calendar", "economic_calendar_staleness", 50),
+                "staleness": health_monitor.get_recent_metrics(
+                    "economic_calendar", "economic_calendar_staleness", 50
+                ),
                 "provider_failures": health_monitor.get_recent_metrics(
                     "economic_calendar",
                     "economic_provider_failures",
@@ -162,13 +179,17 @@ async def get_trading_monitoring(hours: int = 24) -> ApiResponse[Dict[str, Any]]
 async def get_startup_monitoring() -> ApiResponse[Dict[str, Any]]:
     status = get_startup_status()
     ingestor = _execute_monitored_call("ingestor", get_ingestor, fallback=None)
-    indicator_manager = _execute_monitored_call("indicator manager", get_indicator_manager, fallback=None)
+    indicator_manager = _execute_monitored_call(
+        "indicator manager", get_indicator_manager, fallback=None
+    )
     economic_calendar_service = _execute_monitored_call(
         "economic calendar service",
         get_economic_calendar_service,
         fallback=None,
     )
-    monitoring_manager = _execute_monitored_call("monitoring manager", get_monitoring_manager_instance, fallback=None)
+    monitoring_manager = _execute_monitored_call(
+        "monitoring manager", get_monitoring_manager_instance, fallback=None
+    )
 
     queue_stats = _execute_monitored_call(
         "ingestor queue stats",
@@ -191,9 +212,17 @@ async def get_startup_monitoring() -> ApiResponse[Dict[str, Any]]:
     status["runtime"] = {
         "monitoring_registered": True,
         "components": {
-            "data_ingestion": bool(queue_stats.get("threads", {}).get("ingest_alive", False)),
-            "indicator_calculation": bool(performance_stats.get("event_loop_running", False)),
-            "economic_calendar": economic_calendar_service.stats().get("running") if economic_calendar_service else False,
+            "data_ingestion": bool(
+                queue_stats.get("threads", {}).get("ingest_alive", False)
+            ),
+            "indicator_calculation": bool(
+                performance_stats.get("event_loop_running", False)
+            ),
+            "economic_calendar": (
+                economic_calendar_service.stats().get("running")
+                if economic_calendar_service
+                else False
+            ),
             "monitoring": bool(monitoring_manager),
         },
     }
@@ -201,18 +230,26 @@ async def get_startup_monitoring() -> ApiResponse[Dict[str, Any]]:
 
 
 @router.post("/config/reload", summary="手动触发配置热加载")
-async def trigger_config_reload(filename: str = "signal.ini") -> ApiResponse[ConfigReloadView]:
+async def trigger_config_reload(
+    filename: str = "signal.ini",
+) -> ApiResponse[ConfigReloadView]:
     _execute_monitored_call("config reload", reload_configs, fallback=None)
-    manager = _execute_monitored_call("file config manager", get_file_config_manager, fallback=None)
+    manager = _execute_monitored_call(
+        "file config manager", get_file_config_manager, fallback=None
+    )
     reloaded = _execute_monitored_call(
         f"file config reload {filename}",
         lambda: manager.reload(filename),
         fallback=False,
     )
     if not reloaded:
-        raise HTTPException(status_code=404, detail=f"config file not found: {filename}")
+        raise HTTPException(
+            status_code=404, detail=f"config file not found: {filename}"
+        )
     return ApiResponse.success_response(
-        ConfigReloadView(success=True, reloaded=filename, cache_cleared=True).model_dump()
+        ConfigReloadView(
+            success=True, reloaded=filename, cache_cleared=True
+        ).model_dump()
     )
 
 
@@ -270,7 +307,11 @@ async def get_pending_entries() -> ApiResponse[Dict[str, Any]]:
     )
 
 
-@router.post("/pending-entries/{signal_id}/cancel", response_model=ApiResponse[PendingEntryCancellationView], summary="取消指定挂起入场")
+@router.post(
+    "/pending-entries/{signal_id}/cancel",
+    response_model=ApiResponse[PendingEntryCancellationView],
+    summary="取消指定挂起入场",
+)
 async def cancel_pending_entry(
     signal_id: str,
     request: PendingEntryCancelRequest,
@@ -358,7 +399,11 @@ async def cancel_pending_entry(
     )
 
 
-@router.post("/pending-entries/cancel-by-symbol", response_model=ApiResponse[PendingEntriesBySymbolCancellationView], summary="按品种取消全部挂起入场")
+@router.post(
+    "/pending-entries/cancel-by-symbol",
+    response_model=ApiResponse[PendingEntriesBySymbolCancellationView],
+    summary="按品种取消全部挂起入场",
+)
 async def cancel_pending_entries_by_symbol(
     request: PendingEntriesBySymbolCancelRequest,
     pending_entry_manager=Depends(get_pending_entry_manager),

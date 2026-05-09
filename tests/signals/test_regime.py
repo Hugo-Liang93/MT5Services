@@ -1,4 +1,5 @@
 """tests/signals/test_regime.py — MarketRegimeDetector 单元测试。"""
+
 from __future__ import annotations
 
 import pytest
@@ -10,6 +11,7 @@ from src.signals.evaluation.regime import (
 )
 
 # ── 测试数据工厂 ─────────────────────────────────────────────────────────────
+
 
 def _indicators(
     *,
@@ -43,6 +45,7 @@ def _indicators(
 
 # ── TRENDING ─────────────────────────────────────────────────────────────────
 
+
 class TestTrendingRegime:
     def test_adx_above_23_is_trending(self):
         d = MarketRegimeDetector()
@@ -67,6 +70,7 @@ class TestTrendingRegime:
 
 # ── RANGING ──────────────────────────────────────────────────────────────────
 
+
 class TestRangingRegime:
     def test_adx_below_18_is_ranging(self):
         d = MarketRegimeDetector()
@@ -86,14 +90,18 @@ class TestRangingRegime:
 
 # ── BREAKOUT ─────────────────────────────────────────────────────────────────
 
+
 class TestBreakoutRegime:
     def test_kc_bb_squeeze_low_adx(self):
         """BB 完全在 KC 内 + ADX 低 → RANGING（盘整蓄力）。"""
         d = MarketRegimeDetector()
         ind = _indicators(
             adx=15.0,
-            bb_upper=2005.0, bb_lower=1995.0, bb_mid=2000.0,
-            kc_upper=2010.0, kc_lower=1990.0,
+            bb_upper=2005.0,
+            bb_lower=1995.0,
+            bb_mid=2000.0,
+            kc_upper=2010.0,
+            kc_lower=1990.0,
         )
         assert d.detect(ind) == RegimeType.RANGING
 
@@ -102,8 +110,11 @@ class TestBreakoutRegime:
         d = MarketRegimeDetector()
         ind = _indicators(
             adx=19.0,
-            bb_upper=2005.0, bb_lower=1995.0, bb_mid=2000.0,
-            kc_upper=2010.0, kc_lower=1990.0,
+            bb_upper=2005.0,
+            bb_lower=1995.0,
+            bb_mid=2000.0,
+            kc_upper=2010.0,
+            kc_lower=1990.0,
         )
         assert d.detect(ind) == RegimeType.BREAKOUT
 
@@ -112,8 +123,11 @@ class TestBreakoutRegime:
         d = MarketRegimeDetector()
         ind = _indicators(
             adx=28.0,
-            bb_upper=2005.0, bb_lower=1995.0, bb_mid=2000.0,
-            kc_upper=2010.0, kc_lower=1990.0,
+            bb_upper=2005.0,
+            bb_lower=1995.0,
+            bb_mid=2000.0,
+            kc_upper=2010.0,
+            kc_lower=1990.0,
         )
         assert d.detect(ind) == RegimeType.BREAKOUT
 
@@ -140,14 +154,18 @@ class TestBreakoutRegime:
         d = MarketRegimeDetector()
         ind = _indicators(
             adx=15.0,
-            bb_upper=2015.0, bb_lower=1985.0, bb_mid=2000.0,
-            kc_upper=2010.0, kc_lower=1990.0,
+            bb_upper=2015.0,
+            bb_lower=1985.0,
+            bb_mid=2000.0,
+            kc_upper=2010.0,
+            kc_lower=1990.0,
         )
         # ADX<18 且 BB 宽度 = 30/2000 = 1.5% > 0.8% → RANGING
         assert d.detect(ind) == RegimeType.RANGING
 
 
 # ── UNCERTAIN ────────────────────────────────────────────────────────────────
+
 
 class TestUncertainRegime:
     def test_no_indicators_is_uncertain(self):
@@ -172,6 +190,7 @@ class TestUncertainRegime:
 
 # ── detect_with_detail ───────────────────────────────────────────────────────
 
+
 class TestDetectWithDetail:
     def test_returns_regime_field(self):
         d = MarketRegimeDetector()
@@ -186,8 +205,11 @@ class TestDetectWithDetail:
     def test_squeeze_flag(self):
         d = MarketRegimeDetector()
         ind = _indicators(
-            bb_upper=2005.0, bb_lower=1995.0, bb_mid=2000.0,
-            kc_upper=2010.0, kc_lower=1990.0,
+            bb_upper=2005.0,
+            bb_lower=1995.0,
+            bb_mid=2000.0,
+            kc_upper=2010.0,
+            kc_lower=1990.0,
         )
         result = d.detect_with_detail(ind)
         assert result["is_kc_bb_squeeze"] is True
@@ -206,7 +228,9 @@ class TestDetectWithDetail:
         assert result["bb_width_pct"] == pytest.approx(0.02)
 
     def test_thresholds_in_output(self):
-        d = MarketRegimeDetector(adx_trending_threshold=28.0, adx_ranging_threshold=18.0)
+        d = MarketRegimeDetector(
+            adx_trending_threshold=28.0, adx_ranging_threshold=18.0
+        )
         result = d.detect_with_detail({})
         assert result["adx_trending_threshold"] == 28.0
         assert result["adx_ranging_threshold"] == 18.0
@@ -301,6 +325,7 @@ class TestSoftRegime:
 
 
 # ── 边界值 ───────────────────────────────────────────────────────────────────
+
 
 class TestEdgeCases:
     def test_none_adx_value_in_dict(self):

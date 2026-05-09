@@ -3,6 +3,7 @@
 Pulls daily OHLCV via any registered ExternalDataSource, writes to
 daily_external_ohlc. Per-symbol failures don't abort the run.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -11,10 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.research.external import DailyBar, register_source
-from src.research.external.backfill import (
-    backfill_symbols,
-    parse_args,
-)
+from src.research.external.backfill import backfill_symbols, parse_args
 
 
 def test_parse_args_requires_source_and_symbols() -> None:
@@ -29,9 +27,12 @@ def test_parse_args_requires_source_and_symbols() -> None:
 def test_parse_args_supports_multi_symbols_csv() -> None:
     args = parse_args(
         [
-            "--environment", "live",
-            "--source", "yfinance",
-            "--symbols", "GC=F,DX-Y.NYB,^TNX,^GSPC",
+            "--environment",
+            "live",
+            "--source",
+            "yfinance",
+            "--symbols",
+            "GC=F,DX-Y.NYB,^TNX,^GSPC",
         ]
     )
     assert args.symbols == ["GC=F", "DX-Y.NYB", "^TNX", "^GSPC"]

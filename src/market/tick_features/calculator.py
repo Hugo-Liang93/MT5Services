@@ -57,7 +57,11 @@ class TickFeatureCalculator:
             tick for tick in ordered if int(tick.time_msc or 0) >= window_start_msc
         ]
         latest = window_ticks[-1]
-        prices = [price for price in (tick.price for tick in window_ticks) if price is not None]
+        prices = [
+            price
+            for price in (tick.price for tick in window_ticks)
+            if price is not None
+        ]
         first_price = prices[0] if prices else None
         latest_price = prices[-1] if prices else None
         bid = latest.bid
@@ -132,7 +136,9 @@ class TickFeatureCalculator:
             10,
         )
 
-    def _direction_pressure(self, ticks: list[Tick]) -> tuple[Optional[float], Optional[float]]:
+    def _direction_pressure(
+        self, ticks: list[Tick]
+    ) -> tuple[Optional[float], Optional[float]]:
         previous: Optional[float] = None
         buys = 0
         sells = 0

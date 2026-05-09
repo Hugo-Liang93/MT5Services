@@ -69,7 +69,9 @@ def _snapshot_capability_reconciliation(runtime: SignalRuntime) -> dict[str, Any
         "reconciled": bool(result.get("reconciled", False)),
         "module_snapshot": list(result.get("module_snapshot", []) or []),
         "runtime_snapshot": list(result.get("runtime_snapshot", []) or []),
-        "module_runtime_contract": list(result.get("module_runtime_contract", []) or []),
+        "module_runtime_contract": list(
+            result.get("module_runtime_contract", []) or []
+        ),
     }
 
 
@@ -138,7 +140,11 @@ def _build_strategy_capability_execution_plan(
             if deployment is not None and not deployment.allows_runtime_evaluation():
                 reason = "deployment_candidate"
             allowed = strategy_timeframes_policy.get(strategy, ())
-            if reason == "prefilter_excluded" and allowed and row["timeframe"] not in allowed:
+            if (
+                reason == "prefilter_excluded"
+                and allowed
+                and row["timeframe"] not in allowed
+            ):
                 reason = "strategy_timeframes_filtered"
         filtered_reason_counts[reason] = filtered_reason_counts.get(reason, 0) + 1
         filtered_targets.append(
@@ -171,9 +177,7 @@ def get_regime_stability(
 def get_regime_stability_map(runtime: SignalRuntime) -> dict[str, dict[str, Any]]:
     with runtime._regime_trackers_lock:
         snapshot = list(runtime._regime_trackers.items())
-    return {
-        f"{sym}/{tf}": tracker.describe() for (sym, tf), tracker in snapshot
-    }
+    return {f"{sym}/{tf}": tracker.describe() for (sym, tf), tracker in snapshot}
 
 
 def count_active_states(runtime: SignalRuntime) -> dict:
@@ -226,13 +230,10 @@ def _compute_drop_rates(runtime: SignalRuntime) -> dict[str, float]:
     total_arrived = max(1, int(runtime._processed_events + dropped_events))
     return {
         "drop_vs_arrived_pct": round(
-            dropped_events / total_arrived
-            * 100,
+            dropped_events / total_arrived * 100,
             2,
         ),
-        "intrabar_stale_vs_processed_pct": round(
-            stale_intrabar / processed * 100, 2
-        ),
+        "intrabar_stale_vs_processed_pct": round(stale_intrabar / processed * 100, 2),
         "intrabar_queue_drop_vs_arrived_pct": round(
             dropped_intrabar / total_arrived * 100, 2
         ),
@@ -291,7 +292,9 @@ def _snapshot_intrabar_indicator_slos(runtime: SignalRuntime) -> dict[str, Any]:
         },
         "sample_counts": {
             "queue_age_sample_count": int(queue_age_sample_count or 0),
-            "processing_latency_sample_count": int(processing_latency_sample_count or 0),
+            "processing_latency_sample_count": int(
+                processing_latency_sample_count or 0
+            ),
         },
         "latest": {
             "queue_age_ms": float(queue_age_ms_latest or 0.0),
@@ -317,15 +320,15 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
         name: deployment.to_dict()
         for name, deployment in runtime.policy.strategy_deployments.items()
     }
-    scheduled_target_count = sum(len(strategies) for strategies in runtime._target_index.values())
+    scheduled_target_count = sum(
+        len(strategies) for strategies in runtime._target_index.values()
+    )
 
     return {
         "running": bool(runtime._thread and runtime._thread.is_alive()),
         "target_count": len(runtime._targets),
         "scheduled_target_count": scheduled_target_count,
-        "filtered_target_count": max(
-            0, len(runtime._targets) - scheduled_target_count
-        ),
+        "filtered_target_count": max(0, len(runtime._targets) - scheduled_target_count),
         "required_market_data_lanes": list(runtime.required_market_data_lanes()),
         "trigger_mode": {
             "confirmed_snapshot": runtime.enable_confirmed_snapshot,
@@ -347,7 +350,9 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
             runtime,
             capability_contract,
         ),
-        "strategy_capability_reconciliation": _snapshot_capability_reconciliation(runtime),
+        "strategy_capability_reconciliation": _snapshot_capability_reconciliation(
+            runtime
+        ),
         "intrabar_runtime_slos": _snapshot_intrabar_indicator_slos(runtime),
         "run_count": runtime._run_count,
         "processed_events": runtime._processed_events,
@@ -388,16 +393,16 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
         "htf_stale_warnings": runtime._htf_stale_counter[0],
         "warmup_skipped": runtime._warmup_skipped,
         "warmup_ready": (
-            runtime._warmup_ready_fn()
-            if runtime._warmup_ready_fn is not None
-            else True
+            runtime._warmup_ready_fn() if runtime._warmup_ready_fn is not None else True
         ),
         "warmup_realtime_symbols": len(runtime._first_realtime_bar_seen),
         **count_active_states(runtime),
         "regime_map": get_regime_stability_map(runtime),
         "per_tf_eval_stats": dict(runtime._per_tf_eval_stats),
         "filter_realtime_status": (
-            runtime.filter_chain.filter_status() if runtime.filter_chain is not None else {}
+            runtime.filter_chain.filter_status()
+            if runtime.filter_chain is not None
+            else {}
         ),
         "intrabar_trade_coordinator": (
             runtime._intrabar_trade_coordinator.status()

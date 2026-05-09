@@ -148,7 +148,12 @@ class TestRuleMining:
         rules = mine_rules(
             matrix,
             horizons=[5],
-            config=RuleMiningConfig(max_depth=3, min_samples_leaf=10, min_hit_rate=0.52, min_test_hit_rate=0.45),
+            config=RuleMiningConfig(
+                max_depth=3,
+                min_samples_leaf=10,
+                min_hit_rate=0.52,
+                min_test_hit_rate=0.45,
+            ),
             overfitting_config=OverfittingConfig(min_samples=10),
         )
 
@@ -167,7 +172,12 @@ class TestRuleMining:
         rules = mine_rules(
             matrix,
             horizons=[5],
-            config=RuleMiningConfig(max_depth=2, min_samples_leaf=10, min_hit_rate=0.52, min_test_hit_rate=0.45),
+            config=RuleMiningConfig(
+                max_depth=2,
+                min_samples_leaf=10,
+                min_hit_rate=0.52,
+                min_test_hit_rate=0.45,
+            ),
             overfitting_config=OverfittingConfig(min_samples=10),
         )
 
@@ -195,7 +205,12 @@ class TestRuleMining:
         rules = mine_rules(
             matrix,
             horizons=[5],
-            config=RuleMiningConfig(max_depth=2, min_samples_leaf=10, min_hit_rate=0.52, min_test_hit_rate=0.45),
+            config=RuleMiningConfig(
+                max_depth=2,
+                min_samples_leaf=10,
+                min_hit_rate=0.52,
+                min_test_hit_rate=0.45,
+            ),
             overfitting_config=OverfittingConfig(min_samples=10),
         )
 
@@ -217,8 +232,10 @@ class TestRuleMining:
             matrix,
             horizons=[5],
             config=RuleMiningConfig(
-                max_depth=3, min_samples_leaf=5,
-                min_hit_rate=0.50, min_test_hit_rate=0.40,
+                max_depth=3,
+                min_samples_leaf=5,
+                min_hit_rate=0.50,
+                min_test_hit_rate=0.40,
                 max_rules=3,
             ),
             overfitting_config=OverfittingConfig(min_samples=5),

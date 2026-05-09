@@ -49,7 +49,17 @@ class _Service:
             }
         ]
 
-    def evaluate(self, *, symbol, timeframe, strategy, indicators, metadata, persist=False, htf_indicators=None):
+    def evaluate(
+        self,
+        *,
+        symbol,
+        timeframe,
+        strategy,
+        indicators,
+        metadata,
+        persist=False,
+        htf_indicators=None,
+    ):
         return SignalDecision(
             strategy=strategy,
             symbol=symbol,

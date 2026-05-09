@@ -6,6 +6,7 @@
     python -m src.ops.cli.exit_experiment M30
     python -m src.ops.cli.exit_experiment H1 --start 2025-12-30 --end 2026-03-30
 """
+
 from __future__ import annotations
 
 import argparse
@@ -13,7 +14,9 @@ import os
 import sys
 import warnings
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 warnings.filterwarnings("ignore")
 
 import logging
@@ -21,7 +24,6 @@ import logging
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timezone
-from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict
 
 from src.backtesting.component_factory import (
@@ -31,6 +33,7 @@ from src.backtesting.component_factory import (
 from src.backtesting.config import get_backtest_defaults
 from src.backtesting.engine import BacktestEngine
 from src.backtesting.models import BacktestConfig
+from src.utils.timezone import parse_iso_to_utc
 
 
 def _run(
@@ -44,7 +47,9 @@ def _run(
     tp_trail: float = 0.8,
 ) -> Dict[str, Any]:
     _OPTIMIZER_ONLY = {"search_mode", "max_combinations", "sort_metric"}
-    defaults = {k: v for k, v in get_backtest_defaults().items() if k not in _OPTIMIZER_ONLY}
+    defaults = {
+        k: v for k, v in get_backtest_defaults().items() if k not in _OPTIMIZER_ONLY
+    }
     signal_config = _load_signal_config_snapshot()
 
     strategy_sessions: dict = {}

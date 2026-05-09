@@ -13,7 +13,9 @@ def test_register_signal_hot_reload_returns_cleanup(monkeypatch) -> None:
         register_change_callback=lambda callback: callbacks.append(callback),
         unregister_change_callback=lambda callback: callbacks.remove(callback),
     )
-    monkeypatch.setattr("src.app_runtime.factories.signals.get_file_config_manager", lambda: manager)
+    monkeypatch.setattr(
+        "src.app_runtime.factories.signals.get_file_config_manager", lambda: manager
+    )
 
     runtime = SimpleNamespace(update_policy=lambda policy: None, filter_chain=None)
 

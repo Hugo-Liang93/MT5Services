@@ -110,7 +110,9 @@ class _PendingRuntimeFacade:
 
     def cancel_by_symbol(self, symbol: str, reason: str = "api") -> int:
         self.cancel_by_symbol_calls += 1
-        matched = [key for key, item in self.entries.items() if item["symbol"] == symbol]
+        matched = [
+            key for key, item in self.entries.items() if item["symbol"] == symbol
+        ]
         for key in matched:
             self.entries.pop(key, None)
         return len(matched)
@@ -168,7 +170,7 @@ def test_get_runtime_task_status_formats_database_rows(monkeypatch) -> None:
                         }
                     ]
                 )
-            )
+            ),
         ),
     )
 
@@ -273,21 +275,23 @@ def test_runtime_tasks_endpoint_returns_items_and_filters(monkeypatch) -> None:
         ],
     )
 
-    response = asyncio.run(get_runtime_tasks(component="startup", task_name="monitoring"))
+    response = asyncio.run(
+        get_runtime_tasks(component="startup", task_name="monitoring")
+    )
 
     assert response.success is True
     assert response.data["items"] == [
         {
-                "component": "startup",
-                "task_name": "monitoring",
-                "state": "ready",
-                "details": {"startup": True},
-                "instance_id": "exec-live-run-001",
-                "instance_role": None,
-                "account_key": None,
-                "account_alias": None,
-            }
-        ]
+            "component": "startup",
+            "task_name": "monitoring",
+            "state": "ready",
+            "details": {"startup": True},
+            "instance_id": "exec-live-run-001",
+            "instance_role": None,
+            "account_key": None,
+            "account_alias": None,
+        }
+    ]
     assert response.data["filters"] == {
         "component": "startup",
         "task_name": "monitoring",
@@ -298,7 +302,9 @@ def test_runtime_tasks_endpoint_returns_items_and_filters(monkeypatch) -> None:
     }
 
 
-def test_runtime_tasks_endpoint_explicit_scope_overrides_current_instance(monkeypatch) -> None:
+def test_runtime_tasks_endpoint_explicit_scope_overrides_current_instance(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "src.api.monitoring_routes.runtime.resolve_runtime_task_scope",
         lambda **kwargs: {
@@ -334,15 +340,15 @@ def test_runtime_tasks_endpoint_explicit_scope_overrides_current_instance(monkey
     assert response.success is True
     assert response.data["items"] == [
         {
-                "component": "economic_calendar",
-                "task_name": "release_watch",
-                "state": "ready",
-                "instance_id": "main-live-main-f2356b80e0ab",
-                "instance_role": "executor",
-                "account_key": "live:broker-live:1001",
-                "account_alias": "live_exec_a",
-            }
-        ]
+            "component": "economic_calendar",
+            "task_name": "release_watch",
+            "state": "ready",
+            "instance_id": "main-live-main-f2356b80e0ab",
+            "instance_role": "executor",
+            "account_key": "live:broker-live:1001",
+            "account_alias": "live_exec_a",
+        }
+    ]
     assert response.data["filters"]["instance_id"] is None
     assert response.data["filters"]["account_alias"] == "live_exec_a"
 
@@ -350,9 +356,16 @@ def test_runtime_tasks_endpoint_explicit_scope_overrides_current_instance(monkey
 def test_pending_entries_endpoint_uses_runtime_read_model(monkeypatch) -> None:
     class _RuntimeViews:
         def pending_entries_summary(self):
-            return {"status": "healthy", "active_count": 1, "entries": [{"signal_id": "sig_1"}]}
+            return {
+                "status": "healthy",
+                "active_count": 1,
+                "entries": [{"signal_id": "sig_1"}],
+            }
 
-    monkeypatch.setattr("src.api.monitoring_routes.runtime.get_runtime_read_model", lambda: _RuntimeViews())
+    monkeypatch.setattr(
+        "src.api.monitoring_routes.runtime.get_runtime_read_model",
+        lambda: _RuntimeViews(),
+    )
 
     response = asyncio.run(get_pending_entries())
 
@@ -361,7 +374,9 @@ def test_pending_entries_endpoint_uses_runtime_read_model(monkeypatch) -> None:
     assert response.data["entries"][0]["signal_id"] == "sig_1"
 
 
-def test_cancel_pending_entry_returns_action_result_and_replays_same_idempotency_key() -> None:
+def test_cancel_pending_entry_returns_action_result_and_replays_same_idempotency_key() -> (
+    None
+):
     runtime = _PendingRuntimeFacade()
     command_service = _ActionCommandService()
     request = PendingEntryCancelRequest(
@@ -401,7 +416,9 @@ def test_cancel_pending_entry_returns_action_result_and_replays_same_idempotency
     assert runtime.cancel_calls == 1
 
 
-def test_cancel_pending_entries_by_symbol_rejects_conflicting_idempotency_reuse() -> None:
+def test_cancel_pending_entries_by_symbol_rejects_conflicting_idempotency_reuse() -> (
+    None
+):
     runtime = _PendingRuntimeFacade()
     command_service = _ActionCommandService()
 

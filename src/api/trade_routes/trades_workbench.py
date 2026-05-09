@@ -36,7 +36,9 @@ def trades_workbench(
     timeframe: Optional[str] = Query(default=None),
     strategy: Optional[str] = Query(default=None),
     direction: Optional[str] = Query(default=None, pattern="^(buy|sell)$"),
-    won: Optional[bool] = Query(default=None, description="filter on trade_outcomes.won"),
+    won: Optional[bool] = Query(
+        default=None, description="filter on trade_outcomes.won"
+    ),
     from_time: Optional[datetime] = Query(default=None, alias="from"),
     to_time: Optional[datetime] = Query(default=None, alias="to"),
     page: int = Query(default=1, ge=1),

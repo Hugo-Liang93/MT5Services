@@ -2,6 +2,7 @@
 
 FeatureHub 单元测试 + 集成测试。
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, cast
@@ -14,7 +15,6 @@ from src.research.features.protocol import (
     FeatureRole,
     ProviderDataRequirement,
 )
-
 
 # ---------------------------------------------------------------------------
 # Mock DataMatrix helpers
@@ -56,12 +56,14 @@ class TestRegisterAndCompute:
 
     def test_register_and_compute(self) -> None:
         """mock provider 返回特征 → 验证注入到 matrix.indicator_series。"""
-        from src.research.features.hub import FeatureHub
         from src.research.core.config import ResearchConfig
+        from src.research.features.hub import FeatureHub
 
         n = 10
         vals: List[Optional[float]] = [1.0] * n
-        features: Dict[Tuple[str, str], List[Optional[float]]] = {("mock_ind", "val"): vals}
+        features: Dict[Tuple[str, str], List[Optional[float]]] = {
+            ("mock_ind", "val"): vals
+        }
         role_map = {"val": FeatureRole.WHY}
         provider = _make_mock_provider("mock_p", features, role_map)
 
@@ -111,7 +113,9 @@ class TestFeatureNamesByProvider:
             ("ind_a", "x"): [1.0] * n,
             ("ind_a", "y"): [2.0] * n,
         }
-        feat_b: Dict[Tuple[str, str], List[Optional[float]]] = {("ind_b", "z"): [3.0] * n}
+        feat_b: Dict[Tuple[str, str], List[Optional[float]]] = {
+            ("ind_b", "z"): [3.0] * n
+        }
 
         pa = _make_mock_provider("provider_a", feat_a, {})
         pb = _make_mock_provider("provider_b", feat_b, {})
@@ -262,8 +266,8 @@ class TestInitWithRealConfig:
 
     def test_enabled_providers_match_config(self) -> None:
         """load_research_config() → FeatureHub → 验证启用的 provider 与配置一致。"""
-        from src.research.features.hub import FeatureHub
         from src.research.core.config import load_research_config
+        from src.research.features.hub import FeatureHub
 
         config = load_research_config()
         hub = FeatureHub(config)
@@ -292,8 +296,8 @@ class TestInitWithRealConfig:
 
     def test_describe_returns_all_enabled(self) -> None:
         """describe() 覆盖所有已注册的 provider。"""
-        from src.research.features.hub import FeatureHub
         from src.research.core.config import load_research_config
+        from src.research.features.hub import FeatureHub
 
         config = load_research_config()
         hub = FeatureHub(config)
@@ -304,8 +308,8 @@ class TestInitWithRealConfig:
 
     def test_required_extra_data_is_list(self) -> None:
         """required_extra_data() 返回列表类型。"""
-        from src.research.features.hub import FeatureHub
         from src.research.core.config import load_research_config
+        from src.research.features.hub import FeatureHub
 
         config = load_research_config()
         hub = FeatureHub(config)
@@ -314,8 +318,8 @@ class TestInitWithRealConfig:
 
     def test_role_mapping_all_returns_dict(self) -> None:
         """role_mapping_all() 返回字典类型。"""
-        from src.research.features.hub import FeatureHub
         from src.research.core.config import load_research_config
+        from src.research.features.hub import FeatureHub
 
         config = load_research_config()
         hub = FeatureHub(config)

@@ -22,7 +22,11 @@ TRADE_FREQUENCY_RESERVATION_ID = "trade_frequency_reservation_id"
 from src.config import EconomicConfig, RiskConfig, get_economic_config, get_risk_config
 
 from .models import RiskAssessment, RiskCheckResult, TradeIntent
-from .profiles import RiskProfileResolutionError, RiskProfileResolver, RiskProfileSelection
+from .profiles import (
+    RiskProfileResolutionError,
+    RiskProfileResolver,
+    RiskProfileSelection,
+)
 from .rules import (
     AccountSnapshotRule,
     AccountStateProvider,
@@ -57,11 +61,9 @@ _RULE_NAMES_BY_TYPE: tuple[tuple[type, str], ...] = (
 
 
 class EconomicCalendarProvider(Protocol):
-    def is_stale(self) -> bool:
-        ...
+    def is_stale(self) -> bool: ...
 
-    def stats(self) -> Dict[str, Any]:
-        ...
+    def stats(self) -> Dict[str, Any]: ...
 
     def get_trade_guard(
         self,
@@ -71,8 +73,7 @@ class EconomicCalendarProvider(Protocol):
         lookahead_minutes: int = 180,
         lookback_minutes: int = 0,
         importance_min: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        ...
+    ) -> Dict[str, Any]: ...
 
 
 class PreTradeRiskBlockedError(RuntimeError):
@@ -103,7 +104,9 @@ def resolve_risk_failure_key(assessment: Dict[str, Any] | None) -> str | None:
 class PreTradeRiskService:
     def __init__(
         self,
-        economic_calendar_service: Optional["EconomicCalendarService | EconomicCalendarProvider"] = None,
+        economic_calendar_service: Optional[
+            "EconomicCalendarService | EconomicCalendarProvider"
+        ] = None,
         account_service: Optional[AccountStateProvider] = None,
         settings: Optional[EconomicConfig] = None,
         risk_settings: Optional[RiskConfig] = None,
@@ -156,8 +159,14 @@ class PreTradeRiskService:
         return mode if mode in {"off", "warn_only", "block"} else "warn_only"
 
     def _calendar_health_mode(self) -> str:
-        mode = str(self.settings.trade_guard_calendar_health_mode or "warn_only").strip().lower()
-        return mode if mode in {"fail_open", "warn_only", "fail_closed"} else "warn_only"
+        mode = (
+            str(self.settings.trade_guard_calendar_health_mode or "warn_only")
+            .strip()
+            .lower()
+        )
+        return (
+            mode if mode in {"fail_open", "warn_only", "fail_closed"} else "warn_only"
+        )
 
     def _calendar_health_assessment(self) -> Dict[str, Any]:
         for rule in self.rules:
@@ -178,7 +187,9 @@ class PreTradeRiskService:
                 if not checks:
                     return {
                         "stale": False,
-                        "provider_failure_threshold": max(0, int(self.settings.trade_guard_provider_failure_threshold)),
+                        "provider_failure_threshold": max(
+                            0, int(self.settings.trade_guard_provider_failure_threshold)
+                        ),
                         "degraded": False,
                         "failing_providers": [],
                         "provider_status": {},
@@ -186,7 +197,9 @@ class PreTradeRiskService:
                 details = checks[0].details
                 return {
                     "stale": bool(details.get("stale")),
-                    "provider_failure_threshold": details.get("provider_failure_threshold", 0),
+                    "provider_failure_threshold": details.get(
+                        "provider_failure_threshold", 0
+                    ),
                     "degraded": True,
                     "failing_providers": details.get("failing_providers", []),
                     "provider_status": details.get("provider_status", {}),
@@ -502,9 +515,21 @@ class PreTradeRiskService:
             base_assessment = economic_calendar_service.get_trade_guard(
                 symbol=intent_obj.symbol,
                 at_time=intent_obj.at_time,
-                lookahead_minutes=lookahead_minutes if lookahead_minutes is not None else self.settings.trade_guard_lookahead_minutes,
-                lookback_minutes=lookback_minutes if lookback_minutes is not None else self.settings.trade_guard_lookback_minutes,
-                importance_min=importance_min if importance_min is not None else self.settings.trade_guard_importance_min,
+                lookahead_minutes=(
+                    lookahead_minutes
+                    if lookahead_minutes is not None
+                    else self.settings.trade_guard_lookahead_minutes
+                ),
+                lookback_minutes=(
+                    lookback_minutes
+                    if lookback_minutes is not None
+                    else self.settings.trade_guard_lookback_minutes
+                ),
+                importance_min=(
+                    importance_min
+                    if importance_min is not None
+                    else self.settings.trade_guard_importance_min
+                ),
             )
         else:
             base_assessment = {
@@ -545,10 +570,20 @@ class PreTradeRiskService:
                         check.reason,
                     )
 
-        warnings = [check.reason for check in checks if check.verdict == "warn" and check.reason]
-        reasons = [check.reason for check in checks if check.verdict == "block" and check.reason]
-        verdict = "block" if any(check.verdict == "block" for check in checks) else (
-            "warn" if any(check.verdict == "warn" for check in checks) else "allow"
+        warnings = [
+            check.reason for check in checks if check.verdict == "warn" and check.reason
+        ]
+        reasons = [
+            check.reason
+            for check in checks
+            if check.verdict == "block" and check.reason
+        ]
+        verdict = (
+            "block"
+            if any(check.verdict == "block" for check in checks)
+            else (
+                "warn" if any(check.verdict == "warn" for check in checks) else "allow"
+            )
         )
         assessment_obj = RiskAssessment(
             verdict=verdict,

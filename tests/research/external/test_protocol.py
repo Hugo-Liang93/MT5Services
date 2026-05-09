@@ -4,6 +4,7 @@ Implementations: yfinance (Phase 1) → stooq / fred / polygon / databento (futu
 Registry pattern keeps `backfill.py` CLI source-agnostic; new sources need only
 register a factory.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -14,10 +15,10 @@ import pytest
 from src.research.external.protocol import (
     DailyBar,
     ExternalDataSource,
-    register_source,
+    UnknownSourceError,
     get_source,
     list_registered_sources,
-    UnknownSourceError,
+    register_source,
 )
 
 
@@ -35,8 +36,13 @@ def _isolate_registry() -> None:
 
 def test_daily_bar_is_frozen_dataclass() -> None:
     bar = DailyBar(
-        symbol="GC=F", date=date(2026, 4, 1),
-        open=2300.0, high=2310.0, low=2295.0, close=2305.0, volume=250000.0,
+        symbol="GC=F",
+        date=date(2026, 4, 1),
+        open=2300.0,
+        high=2310.0,
+        low=2295.0,
+        close=2305.0,
+        volume=250000.0,
     )
     with pytest.raises((AttributeError, TypeError)):
         bar.symbol = "X"  # type: ignore
@@ -45,8 +51,12 @@ def test_daily_bar_is_frozen_dataclass() -> None:
 def test_register_and_get_source_round_trip() -> None:
     class DummySource:
         name = "dummy_test_source"
-        def fetch_daily(self, symbol, *, start, end): return []
-        def supports_symbol(self, symbol): return True
+
+        def fetch_daily(self, symbol, *, start, end):
+            return []
+
+        def supports_symbol(self, symbol):
+            return True
 
     register_source("dummy_test_source", lambda: DummySource())
     src = get_source("dummy_test_source")
@@ -57,8 +67,12 @@ def test_register_and_get_source_round_trip() -> None:
 def test_register_source_rejects_non_callable_factory() -> None:
     class DummyInstance:
         name = "dummy"
-        def fetch_daily(self, symbol, *, start, end): return []
-        def supports_symbol(self, symbol): return True
+
+        def fetch_daily(self, symbol, *, start, end):
+            return []
+
+        def supports_symbol(self, symbol):
+            return True
 
     with pytest.raises(TypeError) as exc:
         register_source("oops", DummyInstance())  # type: ignore[arg-type]
@@ -75,8 +89,12 @@ def test_get_source_unknown_raises() -> None:
 def test_external_data_source_is_runtime_checkable() -> None:
     class GoodImpl:
         name = "good"
-        def fetch_daily(self, symbol, *, start, end): return []
-        def supports_symbol(self, symbol): return True
+
+        def fetch_daily(self, symbol, *, start, end):
+            return []
+
+        def supports_symbol(self, symbol):
+            return True
 
     class BadImpl:
         name = "bad"

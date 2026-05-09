@@ -34,12 +34,12 @@ from ..models import (
     SimulationMode,
     generate_run_id,
 )
+from .deployment_gate import BacktestDeploymentGate
 from .indicators import compute_indicators as _compute_indicators_helper
 from .indicators import detect_regime as _detect_regime_helper
 from .indicators import lookup_htf_at_time as _lookup_htf_at_time_helper
 from .indicators import precompute_all_indicators as _precompute_all_indicators_helper
 from .indicators import preload_htf_indicators as _preload_htf_indicators_helper
-from .deployment_gate import BacktestDeploymentGate
 from .portfolio import CostModel, PortfolioTracker
 
 
@@ -410,7 +410,9 @@ class BacktestEngine:
         }
 
         # Entry Meta 的 session 是特征上下文，不是策略过滤条件。
-        self._entry_meta_session_context_filter = _build_entry_meta_session_context_filter()
+        self._entry_meta_session_context_filter = (
+            _build_entry_meta_session_context_filter()
+        )
 
         # 用于在 run() 和 _evaluate_strategies() 中查询 bar 的 current_sessions
         self._session_filter: Optional[Any] = None

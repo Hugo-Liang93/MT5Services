@@ -1,3 +1,4 @@
+from .event_bus import PipelineEvent, PipelineEventBus
 from .events import (
     PIPELINE_ADMISSION_REPORT_APPENDED,
     PIPELINE_BAR_CLOSED,
@@ -9,8 +10,8 @@ from .events import (
     PIPELINE_EXECUTION_DECIDED,
     PIPELINE_EXECUTION_FAILED,
     PIPELINE_EXECUTION_SKIPPED,
-    PIPELINE_EXECUTION_SUCCEEDED,
     PIPELINE_EXECUTION_SUBMITTED,
+    PIPELINE_EXECUTION_SUCCEEDED,
     PIPELINE_INDICATOR_COMPUTED,
     PIPELINE_INTENT_CLAIMED,
     PIPELINE_INTENT_DEAD_LETTERED,
@@ -28,7 +29,6 @@ from .events import (
     pipeline_stage_name,
     pipeline_stage_presence,
 )
-from .event_bus import PipelineEvent, PipelineEventBus
 from .trace_recorder import PipelineTraceRecorder
 
 __all__ = [

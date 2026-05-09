@@ -1,4 +1,5 @@
 """Unit tests for StrategyPerformanceTracker."""
+
 from __future__ import annotations
 
 import pytest
@@ -11,6 +12,7 @@ from src.signals.evaluation.performance import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_tracker(
     *,
@@ -42,6 +44,7 @@ def _make_tracker(
 # ---------------------------------------------------------------------------
 # Basic functionality
 # ---------------------------------------------------------------------------
+
 
 class TestBasicRecordAndMultiplier:
     def test_no_data_returns_neutral(self):
@@ -95,6 +98,7 @@ class TestBasicRecordAndMultiplier:
 # Streak penalty
 # ---------------------------------------------------------------------------
 
+
 class TestStreakPenalty:
     def test_losing_streak_suppresses_further(self):
         tracker = _make_tracker(streak_threshold=2, category_fallback=1)
@@ -124,6 +128,7 @@ class TestStreakPenalty:
 # ---------------------------------------------------------------------------
 # Category fallback
 # ---------------------------------------------------------------------------
+
 
 class TestCategoryFallback:
     def test_category_fallback_when_insufficient_samples(self):
@@ -164,6 +169,7 @@ class TestCategoryFallback:
 # Session management
 # ---------------------------------------------------------------------------
 
+
 class TestSessionManagement:
     def test_reset_clears_stats(self):
         tracker = _make_tracker()
@@ -181,6 +187,7 @@ class TestSessionManagement:
 # ---------------------------------------------------------------------------
 # Statistics and reporting
 # ---------------------------------------------------------------------------
+
 
 class TestReporting:
     def test_describe_structure(self):
@@ -230,6 +237,7 @@ class TestReporting:
 # ---------------------------------------------------------------------------
 # Profit factor integration
 # ---------------------------------------------------------------------------
+
 
 class TestProfitFactor:
     def test_high_profit_factor_slight_boost(self):
@@ -310,16 +318,20 @@ class TestProfitFactor:
 # Thread safety (basic smoke test)
 # ---------------------------------------------------------------------------
 
+
 class TestThreadSafety:
     def test_concurrent_access(self):
         import threading
+
         tracker = _make_tracker()
         errors = []
 
         def writer():
             try:
                 for i in range(100):
-                    tracker.record_outcome("rsi_reversion", won=i % 3 != 0, pnl=float(i))
+                    tracker.record_outcome(
+                        "rsi_reversion", won=i % 3 != 0, pnl=float(i)
+                    )
             except Exception as e:
                 errors.append(e)
 

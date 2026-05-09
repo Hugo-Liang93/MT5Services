@@ -6,6 +6,7 @@ demo_validation 但漏绑（demo 不能下单评估）的策略。
 本 sentinel 在 signal.local.ini 缺失或 binding 全空时 skip——只在已配置
 binding 的本机/环境上强制对齐，避免 CI 永远失败。
 """
+
 from __future__ import annotations
 
 import configparser
@@ -30,9 +31,7 @@ def _load_merged_signal_config() -> tuple[configparser.ConfigParser, bool]:
     return parser, has_local
 
 
-def _strategies_with_status(
-    parser: configparser.ConfigParser, status: str
-) -> set[str]:
+def _strategies_with_status(parser: configparser.ConfigParser, status: str) -> set[str]:
     out: set[str] = set()
     for section in parser.sections():
         if not section.startswith("strategy_deployment."):
@@ -40,14 +39,12 @@ def _strategies_with_status(
         if not parser.has_option(section, "status"):
             continue
         if parser.get(section, "status").strip().lower() == status:
-            name = section[len("strategy_deployment."):]
+            name = section[len("strategy_deployment.") :]
             out.add(name)
     return out
 
 
-def _account_binding(
-    parser: configparser.ConfigParser, alias: str
-) -> set[str]:
+def _account_binding(parser: configparser.ConfigParser, alias: str) -> set[str]:
     section = f"account_bindings.{alias}"
     if not parser.has_section(section):
         return set()
@@ -92,10 +89,9 @@ def test_live_main_binding_does_not_reference_unloadable_strategies() -> None:
     live_main_binding = _account_binding(parser, "live_main")
     if not has_local:
         pytest.skip("signal.local.ini 缺失——CI 环境跳过 binding 对齐检查")
-    live_executable = (
-        _strategies_with_status(parser, "active")
-        | _strategies_with_status(parser, "active_guarded")
-    )
+    live_executable = _strategies_with_status(
+        parser, "active"
+    ) | _strategies_with_status(parser, "active_guarded")
     extra = live_main_binding - live_executable
     assert not extra, (
         f"live_main binding 引用非 active/active_guarded 策略 → 装配漂移；"

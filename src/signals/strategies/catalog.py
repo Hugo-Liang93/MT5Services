@@ -20,9 +20,7 @@ def _build_structured_strategies() -> tuple[SignalStrategy, ...]:
     其他 13 条策略 1y backtest trade 频次 0~0.29/day（远低于 day-trading 阈值 1/day），
     全部物理删除以释放维护成本。新策略需满足"高频 + alpha 来源明确"。
     """
-    return (
-        StructuredPriceAction(),
-    )
+    return (StructuredPriceAction(),)
 
 
 def build_named_strategy_catalog() -> "OrderedDict[str, SignalStrategy]":

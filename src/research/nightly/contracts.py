@@ -71,12 +71,12 @@ class StrategyMetrics:
     strategy: str
     timeframe: str
     trades: int
-    win_rate: float       # [0, 1]
+    win_rate: float  # [0, 1]
     pnl: float
     profit_factor: float
     sharpe: float
     sortino: float
-    max_dd: float         # [0, 1]，负向指标越小越好
+    max_dd: float  # [0, 1]，负向指标越小越好
     expectancy: float
     avg_bars_held: float
 
@@ -102,11 +102,11 @@ class RegressionFinding:
 
     strategy: str
     timeframe: str
-    metric: str              # "sharpe" | "max_dd"
+    metric: str  # "sharpe" | "max_dd"
     previous: float
     current: float
-    change_ratio: float      # (current - previous) / previous（负号 = 恶化）
-    severity: str            # "regression" | "improvement" | "unchanged"
+    change_ratio: float  # (current - previous) / previous（负号 = 恶化）
+    severity: str  # "regression" | "improvement" | "unchanged"
 
     def to_dict(self) -> Dict[str, Any]:
         return {

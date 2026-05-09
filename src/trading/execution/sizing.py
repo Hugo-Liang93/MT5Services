@@ -19,13 +19,14 @@ TIMEFRAME_SL_TP: dict[str, dict[str, float]] = {
 # 时间框架差异化风险百分比（乘数）
 # 实际 risk_pct = base_risk_percent × multiplier
 TIMEFRAME_RISK_MULTIPLIER: dict[str, float] = {
-    "M5": 0.50,   # M5 噪声大，SL 已加宽，仓位需缩小
+    "M5": 0.50,  # M5 噪声大，SL 已加宽，仓位需缩小
     "M15": 0.75,  # M15 中等
     "M30": 0.90,  # M30 确认层
-    "H1": 1.00,   # H1 基准
-    "H4": 1.20,   # H4 过滤层，信号稳定
-    "D1": 1.50,   # D1 大势层，允许更大仓位
+    "H1": 1.00,  # H1 基准
+    "H4": 1.20,  # H4 过滤层，信号稳定
+    "D1": 1.50,  # D1 大势层，允许更大仓位
 }
+
 
 @dataclass(frozen=True)
 class TradeParameters:
@@ -129,7 +130,8 @@ def compute_trade_params(
         )
 
     effective_risk_pct = risk_percent * resolve_timeframe_risk_multiplier(
-        timeframe, overrides=timeframe_risk_overrides,
+        timeframe,
+        overrides=timeframe_risk_overrides,
     )
     risk_amount = account_balance * (effective_risk_pct / 100.0)
     risk_per_lot = sl_distance * contract_size

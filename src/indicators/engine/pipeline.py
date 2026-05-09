@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Any, Optional, Callable, Set, Tuple
-import time
 import logging
+import time
 from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 # 使用绝对导入避免相对导入问题
 from ..cache.incremental import IncrementalIndicator, IndicatorState
@@ -13,8 +13,11 @@ from ..cache.smart_cache import SmartCache, get_global_cache
 from ..core.base import sanitize_result
 from ..monitoring.metrics_collector import record_indicator_computation
 from .dependency_manager import DependencyManager, get_global_dependency_manager
-from .parallel_executor import ParallelExecutor, get_global_executor
-from .parallel_executor import shutdown_global_executor
+from .parallel_executor import (
+    ParallelExecutor,
+    get_global_executor,
+    shutdown_global_executor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,7 @@ def _enum_or_raw(value: Any) -> Any:
 @dataclass
 class PipelineConfig:
     """流水线配置"""
+
     enable_parallel: bool = True
     max_workers: int = 4
     enable_cache: bool = True
@@ -47,19 +51,22 @@ def _compute_bars_hash(bars: List[Any]) -> int:
     if not bars:
         return 0
     last = bars[-1]
-    return hash((
-        len(bars),
-        bars[0].time,
-        last.time,
-        last.high,
-        last.low,
-        last.close,
-    ))
+    return hash(
+        (
+            len(bars),
+            bars[0].time,
+            last.time,
+            last.high,
+            last.low,
+            last.close,
+        )
+    )
 
 
 @dataclass
 class ComputationContext:
     """计算上下文"""
+
     symbol: str
     timeframe: str
     bars: List[Any]
@@ -74,7 +81,7 @@ class ComputationContext:
 class OptimizedPipeline:
     """
     优化计算流水线
-    
+
     集成所有优化功能：
     1. 依赖关系管理
     2. 并行计算
@@ -82,48 +89,53 @@ class OptimizedPipeline:
     4. 增量计算
     5. 性能监控
     """
-    
+
     def __init__(self, config: Optional[PipelineConfig] = None):
         """
         初始化优化流水线
-        
+
         Args:
             config: 流水线配置
         """
         self.config = config or PipelineConfig()
-        
+
         # 初始化组件
         self.dependency_manager = get_global_dependency_manager()
         self.cache = get_global_cache(
             maxsize=getattr(self.config, "cache_maxsize", 1000),
             ttl=self.config.cache_ttl,
         )
-        
+
         # 并行执行器（按需创建）
         self._executor: Optional[ParallelExecutor] = None
-        
+
         # 增量计算指标注册表
         self.incremental_indicators: Dict[str, IncrementalIndicator] = {}
-        
+
         # 性能统计
         self.computation_stats = {
             "total_computations": 0,
             "parallel_computations": 0,
             "cached_computations": 0,
             "incremental_computations": 0,
-            "failed_computations": 0
+            "failed_computations": 0,
         }
         self._compute_log_counter = 0
         self._apply_runtime_config(initial=True)
-        
+
         logger.info(f"OptimizedPipeline initialized with config: {self.config}")
 
     def _apply_runtime_config(self, initial: bool = False) -> None:
-        cache_strategy = str(_enum_or_raw(getattr(self.config, "cache_strategy", "lru_ttl"))).lower()
+        cache_strategy = str(
+            _enum_or_raw(getattr(self.config, "cache_strategy", "lru_ttl"))
+        ).lower()
         if cache_strategy == "none":
             self.config.enable_cache = False
         elif cache_strategy not in {"simple", "lru_ttl"}:
-            logger.warning("Unsupported cache strategy '%s', falling back to lru_ttl", cache_strategy)
+            logger.warning(
+                "Unsupported cache strategy '%s', falling back to lru_ttl",
+                cache_strategy,
+            )
             cache_strategy = "lru_ttl"
 
         self.config.cache_strategy = cache_strategy
@@ -142,7 +154,7 @@ class OptimizedPipeline:
     def update_config(self, config: PipelineConfig) -> None:
         self.config = config
         self._apply_runtime_config()
-    
+
     @property
     def executor(self) -> ParallelExecutor:
         """获取并行执行器（懒加载）"""
@@ -152,21 +164,21 @@ class OptimizedPipeline:
                 max_retries=self.config.max_retries,
                 retry_delay=self.config.retry_delay,
                 enable_cache=self.config.enable_cache,
-                cache_ttl=self.config.cache_ttl
+                cache_ttl=self.config.cache_ttl,
             )
         return self._executor
-    
+
     def register_indicator(
         self,
         name: str,
         func: Callable,
         params: Dict[str, Any],
         dependencies: Optional[List[str]] = None,
-        incremental_class: Optional[type] = None
+        incremental_class: Optional[type] = None,
     ) -> None:
         """
         注册指标
-        
+
         Args:
             name: 指标名称
             func: 指标计算函数
@@ -176,16 +188,20 @@ class OptimizedPipeline:
         """
         # 注册到依赖管理器
         self.dependency_manager.add_indicator(name, func, params, dependencies)
-        
+
         # 如果支持增量计算，创建增量计算实例（热重载时保留已积累的 state）
-        if incremental_class is not None and issubclass(incremental_class, IncrementalIndicator):
+        if incremental_class is not None and issubclass(
+            incremental_class, IncrementalIndicator
+        ):
             existing = self.incremental_indicators.get(name)
             same_class = existing is not None and type(existing) is incremental_class
             same_params = same_class and existing.params == params  # type: ignore[union-attr]
 
             if same_class and same_params:
                 # 同一个类、相同参数重新注册（热重载但配置未变）：复用实例保留 state_store
-                logger.debug(f"Incremental indicator re-registered (state preserved): {name}")
+                logger.debug(
+                    f"Incremental indicator re-registered (state preserved): {name}"
+                )
             else:
                 incremental_instance = incremental_class(name, params)
                 if same_class and not same_params:
@@ -195,37 +211,37 @@ class OptimizedPipeline:
                     logger.info(
                         "Incremental indicator params changed on hot-reload "
                         "(state discarded): %s  old=%s  new=%s",
-                        name, existing.params, params,  # type: ignore[union-attr]
+                        name,
+                        existing.params,
+                        params,  # type: ignore[union-attr]
                     )
                 elif existing is not None:
                     # 类变了但有旧 state：迁移 state_store，下次算时会重新 seed
                     incremental_instance.state_store = existing.state_store
                 self.incremental_indicators[name] = incremental_instance
                 logger.debug(f"Incremental indicator registered: {name}")
-        
-        logger.info(f"Indicator registered: {name} with {len(dependencies or [])} dependencies")
-    
+
+        logger.info(
+            f"Indicator registered: {name} with {len(dependencies or [])} dependencies"
+        )
+
     def _generate_cache_key(
-        self,
-        indicator: str,
-        symbol: str,
-        timeframe: str,
-        bars_hash: int
+        self, indicator: str, symbol: str, timeframe: str, bars_hash: int
     ) -> str:
         """
         生成缓存键
-        
+
         Args:
             indicator: 指标名称
             symbol: 交易品种
             timeframe: 时间框架
             bars_hash: K线数据哈希
-            
+
         Returns:
             缓存键
         """
         return f"{indicator}_{symbol}_{timeframe}_{bars_hash}"
-    
+
     def _run_indicator(
         self,
         indicator: str,
@@ -236,10 +252,7 @@ class OptimizedPipeline:
         if func is None:
             raise ValueError(f"Indicator function not found: {indicator}")
 
-        if (
-            self.config.enable_incremental
-            and indicator in self.incremental_indicators
-        ):
+        if self.config.enable_incremental and indicator in self.incremental_indicators:
             incremental_indicator = self.incremental_indicators[indicator]
             result = incremental_indicator.compute(
                 context.bars,
@@ -254,11 +267,7 @@ class OptimizedPipeline:
         params = self.dependency_manager.indicator_params.get(indicator, {})
         return func(context.bars, params), False
 
-    def _compute_indicator(
-        self,
-        indicator: str,
-        context: ComputationContext
-    ) -> Any:
+    def _compute_indicator(self, indicator: str, context: ComputationContext) -> Any:
         """计算单个指标（含缓存 + 监控）。"""
         start_time = time.time()
         cache_hit = False
@@ -315,7 +324,9 @@ class OptimizedPipeline:
             error_msg = str(e)
             success = False
             self.computation_stats["failed_computations"] += 1
-            logger.error(f"Indicator computation failed: {indicator}, error: {error_msg}")
+            logger.error(
+                f"Indicator computation failed: {indicator}, error: {error_msg}"
+            )
 
             if self.config.enable_monitoring:
                 record_indicator_computation(
@@ -331,19 +342,17 @@ class OptimizedPipeline:
                 )
 
             return None
-    
+
     def _compute_parallel_group(
-        self,
-        indicators: List[str],
-        context: ComputationContext
+        self, indicators: List[str], context: ComputationContext
     ) -> Dict[str, Any]:
         """
         并行计算一组指标
-        
+
         Args:
             indicators: 指标列表
             context: 计算上下文
-            
+
         Returns:
             计算结果字典
         """
@@ -353,30 +362,32 @@ class OptimizedPipeline:
             for indicator in indicators:
                 results[indicator] = self._compute_indicator(indicator, context)
             return results
-        
+
         # 并行计算
         tasks = []
         task_indicator_map = {}
-        
+
         for indicator in indicators:
             # 为每个指标创建任务
             task = (
                 self._compute_indicator,  # 函数
-                (indicator, context),     # 参数
-                {}                        # 关键字参数
+                (indicator, context),  # 参数
+                {},  # 关键字参数
             )
             tasks.append(task)
-            
-            task_id = f"{indicator}_{context.symbol}_{context.timeframe}_{context.bars_hash}"
+
+            task_id = (
+                f"{indicator}_{context.symbol}_{context.timeframe}_{context.bars_hash}"
+            )
             task_indicator_map[task_id] = indicator
-        
+
         # 执行并行任务
         parallel_results = self.executor.execute_parallel(
             tasks,
             task_ids=list(task_indicator_map.keys()),
-            use_cache=self.config.enable_cache
+            use_cache=self.config.enable_cache,
         )
-        
+
         # 提取结果
         results = {}
         for task_id, task_result in parallel_results.items():
@@ -384,9 +395,9 @@ class OptimizedPipeline:
                 indicator = task_indicator_map.get(task_id)
                 if indicator:
                     results[indicator] = task_result.result
-        
+
         self.computation_stats["parallel_computations"] += len(indicators)
-        
+
         return results
 
     def _compute_internal(
@@ -395,21 +406,28 @@ class OptimizedPipeline:
         timeframe: str,
         bars: List[Any],
         indicators: Optional[List[str]] = None,
-        on_level_complete: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
+        on_level_complete: Optional[
+            Callable[[Dict[str, Any], Dict[str, Any]], None]
+        ] = None,
         scope: str = "confirmed",
     ) -> Dict[str, Any]:
         start_time = time.time()
         try:
             if indicators is None:
                 indicators = list(self.dependency_manager.indicator_funcs.keys())
-            execution_groups = self.dependency_manager.get_parallelizable_groups(indicators)
+            execution_groups = self.dependency_manager.get_parallelizable_groups(
+                indicators
+            )
             context = ComputationContext(
                 symbol=symbol,
                 timeframe=timeframe,
                 bars=bars,
                 config=self.config,
                 results={},
-                dependencies={ind: self.dependency_manager.get_dependencies(ind) for ind in indicators},
+                dependencies={
+                    ind: self.dependency_manager.get_dependencies(ind)
+                    for ind in indicators
+                },
                 start_time=start_time,
                 scope=scope,
                 bars_hash=_compute_bars_hash(bars),
@@ -447,8 +465,11 @@ class OptimizedPipeline:
     ) -> Dict[str, Any]:
         """计算指标（不含 on_level_complete 回调的简化入口）。"""
         return self._compute_internal(
-            symbol, timeframe, bars,
-            indicators=indicators, scope=scope,
+            symbol,
+            timeframe,
+            bars,
+            indicators=indicators,
+            scope=scope,
         )
 
     def compute_staged(
@@ -457,7 +478,9 @@ class OptimizedPipeline:
         timeframe: str,
         bars: List[Any],
         indicators: Optional[List[str]] = None,
-        on_level_complete: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
+        on_level_complete: Optional[
+            Callable[[Dict[str, Any], Dict[str, Any]], None]
+        ] = None,
         scope: str = "confirmed",
     ) -> Dict[str, Any]:
         return self._compute_internal(
@@ -470,77 +493,72 @@ class OptimizedPipeline:
         )
 
     def compute_single(
-        self,
-        indicator: str,
-        symbol: str,
-        timeframe: str,
-        bars: List[Any]
+        self, indicator: str, symbol: str, timeframe: str, bars: List[Any]
     ) -> Any:
         """
         计算单个指标
-        
+
         Args:
             indicator: 指标名称
             symbol: 交易品种
             timeframe: 时间框架
             bars: K线数据
-            
+
         Returns:
             计算结果
         """
         return self.compute(symbol, timeframe, bars, [indicator]).get(indicator)
-    
+
     def get_execution_plan(
-        self,
-        indicators: Optional[List[str]] = None
+        self, indicators: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         获取执行计划
-        
+
         Args:
             indicators: 需要计算的指标列表
-            
+
         Returns:
             执行计划信息
         """
         if indicators is None:
             indicators = list(self.dependency_manager.indicator_funcs.keys())
-        
+
         execution_groups = self.dependency_manager.get_parallelizable_groups(indicators)
-        
+
         plan = {
             "total_indicators": len(indicators),
             "levels": len(execution_groups),
             "execution_groups": execution_groups,
             "dependency_graph": self.dependency_manager.visualize("mermaid"),
-            "indicators": []
+            "indicators": [],
         }
-        
+
         for indicator in indicators:
             info = self.dependency_manager.get_indicator_info(indicator)
             if info:
                 plan["indicators"].append(info)
-        
+
         return plan
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """
         获取统计信息
-        
+
         Returns:
             统计信息字典
         """
         stats = self.computation_stats.copy()
-        
+
         # 添加缓存统计
         cache_stats = self.cache.get_stats()
         stats["cache"] = cache_stats
-        
+
         # 添加并行执行器统计
         if self._executor is not None:
             executor_stats = self._executor.get_stats()
             stats["executor"] = executor_stats
-        
+
         # 计算成功率
         total = stats["total_computations"]
         if total > 0:
@@ -548,36 +566,38 @@ class OptimizedPipeline:
             stats["success_rate"] = (total - failed) / total * 100
         else:
             stats["success_rate"] = 0
-        
+
         # 计算优化效果
         if total > 0:
             cached = stats["cached_computations"]
             incremental = stats["incremental_computations"]
             parallel = stats["parallel_computations"]
-            
+
             stats["cache_optimization_rate"] = cached / total * 100
             stats["incremental_optimization_rate"] = incremental / total * 100
             stats["parallel_optimization_rate"] = parallel / total * 100
-        
+
         return stats
-    
+
     def clear_cache(self) -> int:
         """
         清空缓存
-        
+
         Returns:
             清除的缓存项数量
         """
         return self.cache.clear()
-    
-    def clear_state(self, symbol: Optional[str] = None, timeframe: Optional[str] = None) -> int:
+
+    def clear_state(
+        self, symbol: Optional[str] = None, timeframe: Optional[str] = None
+    ) -> int:
         """
         清除增量计算状态
-        
+
         Args:
             symbol: 交易品种
             timeframe: 时间框架
-            
+
         Returns:
             清除的状态数量
         """
@@ -585,10 +605,10 @@ class OptimizedPipeline:
         for indicator in self.incremental_indicators.values():
             count = indicator.clear_state(symbol, timeframe)
             total += count
-        
+
         logger.info(f"Cleared {total} incremental states")
         return total
-    
+
     def shutdown(self) -> None:
         """关闭流水线。
 
@@ -613,10 +633,10 @@ _global_pipeline: Optional[OptimizedPipeline] = None
 def get_global_pipeline(config: Optional[PipelineConfig] = None) -> OptimizedPipeline:
     """
     获取全局优化流水线实例（单例模式）
-    
+
     Args:
         config: 流水线配置
-        
+
     Returns:
         全局优化流水线实例
     """

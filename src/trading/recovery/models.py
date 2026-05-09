@@ -74,7 +74,10 @@ class RecoveryPolicy:
             raise ValueError("max_directional_move_points must be >= 0")
         if self.min_pressure_delta < 0:
             raise ValueError("min_pressure_delta must be >= 0")
-        if self.max_entry_spread_points is not None and self.max_entry_spread_points <= 0:
+        if (
+            self.max_entry_spread_points is not None
+            and self.max_entry_spread_points <= 0
+        ):
             raise ValueError("max_entry_spread_points must be None or > 0")
         if self.slippage_budget_points < 0:
             raise ValueError("slippage_budget_points must be >= 0")

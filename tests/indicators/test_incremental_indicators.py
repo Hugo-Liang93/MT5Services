@@ -7,6 +7,7 @@ These tests verify that:
 3. The manager's _load_incremental_class wires up the right classes for
    compute_mode=incremental indicators and returns None for others.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -16,10 +17,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.indicators.cache.incremental import IndicatorState, IncrementalIndicator
+from src.indicators.cache.incremental import IncrementalIndicator, IndicatorState
 from src.indicators.core.mean import EmaIncremental, ema
 from src.indicators.core.volatility import AtrIncremental, atr
-
 
 # ---------------------------------------------------------------------------
 # Minimal OHLC stub
@@ -99,9 +99,9 @@ class TestEmaIncremental:
         call for the same bar T to fall back to full recompute (time not
         advanced).  With scope-isolated keys each path evolves independently.
         """
-        bars = _bars(list(range(1, 12)))   # 11 bars; bar #11 is "in progress"
-        history = bars[:10]                # 10 closed bars
-        intrabar_bar = bars[10]            # bar #11 currently in progress
+        bars = _bars(list(range(1, 12)))  # 11 bars; bar #11 is "in progress"
+        history = bars[:10]  # 10 closed bars
+        intrabar_bar = bars[10]  # bar #11 currently in progress
 
         ind = EmaIncremental("ema", self.PARAMS)
 
@@ -117,13 +117,17 @@ class TestEmaIncremental:
         # The confirmed state's last_bar_time must be unchanged (bar #10)
         confirmed_state_after = ind.get_state("SYM", "H1", scope="confirmed")
         assert confirmed_state_after is not None
-        assert confirmed_state_after.last_bar_time == confirmed_state_before.last_bar_time
+        assert (
+            confirmed_state_after.last_bar_time == confirmed_state_before.last_bar_time
+        )
 
         # Now fire confirmed for bar #11 — last_bar_time advanced, so incremental fires
         ind.compute(extended, "SYM", "H1", scope="confirmed")
         confirmed_state_final = ind.get_state("SYM", "H1", scope="confirmed")
         assert confirmed_state_final is not None
-        assert confirmed_state_final.last_bar_time > confirmed_state_before.last_bar_time
+        assert (
+            confirmed_state_final.last_bar_time > confirmed_state_before.last_bar_time
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +141,12 @@ class TestAtrIncremental:
     def _hlc_bars(self, n: int, step: float = 1.0) -> list[Bar]:
         """Bars where H = close+1, L = close-1 so TR is always 2 (unless gap)."""
         return [
-            Bar(float(i) * step, high=float(i) * step + 1, low=float(i) * step - 1, t=i * 60)
+            Bar(
+                float(i) * step,
+                high=float(i) * step + 1,
+                low=float(i) * step - 1,
+                t=i * 60,
+            )
             for i in range(1, n + 1)
         ]
 
@@ -196,15 +205,20 @@ class TestAtrIncremental:
 class TestManagerIncrementalClassLoader:
     def _make_manager(self):
         """Build a minimal UnifiedIndicatorManager with mocked dependencies."""
-        from src.config.indicator_config import UnifiedIndicatorConfig, get_global_config_manager
+        from src.config.indicator_config import (
+            UnifiedIndicatorConfig,
+            get_global_config_manager,
+        )
 
         mock_market = MagicMock()
         mock_market.market_settings.intrabar_max_points = 100
 
-        with patch("src.indicators.manager.get_global_pipeline") as mock_pipe, \
-             patch("src.indicators.manager.get_global_dependency_manager") as mock_dep, \
-             patch("src.indicators.manager.get_event_store") as mock_es, \
-             patch("src.indicators.manager.get_global_collector"):
+        with (
+            patch("src.indicators.manager.get_global_pipeline") as mock_pipe,
+            patch("src.indicators.manager.get_global_dependency_manager") as mock_dep,
+            patch("src.indicators.manager.get_event_store") as mock_es,
+            patch("src.indicators.manager.get_global_collector"),
+        ):
             mock_pipe.return_value = MagicMock()
             mock_dep.return_value = MagicMock()
             mock_es.return_value = MagicMock()
@@ -228,10 +242,12 @@ class TestManagerIncrementalClassLoader:
         mock_market = MagicMock()
         mock_market.market_settings.intrabar_max_points = 100
 
-        with patch("src.indicators.manager.get_global_pipeline") as mock_pipe, \
-             patch("src.indicators.manager.get_global_dependency_manager"), \
-             patch("src.indicators.manager.get_event_store") as mock_es, \
-             patch("src.indicators.manager.get_global_collector"):
+        with (
+            patch("src.indicators.manager.get_global_pipeline") as mock_pipe,
+            patch("src.indicators.manager.get_global_dependency_manager"),
+            patch("src.indicators.manager.get_event_store") as mock_es,
+            patch("src.indicators.manager.get_global_collector"),
+        ):
             mock_pipe.return_value = MagicMock()
             mock_es.return_value = MagicMock()
 
@@ -254,10 +270,12 @@ class TestManagerIncrementalClassLoader:
         from src.indicators.core.volatility import AtrIncremental
         from src.indicators.manager import UnifiedIndicatorManager
 
-        with patch("src.indicators.manager.get_global_pipeline") as mock_pipe, \
-             patch("src.indicators.manager.get_global_dependency_manager"), \
-             patch("src.indicators.manager.get_event_store") as mock_es, \
-             patch("src.indicators.manager.get_global_collector"):
+        with (
+            patch("src.indicators.manager.get_global_pipeline") as mock_pipe,
+            patch("src.indicators.manager.get_global_dependency_manager"),
+            patch("src.indicators.manager.get_event_store") as mock_es,
+            patch("src.indicators.manager.get_global_collector"),
+        ):
             mock_pipe.return_value = MagicMock()
             mock_es.return_value = MagicMock()
 
@@ -279,10 +297,12 @@ class TestManagerIncrementalClassLoader:
         from src.config.indicator_config import ComputeMode, IndicatorConfig
         from src.indicators.manager import UnifiedIndicatorManager
 
-        with patch("src.indicators.manager.get_global_pipeline") as mock_pipe, \
-             patch("src.indicators.manager.get_global_dependency_manager"), \
-             patch("src.indicators.manager.get_event_store") as mock_es, \
-             patch("src.indicators.manager.get_global_collector"):
+        with (
+            patch("src.indicators.manager.get_global_pipeline") as mock_pipe,
+            patch("src.indicators.manager.get_global_dependency_manager"),
+            patch("src.indicators.manager.get_event_store") as mock_es,
+            patch("src.indicators.manager.get_global_collector"),
+        ):
             mock_pipe.return_value = MagicMock()
             mock_es.return_value = MagicMock()
 

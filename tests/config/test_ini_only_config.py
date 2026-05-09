@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from src.config.centralized import get_api_config, get_config_provenance_snapshot, reload_configs
+from src.config.centralized import (
+    get_api_config,
+    get_config_provenance_snapshot,
+    reload_configs,
+)
 
 
 def test_api_config_reads_from_ini_only(monkeypatch):

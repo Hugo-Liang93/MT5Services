@@ -41,13 +41,15 @@ class TradeAPIDispatcher:
         )
         normalized_payload = dict(payload or {})
         if canonical_operation in {"trade", "trade_precheck"}:
-            normalized_payload = TradeRequest.model_validate(normalized_payload).model_dump(
-                exclude_none=True
-            )
+            normalized_payload = TradeRequest.model_validate(
+                normalized_payload
+            ).model_dump(exclude_none=True)
             normalized_payload.pop("direction", None)
         return canonical_operation, normalized_payload
 
-    def dispatch(self, operation: str, payload: dict[str, Any] | None = None) -> ApiResponse[Any]:
+    def dispatch(
+        self, operation: str, payload: dict[str, Any] | None = None
+    ) -> ApiResponse[Any]:
         requested_operation = str(operation or "").strip()
         try:
             normalized_operation, normalized_payload = self._normalize_dispatch_request(
@@ -56,10 +58,10 @@ class TradeAPIDispatcher:
             )
             admission_evaluation: dict[str, Any] | None = None
             admission_report: dict[str, Any] | None = None
-            if (
-                self._admission_service is not None
-                and normalized_operation in {"trade", "trade_precheck"}
-            ):
+            if self._admission_service is not None and normalized_operation in {
+                "trade",
+                "trade_precheck",
+            }:
                 admission_evaluation = self._admission_service.evaluate_trade_payload(
                     normalized_payload,
                     requested_operation=requested_operation,
@@ -79,7 +81,10 @@ class TradeAPIDispatcher:
                 admission_trace_id = str(admission_report.get("trace_id") or "").strip()
                 if admission_trace_id:
                     normalized_payload["trace_id"] = admission_trace_id
-                if admission_report and str(admission_report.get("decision") or "").lower() == "block":
+                if (
+                    admission_report
+                    and str(admission_report.get("decision") or "").lower() == "block"
+                ):
                     assessment = dict(admission_evaluation.get("assessment") or {})
                     reasons = list(admission_report.get("reasons") or [])
                     primary_reason = reasons[0] if reasons else {}
@@ -115,7 +120,9 @@ class TradeAPIDispatcher:
                     "operation": normalized_operation,
                     "requested_operation": requested_operation,
                     "account_alias": self.service.active_account_alias,
-                    "trace_id": admission_report.get("trace_id") if admission_report else None,
+                    "trace_id": (
+                        admission_report.get("trace_id") if admission_report else None
+                    ),
                 },
             )
         except ValueError as exc:

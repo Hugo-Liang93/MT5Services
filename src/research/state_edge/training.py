@@ -11,8 +11,15 @@ import numpy as np
 from src.research.core.data_matrix import DataMatrix
 from src.research.state_edge.artifacts import StateEdgeArtifact, StateEdgePrediction
 from src.research.state_edge.backends import BackendUnavailableError, resolve_backend
-from src.research.state_edge.features import StateEdgeFeatureBuilder, StateEdgeFeatureMatrix
-from src.research.state_edge.labels import StateEdgeClass, StateEdgeLabelBuilder, StateEdgeLabelSet
+from src.research.state_edge.features import (
+    StateEdgeFeatureBuilder,
+    StateEdgeFeatureMatrix,
+)
+from src.research.state_edge.labels import (
+    StateEdgeClass,
+    StateEdgeLabelBuilder,
+    StateEdgeLabelSet,
+)
 
 CLASS_ORDER: tuple[StateEdgeClass, ...] = (
     StateEdgeClass.LONG,
@@ -104,19 +111,27 @@ def _fit_predict_cpu(
     train_idx: np.ndarray,
 ) -> tuple[np.ndarray, dict[str, Any], str]:
     if len(train_idx) == 0 or x.shape[1] == 0 or len(set(y[train_idx].tolist())) < 2:
-        return _constant_prediction(x.shape[0], y[train_idx]), {
-            "kind": "constant",
-            "class_probs": _class_prior(y[train_idx]).tolist(),
-        }, "refit"
+        return (
+            _constant_prediction(x.shape[0], y[train_idx]),
+            {
+                "kind": "constant",
+                "class_probs": _class_prior(y[train_idx]).tolist(),
+            },
+            "refit",
+        )
 
     try:
         from sklearn.ensemble import HistGradientBoostingClassifier
     except Exception:
-        return _constant_prediction(x.shape[0], y[train_idx]), {
-            "kind": "constant",
-            "reason": "sklearn_unavailable",
-            "class_probs": _class_prior(y[train_idx]).tolist(),
-        }, "refit"
+        return (
+            _constant_prediction(x.shape[0], y[train_idx]),
+            {
+                "kind": "constant",
+                "reason": "sklearn_unavailable",
+                "class_probs": _class_prior(y[train_idx]).tolist(),
+            },
+            "refit",
+        )
 
     model = HistGradientBoostingClassifier(
         learning_rate=0.06,
@@ -149,13 +164,19 @@ def _fit_predict_gpu(
         ) from exc
 
     if not torch.cuda.is_available():  # pragma: no cover - environment dependent
-        raise BackendUnavailableError("CUDA backend unavailable: PyTorch CUDA device unavailable")
+        raise BackendUnavailableError(
+            "CUDA backend unavailable: PyTorch CUDA device unavailable"
+        )
     if len(train_idx) == 0 or x.shape[1] == 0 or len(set(y[train_idx].tolist())) < 2:
-        return _constant_prediction(x.shape[0], y[train_idx]), {
-            "kind": "constant",
-            "reason": "insufficient_gpu_training_classes",
-            "class_probs": _class_prior(y[train_idx]).tolist(),
-        }, "refit"
+        return (
+            _constant_prediction(x.shape[0], y[train_idx]),
+            {
+                "kind": "constant",
+                "reason": "insufficient_gpu_training_classes",
+                "class_probs": _class_prior(y[train_idx]).tolist(),
+            },
+            "refit",
+        )
 
     device = torch.device("cuda")
     mean = x[train_idx].mean(axis=0)
@@ -267,9 +288,7 @@ def _top_bucket_summary(
     quantile: float,
 ) -> dict[str, Any]:
     valid = [
-        idx
-        for idx in test_indices
-        if idx < len(returns) and returns[idx] is not None
+        idx for idx in test_indices if idx < len(returns) and returns[idx] is not None
     ]
     if not valid:
         return {
@@ -282,12 +301,18 @@ def _top_bucket_summary(
     base_returns = np.asarray([float(returns[idx]) for idx in valid], dtype=float)
     threshold = float(np.quantile(direction_probs[valid], quantile))
     selected = [idx for idx in valid if direction_probs[idx] >= threshold]
-    selected_returns = np.asarray([float(returns[idx]) for idx in selected], dtype=float)
+    selected_returns = np.asarray(
+        [float(returns[idx]) for idx in selected], dtype=float
+    )
     baseline_hit = float(np.mean(base_returns > 0.0)) if len(base_returns) else 0.0
-    bucket_hit = float(np.mean(selected_returns > 0.0)) if len(selected_returns) else 0.0
+    bucket_hit = (
+        float(np.mean(selected_returns > 0.0)) if len(selected_returns) else 0.0
+    )
     return {
         "sample_count": int(len(selected_returns)),
-        "mean_cost_after_return": float(selected_returns.mean()) if len(selected_returns) else 0.0,
+        "mean_cost_after_return": (
+            float(selected_returns.mean()) if len(selected_returns) else 0.0
+        ),
         "hit_rate": bucket_hit,
         "hit_rate_lift": bucket_hit - baseline_hit,
         "threshold": threshold,

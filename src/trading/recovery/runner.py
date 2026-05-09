@@ -33,7 +33,6 @@ from .risk_budget import (
     recovery_row_is_dry_run_cycle,
 )
 
-
 Clock = Callable[[], datetime]
 CycleIdFactory = Callable[[datetime], str]
 SourceSignalIdFactory = Callable[[str], str]
@@ -46,7 +45,7 @@ class RecoveryRuntimeRunnerSettings:
     demo_only: bool = True
     symbol: str = "XAUUSD"
     direction: str = "buy"
-    strategy: str = "tick_martingale_probe"
+    strategy: str = "tick_recovery_probe"
     timeframe: str = "TICK"
     base_volume: float = 0.01
     multiplier: float = 2.0
@@ -149,7 +148,10 @@ class RecoveryRuntimeRunnerSettings:
             raise ValueError("max_directional_move_points must be >= 0")
         if self.min_pressure_delta < 0:
             raise ValueError("min_pressure_delta must be >= 0")
-        if self.max_entry_spread_points is not None and self.max_entry_spread_points <= 0:
+        if (
+            self.max_entry_spread_points is not None
+            and self.max_entry_spread_points <= 0
+        ):
             raise ValueError("max_entry_spread_points must be None or > 0")
         if self.slippage_budget_points < 0:
             raise ValueError("slippage_budget_points must be >= 0")
@@ -234,9 +236,7 @@ class RecoveryRuntimeRunnerSettings:
     def to_risk_budget_settings(self) -> RecoveryRiskBudgetSettings:
         return RecoveryRiskBudgetSettings(
             risk_profile=str(self.risk_profile),
-            max_daily_recovery_loss_amount=float(
-                self.max_daily_recovery_loss_amount
-            ),
+            max_daily_recovery_loss_amount=float(self.max_daily_recovery_loss_amount),
             max_rolling_recovery_loss_amount=float(
                 self.max_rolling_recovery_loss_amount
             ),
@@ -582,7 +582,7 @@ class DemoBoundedRecoveryRunner:
         )
         policy_execution = {
             "risk_profile": self._settings.risk_profile,
-            "direction_policy": _policy_decision_payload(direction_decision)
+            "direction_policy": _policy_decision_payload(direction_decision),
         }
         if direction_decision.direction is None:
             self._entry_confirmer.reset()
@@ -1095,9 +1095,7 @@ class DemoBoundedRecoveryRunner:
                 )
             except Exception as exc:  # noqa: BLE001 - close failures are health facts.
                 status = (
-                    "already_closed"
-                    if _position_absent_message(str(exc))
-                    else "failed"
+                    "already_closed" if _position_absent_message(str(exc)) else "failed"
                 )
                 results.append(
                     {
@@ -1288,7 +1286,9 @@ class DemoBoundedRecoveryRunner:
             provider_status = (
                 dict(status_reader() or {}) if callable(status_reader) else {}
             )
-        except Exception as exc:  # noqa: BLE001 - provider health is runner health data.
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - provider health is runner health data.
             self._last_position_check_error = str(exc)
             return self._exposure_ledger.classify(
                 cycle,
@@ -1308,7 +1308,9 @@ class DemoBoundedRecoveryRunner:
         snapshot = self._submitted_position_snapshot(cycle)
         if snapshot is None:
             return []
-        return [int(item) for item in list(snapshot.get("matching_position_tickets") or [])]
+        return [
+            int(item) for item in list(snapshot.get("matching_position_tickets") or [])
+        ]
 
     def _market_snapshot(self, snapshot: TickFeatureSnapshot) -> RecoveryMarketSnapshot:
         return RecoveryMarketSnapshot(
@@ -1354,7 +1356,10 @@ class DemoBoundedRecoveryRunner:
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
-            if str(row.get("symbol") or "").strip().upper() != self._settings.symbol.upper():
+            if (
+                str(row.get("symbol") or "").strip().upper()
+                != self._settings.symbol.upper()
+            ):
                 continue
             if str(row.get("strategy") or "").strip() != self._settings.strategy:
                 continue
@@ -1465,7 +1470,9 @@ class DemoBoundedRecoveryRunner:
         payload["active_reason"] = reason
         return payload
 
-    def _list_resident_recovery_cycle_rows(self, *, limit: int) -> list[Mapping[str, Any]] | None:
+    def _list_resident_recovery_cycle_rows(
+        self, *, limit: int
+    ) -> list[Mapping[str, Any]] | None:
         lister = getattr(self._state_store, "list_recovery_cycle_states", None)
         if not callable(lister):
             return []
@@ -1486,7 +1493,10 @@ class DemoBoundedRecoveryRunner:
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
-            if str(row.get("symbol") or "").strip().upper() != self._settings.symbol.upper():
+            if (
+                str(row.get("symbol") or "").strip().upper()
+                != self._settings.symbol.upper()
+            ):
                 continue
             if str(row.get("strategy") or "").strip() != self._settings.strategy:
                 continue
@@ -1529,9 +1539,7 @@ class DemoBoundedRecoveryRunner:
             "max_target_shortfall_p90_points": float(
                 settings.max_target_shortfall_p90_points
             ),
-            "min_net_margin_p50_points": float(
-                settings.min_net_margin_p50_points
-            ),
+            "min_net_margin_p50_points": float(settings.min_net_margin_p50_points),
             "allowed": last.get("allowed"),
             "reason": last.get("reason"),
             "metadata": dict(last.get("metadata") or {}),
@@ -1574,9 +1582,7 @@ class DemoBoundedRecoveryRunner:
         policy = self._recovery_policy
         return {
             "step_distance_points": float(policy.step_distance_points),
-            "max_step_adverse_move_points": float(
-                policy.max_step_adverse_move_points
-            ),
+            "max_step_adverse_move_points": float(policy.max_step_adverse_move_points),
             "min_step_interval_ms": int(policy.min_step_interval_ms),
             "max_steps": int(policy.max_steps),
             "max_next_volume": policy.max_next_volume,
@@ -1671,7 +1677,9 @@ def _cycle_with_submitted_ticket(
         "step_index": int(step_index),
         "ticket": int(ticket),
     }
-    existing = {(str(item.get("scope")), int(item.get("ticket") or 0)) for item in items}
+    existing = {
+        (str(item.get("scope")), int(item.get("ticket") or 0)) for item in items
+    }
     if (normalized["scope"], normalized["ticket"]) not in existing:
         items.append(normalized)
     metadata["submitted_tickets"] = items
@@ -1908,7 +1916,9 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 def _datetime_after_or_equal(left: datetime, right: datetime) -> bool:
     left_aware = left if left.tzinfo is not None else left.replace(tzinfo=timezone.utc)
-    right_aware = right if right.tzinfo is not None else right.replace(tzinfo=timezone.utc)
+    right_aware = (
+        right if right.tzinfo is not None else right.replace(tzinfo=timezone.utc)
+    )
     return left_aware >= right_aware
 
 

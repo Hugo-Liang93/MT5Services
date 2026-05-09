@@ -57,7 +57,9 @@ def remove_indicator(manager: "UnifiedIndicatorManager", name: str) -> bool:
         manager.dependency_manager.remove_indicator(name)
         manager.state.indicator_funcs.pop(name, None)
         with manager.state.results_lock:
-            stale_keys = [key for key in manager.state.results if key.endswith(f"_{name}")]
+            stale_keys = [
+                key for key in manager.state.results if key.endswith(f"_{name}")
+            ]
             for key in stale_keys:
                 del manager.state.results[key]
         logger.info("Removed indicator: %s", name)

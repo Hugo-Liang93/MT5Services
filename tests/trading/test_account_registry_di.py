@@ -6,6 +6,7 @@
 - 测试可直接传 stub config 验证依赖；不需要 monkeypatch 全局函数
 - 同一进程多个 registry 实例可持有不同 config（为同进程多账户场景铺路）
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -148,9 +149,7 @@ def test_registry_propagates_injected_configs_to_pre_trade_risk_service(
             pass
 
     class _StubTradingService:
-        def __init__(
-            self, *, client, account_client, pre_trade_risk_service
-        ):
+        def __init__(self, *, client, account_client, pre_trade_risk_service):
             captured["pre_trade_risk"] = pre_trade_risk_service
 
     class _StubPreTradeRiskService:

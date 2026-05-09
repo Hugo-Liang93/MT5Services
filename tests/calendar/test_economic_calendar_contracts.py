@@ -10,7 +10,9 @@ from src.calendar.economic_calendar.contracts import (
 from src.clients.economic_calendar import EconomicCalendarEvent
 
 
-def _make_event(scheduled_at: datetime, *, all_day: bool = False) -> EconomicCalendarEvent:
+def _make_event(
+    scheduled_at: datetime, *, all_day: bool = False
+) -> EconomicCalendarEvent:
     return EconomicCalendarEvent(
         scheduled_at=scheduled_at,
         event_uid="test:event",

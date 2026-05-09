@@ -5,7 +5,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.research.state_edge.artifacts import StateEdgeArtifact, StateEdgePrediction, load_artifact
+from src.research.state_edge.artifacts import (
+    StateEdgeArtifact,
+    StateEdgePrediction,
+    load_artifact,
+)
 
 
 @dataclass(frozen=True)
@@ -85,7 +89,9 @@ class StateEdgeBacktestOverlay:
         if prediction is None:
             self._missing_predictions += 1
             if self._mode == "filter":
-                self._record_block(normalized_direction, "state_edge_prediction_missing")
+                self._record_block(
+                    normalized_direction, "state_edge_prediction_missing"
+                )
                 return StateEdgeOverlayVerdict(
                     allowed=False,
                     reason="state_edge_prediction_missing",
@@ -110,7 +116,10 @@ class StateEdgeBacktestOverlay:
         self._count_by_direction[normalized_direction] = (
             self._count_by_direction.get(normalized_direction, 0) + 1
         )
-        if self._mode == "filter" and normalized_direction not in self._filter_directions:
+        if (
+            self._mode == "filter"
+            and normalized_direction not in self._filter_directions
+        ):
             self._allowed += 1
             return StateEdgeOverlayVerdict(
                 allowed=True,
@@ -190,7 +199,9 @@ class StateEdgeBacktestOverlay:
         return normalized or {"buy", "sell"}
 
     @staticmethod
-    def _direction_probability(prediction: StateEdgePrediction, direction: str) -> float:
+    def _direction_probability(
+        prediction: StateEdgePrediction, direction: str
+    ) -> float:
         if direction == "buy":
             return float(prediction.long_edge_prob)
         if direction == "sell":
@@ -200,7 +211,11 @@ class StateEdgeBacktestOverlay:
     @staticmethod
     def _normalize_time(value: datetime | str) -> str:
         if isinstance(value, datetime):
-            normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+            normalized = (
+                value
+                if value.tzinfo is not None
+                else value.replace(tzinfo=timezone.utc)
+            )
             return normalized.astimezone(timezone.utc).isoformat()
         raw = str(value)
         if raw.endswith("Z"):

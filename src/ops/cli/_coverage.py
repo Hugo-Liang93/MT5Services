@@ -47,7 +47,10 @@ def ensure_ohlc_data_coverage(
     missing = [
         tf
         for tf, info in coverage_before.items()
-        if info.first is None or info.last is None or info.first > start or info.last < end
+        if info.first is None
+        or info.last is None
+        or info.first > start
+        or info.last < end
     ]
     if missing and auto_backfill:
         backfill(symbol=symbol, timeframes=missing, start=start, end=end)

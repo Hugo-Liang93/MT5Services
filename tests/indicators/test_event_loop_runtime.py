@@ -32,14 +32,18 @@ def test_run_event_loop_claims_events_with_claim_next_events(monkeypatch) -> Non
     event_store = _EventStore()
     manager = SimpleNamespace(
         config=SimpleNamespace(pipeline=SimpleNamespace(poll_interval=1.0)),
-        state=SimpleNamespace(stop_event=stop_event, results={}, last_reconcile_at=None),
+        state=SimpleNamespace(
+            stop_event=stop_event, results={}, last_reconcile_at=None
+        ),
         event_store=event_store,
         cleanup_old_events=lambda days_to_keep: None,
     )
 
     monkeypatch.setattr(
         "src.indicators.runtime.event_loops.process_closed_bar_events_batch",
-        lambda mgr, events, durable_event=False: processed.append((events, durable_event)),
+        lambda mgr, events, durable_event=False: processed.append(
+            (events, durable_event)
+        ),
     )
     monkeypatch.setattr(
         "src.indicators.runtime.event_loops.has_reconcile_ready_targets",

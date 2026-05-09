@@ -68,7 +68,9 @@ def load_topology_groups(*, base_dir: str | None = None) -> dict[str, TopologyGr
     return groups
 
 
-def load_topology_group(group_name: str, *, base_dir: str | None = None) -> TopologyGroup:
+def load_topology_group(
+    group_name: str, *, base_dir: str | None = None
+) -> TopologyGroup:
     groups = load_topology_groups(base_dir=base_dir)
     normalized = normalize_environment(group_name)
     if normalized not in groups:
@@ -76,7 +78,9 @@ def load_topology_group(group_name: str, *, base_dir: str | None = None) -> Topo
     return groups[normalized]
 
 
-def iter_group_instances(group_name: str, *, base_dir: str | None = None) -> Iterable[str]:
+def iter_group_instances(
+    group_name: str, *, base_dir: str | None = None
+) -> Iterable[str]:
     group = load_topology_group(group_name, base_dir=base_dir)
     return group.instances
 
@@ -135,7 +139,9 @@ def resolve_current_environment(
     if normalized is not None:
         return normalized
 
-    normalized_instance = normalize_instance_name(get_current_instance_name(instance_name))
+    normalized_instance = normalize_instance_name(
+        get_current_instance_name(instance_name)
+    )
     group = find_topology_group_for_instance(normalized_instance, base_dir=base_dir)
     if group is None:
         return get_current_environment()

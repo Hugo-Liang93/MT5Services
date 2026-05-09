@@ -20,7 +20,9 @@ class PendingOrderLifecycleManager:
         lock: Any,
         mt5_orders: Dict[str, Dict[str, Any]],
         cancellation_port: Any,
-        inspect_mt5_order_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        inspect_mt5_order_fn: Optional[
+            Callable[[Dict[str, Any]], Dict[str, Any]]
+        ] = None,
         stats: Optional[dict[str, Any]] = None,
     ) -> None:
         self._lock = lock
@@ -29,9 +31,9 @@ class PendingOrderLifecycleManager:
         self._inspect_mt5_order_fn = inspect_mt5_order_fn
         self._stats = stats if isinstance(stats, dict) else {}
         self._on_tracked: Optional[Callable[[Dict[str, Any]], None]] = None
-        self._on_filled: Optional[
-            Callable[[Dict[str, Any], Dict[str, Any]], None]
-        ] = None
+        self._on_filled: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = (
+            None
+        )
         self._on_expired: Optional[Callable[[Dict[str, Any], str], None]] = None
         self._on_cancelled: Optional[Callable[[Dict[str, Any], str], None]] = None
         self._on_missing: Optional[Callable[[Dict[str, Any], str], None]] = None
@@ -129,7 +131,9 @@ class PendingOrderLifecycleManager:
                 )
                 return
             self._mt5_orders[signal_id] = tracked_info
-            self._stats["mt5_orders_placed"] = self._stats.get("mt5_orders_placed", 0) + 1
+            self._stats["mt5_orders_placed"] = (
+                self._stats.get("mt5_orders_placed", 0) + 1
+            )
 
         if self._on_tracked is not None:
             self._on_tracked(dict(tracked_info))
@@ -212,7 +216,9 @@ class PendingOrderLifecycleManager:
                     state.get("reason") or REASON_MISSING_WITHOUT_FILL,
                 )
 
-    def check_mt5_order_expiry(self, on_expired: Optional[Callable[[str, str], None]]) -> None:
+    def check_mt5_order_expiry(
+        self, on_expired: Optional[Callable[[str, str], None]]
+    ) -> None:
         """检查 MT5 挂单是否超时，超时则通过 MT5 API 取消。"""
         now = datetime.now(timezone.utc)
         expired: list[tuple[str, Dict[str, Any]]] = []
@@ -319,8 +325,12 @@ class PendingOrderLifecycleManager:
         if isinstance(result, dict):
             success = set()
             for key in success_keys:
-                success.update(PendingOrderLifecycleManager._extract_tickets(result.get(key, [])))
-            failed = PendingOrderLifecycleManager._extract_tickets(result.get("failed", []))
+                success.update(
+                    PendingOrderLifecycleManager._extract_tickets(result.get(key, []))
+                )
+            failed = PendingOrderLifecycleManager._extract_tickets(
+                result.get("failed", [])
+            )
             if ticket in success:
                 return True
             if failed:

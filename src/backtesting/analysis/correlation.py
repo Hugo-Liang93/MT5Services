@@ -113,11 +113,15 @@ def analyze_strategy_correlation(
     # 计算 strategy_weights：被高相关对降权
     # 策略 A 和 B 相关性 > threshold → 保留交易次数更多的那个为 1.0，另一个降权
     weights: Dict[str, float] = {s: 1.0 for s in strategies}
-    signal_counts = {s: sum(1 for v in signal_directions[s] if v != 0) for s in strategies}
+    signal_counts = {
+        s: sum(1 for v in signal_directions[s] if v != 0) for s in strategies
+    }
 
     for pair in high_pairs:
         # 信号更多的策略保持 1.0，较少的降权
-        if signal_counts.get(pair.strategy_a, 0) >= signal_counts.get(pair.strategy_b, 0):
+        if signal_counts.get(pair.strategy_a, 0) >= signal_counts.get(
+            pair.strategy_b, 0
+        ):
             weights[pair.strategy_b] = min(weights[pair.strategy_b], penalty_weight)
         else:
             weights[pair.strategy_a] = min(weights[pair.strategy_a], penalty_weight)
@@ -148,9 +152,17 @@ def extract_signal_directions_from_evaluations(
     all_strategies: set[str] = set()
 
     for ev in evaluations:
-        bar_time = getattr(ev, "bar_time", None) or ev.get("bar_time") if isinstance(ev, dict) else getattr(ev, "bar_time", None)
-        strategy = getattr(ev, "strategy", None) or (ev.get("strategy") if isinstance(ev, dict) else None)
-        direction = getattr(ev, "direction", None) or (ev.get("direction") if isinstance(ev, dict) else None)
+        bar_time = (
+            getattr(ev, "bar_time", None) or ev.get("bar_time")
+            if isinstance(ev, dict)
+            else getattr(ev, "bar_time", None)
+        )
+        strategy = getattr(ev, "strategy", None) or (
+            ev.get("strategy") if isinstance(ev, dict) else None
+        )
+        direction = getattr(ev, "direction", None) or (
+            ev.get("direction") if isinstance(ev, dict) else None
+        )
 
         if bar_time is None or strategy is None:
             continue

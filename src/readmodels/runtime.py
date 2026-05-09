@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, cast
 
 from src.monitoring.pipeline.events import (
     PIPELINE_ADMISSION_REPORT_APPENDED,
@@ -17,14 +17,14 @@ from src.monitoring.pipeline.events import (
     PIPELINE_UNMANAGED_POSITION_DETECTED,
 )
 from src.trading.broker.comment_codec import looks_like_system_trade_comment
+from src.trading.execution.market_data_health import (
+    normalize_market_data_health_snapshot,
+)
 from src.trading.execution.reasons import (
     REASON_AUTO_TRADE_DISABLED,
     REASON_CIRCUIT_OPEN,
     REASON_MARKET_DATA_UNHEALTHY,
     REASON_QUOTE_STALE,
-)
-from src.trading.execution.market_data_health import (
-    normalize_market_data_health_snapshot,
 )
 from src.trading.execution.tick_feature_health import (
     normalize_tick_feature_health_snapshot,
@@ -126,6 +126,7 @@ class RuntimeReadModel:
         tick_feature_bus: Any = None,
         runtime_mode_controller: Any = None,
         runtime_identity: Any = None,
+        risk_config: Any = None,
         db_writer: Any = None,
     ) -> None:
         self._health_monitor = health_monitor
@@ -146,6 +147,7 @@ class RuntimeReadModel:
         self._tick_feature_bus = tick_feature_bus
         self._runtime_mode_controller = runtime_mode_controller
         self._runtime_identity = runtime_identity
+        self._risk_config = risk_config
         self.db_writer = db_writer
 
     @property
@@ -774,7 +776,9 @@ class RuntimeReadModel:
                     bus_stats = {}
         per_symbol: dict[str, Any] = {}
         blocked: list[str] = []
-        health_payload = getattr(self._tick_feature_health_store, "health_payload", None)
+        health_payload = getattr(
+            self._tick_feature_health_store, "health_payload", None
+        )
         for symbol in symbols:
             try:
                 if callable(health_payload):
@@ -1448,6 +1452,119 @@ class RuntimeReadModel:
             "items": items,
         }
 
+    def combined_exposure_payload(self) -> dict[str, Any]:
+        """投影信号轨与恢复轨在同账户的仓位/手数占用（ADR-014）。
+
+        消费者（PA evaluator / admission service）应在入场前查此投影，
+        了解当前账户已被恢复轨占用的 lots 与可用余量。本 payload 只投影状态，
+        不依赖 risk config —— available 由消费者用各自的 limit 自行计算。
+        """
+        # 1. 取 recovery cycle 占用的 ticket 集合
+        recovery_tickets: set[int] = set()
+        recovery_active_cycle_id: str | None = None
+        runner_payload: dict[str, Any] = {}
+        if self._recovery_runner is not None:
+            runner_payload = self.recovery_runner_summary()
+            for ticket in runner_payload.get("active_live_position_tickets", []) or []:
+                try:
+                    recovery_tickets.add(int(ticket))
+                except (TypeError, ValueError):
+                    continue
+            cycle_id = runner_payload.get("active_cycle_id")
+            recovery_active_cycle_id = (
+                str(cycle_id) if cycle_id not in (None, "") else None
+            )
+
+        # 2. 从 PositionManager 取全部活跃持仓，按 ticket 分类
+        signal_lots = 0.0
+        signal_count = 0
+        recovery_lots = 0.0
+        recovery_count = 0
+        by_symbol: dict[str, dict[str, float]] = {}
+
+        position_manager_available = self._position_manager is not None
+        if position_manager_available:
+            summary = self.position_manager_summary()
+            items = (summary.get("positions", {}) or {}).get("items", []) or []
+            for item in items:
+                ticket_raw = item.get("ticket")
+                try:
+                    ticket_int = int(ticket_raw) if ticket_raw is not None else None
+                except (TypeError, ValueError):
+                    ticket_int = None
+                symbol = str(item.get("symbol") or "").strip() or "unknown"
+                try:
+                    volume = float(item.get("volume") or 0.0)
+                except (TypeError, ValueError):
+                    volume = 0.0
+                bucket = by_symbol.setdefault(
+                    symbol, {"signal_lots": 0.0, "recovery_lots": 0.0}
+                )
+                if ticket_int is not None and ticket_int in recovery_tickets:
+                    recovery_lots += volume
+                    bucket["recovery_lots"] += volume
+                    recovery_count += 1
+                else:
+                    signal_lots += volume
+                    bucket["signal_lots"] += volume
+                    signal_count += 1
+
+        # 3. 取风控限额（来自 risk_config 注入；若未注入返回 None，消费者按 None 跳过判断）
+        risk_cfg = self._risk_config
+        limits = {
+            "max_volume_per_symbol": (
+                getattr(risk_cfg, "max_volume_per_symbol", None) if risk_cfg else None
+            ),
+            "max_open_positions_total": (
+                getattr(risk_cfg, "max_open_positions_total", None)
+                if risk_cfg
+                else None
+            ),
+            "max_positions_per_symbol": (
+                getattr(risk_cfg, "max_positions_per_symbol", None)
+                if risk_cfg
+                else None
+            ),
+            "max_net_lots_per_symbol": (
+                getattr(risk_cfg, "max_net_lots_per_symbol", None) if risk_cfg else None
+            ),
+        }
+
+        return cast(
+            dict[str, Any],
+            self._json_safe_value(
+                {
+                    "view": "combined_exposure",
+                    "source_status": (
+                        "ok"
+                        if position_manager_available
+                        else "position_manager_unavailable"
+                    ),
+                    "recovery_runner_enabled": bool(
+                        runner_payload.get("enabled", False)
+                    ),
+                    "recovery_active_cycle_id": recovery_active_cycle_id,
+                    "recovery_position_count": recovery_count,
+                    "signal_position_count": signal_count,
+                    "total_position_count": signal_count + recovery_count,
+                    "recovery_lots": round(recovery_lots, 6),
+                    "signal_lots": round(signal_lots, 6),
+                    "total_lots": round(recovery_lots + signal_lots, 6),
+                    "by_symbol": {
+                        symbol: {
+                            "signal_lots": round(values["signal_lots"], 6),
+                            "recovery_lots": round(values["recovery_lots"], 6),
+                            "total_lots": round(
+                                values["signal_lots"] + values["recovery_lots"], 6
+                            ),
+                        }
+                        for symbol, values in sorted(by_symbol.items())
+                    },
+                    "limits": limits,
+                }
+            ),
+        )
+
     def recovery_cycle_summary_payload(self, *, limit: int = 20) -> dict[str, Any]:
         if self._trading_state_store is None:
             return {
@@ -1589,7 +1706,9 @@ class RuntimeReadModel:
             if leg.get("status") == "open" and leg.get("position_ticket") is not None
         ]
         submitted_tickets = self._recovery_submitted_tickets(row.get("metadata"))
-        metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+        metadata = (
+            row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+        )
         cleanup_result = (
             metadata.get("cleanup_result") if isinstance(metadata, Mapping) else {}
         )
@@ -1707,14 +1826,19 @@ class RuntimeReadModel:
         parts = [part.lower() for part in text.replace(" ", ":").split(":") if part]
         if "initial" in parts:
             return "initial"
-        if "step" in parts or any(part.startswith("s") and part[1:].isdigit() for part in parts):
+        if "step" in parts or any(
+            part.startswith("s") and part[1:].isdigit() for part in parts
+        ):
             return "step"
         return "unknown"
 
     @staticmethod
     def _recovery_cycle_step_index(row: Mapping[str, Any]) -> int | None:
         metadata = row.get("metadata")
-        if isinstance(metadata, Mapping) and metadata.get("recovery_step_index") is not None:
+        if (
+            isinstance(metadata, Mapping)
+            and metadata.get("recovery_step_index") is not None
+        ):
             try:
                 return int(metadata.get("recovery_step_index"))
             except (TypeError, ValueError):
@@ -1974,7 +2098,9 @@ class RuntimeReadModel:
             "market_data_fresh": not quote_stale and not market_data_unhealthy,
             "market_data_health": market_data_health,
             "tick_feature_health": tick_feature_health,
-            "tick_derived_tradable": not bool(tick_feature_health.get("blocking", False)),
+            "tick_derived_tradable": not bool(
+                tick_feature_health.get("blocking", False)
+            ),
             "quote_health": {
                 "stale": quote_stale,
                 "age_seconds": quote_health.get("age_seconds"),

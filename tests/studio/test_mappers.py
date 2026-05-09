@@ -2,28 +2,31 @@
 
 Each test verifies status/task/alertLevel for key state transitions.
 """
+
 from __future__ import annotations
 
 from src.studio.mappers import (
-    map_collector,
-    map_analyst,
-    map_strategist,
-    map_risk_officer,
-    map_trader,
-    map_position_manager,
     map_accountant,
+    map_analyst,
     map_backtester,
     map_calendar_reporter,
+    map_collector,
     map_inspector,
+    map_position_manager,
+    map_risk_officer,
+    map_strategist,
+    map_trader,
 )
-
 
 # ── collector ──────────────────────────────────────────────────
 
 
 class TestCollector:
     def test_working(self) -> None:
-        stats = {"threads": {"ingest_alive": True}, "summary": {"total": 6, "critical": 0, "full": 0}}
+        stats = {
+            "threads": {"ingest_alive": True},
+            "summary": {"total": 6, "critical": 0, "full": 0},
+        }
         agent = map_collector(stats, is_backfilling=False)
         assert agent["status"] == "working"
         assert agent["alertLevel"] == "none"
@@ -40,13 +43,19 @@ class TestCollector:
         assert agent["alertLevel"] == "error"
 
     def test_queue_full(self) -> None:
-        stats = {"threads": {"ingest_alive": True}, "summary": {"full": 2, "critical": 0, "total": 6}}
+        stats = {
+            "threads": {"ingest_alive": True},
+            "summary": {"full": 2, "critical": 0, "total": 6},
+        }
         agent = map_collector(stats, is_backfilling=False)
         assert agent["status"] == "blocked"
         assert agent["alertLevel"] == "error"
 
     def test_queue_critical(self) -> None:
-        stats = {"threads": {"ingest_alive": True}, "summary": {"full": 0, "critical": 3, "total": 6}}
+        stats = {
+            "threads": {"ingest_alive": True},
+            "summary": {"full": 0, "critical": 3, "total": 6},
+        }
         agent = map_collector(stats, is_backfilling=False)
         assert agent["status"] == "warning"
         assert agent["alertLevel"] == "warning"
@@ -72,7 +81,11 @@ class TestAnalyst:
         assert agent["status"] == "error"
 
     def test_waiting(self) -> None:
-        perf = {"event_loop_running": True, "total_computations": 0, "success_rate": 0.0}
+        perf = {
+            "event_loop_running": True,
+            "total_computations": 0,
+            "success_rate": 0.0,
+        }
         agent = map_analyst(perf)
         assert agent["status"] == "thinking"
 
@@ -113,28 +126,51 @@ class TestStrategist:
 
 class TestRiskOfficer:
     def test_approved(self) -> None:
-        status = {"signals_received": 5, "signals_passed": 5, "signals_blocked": 0, "execution_quality": {"risk_blocks": 0}}
+        status = {
+            "signals_received": 5,
+            "signals_passed": 5,
+            "signals_blocked": 0,
+            "execution_quality": {"risk_blocks": 0},
+        }
         agent = map_risk_officer(status)
         assert agent["status"] == "approved"
 
     def test_reviewing(self) -> None:
-        status = {"signals_received": 5, "signals_passed": 3, "signals_blocked": 2, "execution_quality": {"risk_blocks": 0}}
+        status = {
+            "signals_received": 5,
+            "signals_passed": 3,
+            "signals_blocked": 2,
+            "execution_quality": {"risk_blocks": 0},
+        }
         agent = map_risk_officer(status)
         assert agent["status"] == "reviewing"
 
     def test_risk_blocked(self) -> None:
-        status = {"signals_received": 5, "signals_passed": 3, "signals_blocked": 2, "execution_quality": {"risk_blocks": 1}}
+        status = {
+            "signals_received": 5,
+            "signals_passed": 3,
+            "signals_blocked": 2,
+            "execution_quality": {"risk_blocks": 1},
+        }
         agent = map_risk_officer(status)
         assert agent["status"] == "blocked"
         assert agent["alertLevel"] == "warning"
 
     def test_support_evidence_is_exposed(self) -> None:
-        status = {"signals_received": 2, "signals_passed": 1, "signals_blocked": 1, "execution_quality": {"risk_blocks": 0}}
+        status = {
+            "signals_received": 2,
+            "signals_passed": 1,
+            "signals_blocked": 1,
+            "execution_quality": {"risk_blocks": 0},
+        }
         agent = map_risk_officer(
             status,
             support_evidence={"accountant": {"margin_guard_state": "warn"}},
         )
-        assert agent["metrics"]["support_evidence"]["accountant"]["margin_guard_state"] == "warn"
+        assert (
+            agent["metrics"]["support_evidence"]["accountant"]["margin_guard_state"]
+            == "warn"
+        )
         assert "accountant" in agent["metrics"]["upstream_modules"]
 
 
@@ -147,21 +183,34 @@ class TestTrader:
         assert agent["status"] == "disconnected"
 
     def test_circuit_open(self) -> None:
-        status = {"enabled": True, "circuit_breaker": {"open": True, "consecutive_failures": 3}, "execution_count": 5}
+        status = {
+            "enabled": True,
+            "circuit_breaker": {"open": True, "consecutive_failures": 3},
+            "execution_count": 5,
+        }
         agent = map_trader(status)
         assert agent["status"] == "blocked"
         assert agent["alertLevel"] == "error"
 
     def test_working_with_executions(self) -> None:
         status = {
-            "enabled": True, "circuit_breaker": {"open": False}, "execution_count": 10,
-            "last_error": None, "recent_executions": [{"direction": "buy", "symbol": "XAUUSD"}],
+            "enabled": True,
+            "circuit_breaker": {"open": False},
+            "execution_count": 10,
+            "last_error": None,
+            "recent_executions": [{"direction": "buy", "symbol": "XAUUSD"}],
         }
         agent = map_trader(status)
         assert agent["status"] == "working"
 
     def test_idle(self) -> None:
-        status = {"enabled": True, "circuit_breaker": {"open": False}, "execution_count": 0, "last_error": None, "recent_executions": []}
+        status = {
+            "enabled": True,
+            "circuit_breaker": {"open": False},
+            "execution_count": 0,
+            "last_error": None,
+            "recent_executions": [],
+        }
         agent = map_trader(status)
         assert agent["status"] == "idle"
 
@@ -203,14 +252,24 @@ class TestPositionManager:
 
 class TestAccountant:
     def test_healthy(self) -> None:
-        account = {"balance": 10000, "equity": 10050, "margin": 200, "free_margin": 9800}
+        account = {
+            "balance": 10000,
+            "equity": 10050,
+            "margin": 200,
+            "free_margin": 9800,
+        }
         control = {"auto_entry_enabled": True, "close_only_mode": False}
         agent = map_accountant(account, control)
         assert agent["status"] == "working"
 
     def test_low_margin(self) -> None:
         # equity/margin = 5000/4000 = 125% < 150% threshold
-        account = {"balance": 10000, "equity": 5000, "margin": 4000, "free_margin": 1000}
+        account = {
+            "balance": 10000,
+            "equity": 5000,
+            "margin": 4000,
+            "free_margin": 1000,
+        }
         control = {"auto_entry_enabled": True, "close_only_mode": False}
         agent = map_accountant(account, control)
         assert agent["status"] == "alert"
@@ -253,11 +312,25 @@ class TestCalendarReporter:
 
 class TestBacktester:
     def test_running_job(self) -> None:
-        agent = map_backtester({"running_jobs": 1, "pending_jobs": 0, "failed_jobs": 0, "completed_jobs": 0})
+        agent = map_backtester(
+            {
+                "running_jobs": 1,
+                "pending_jobs": 0,
+                "failed_jobs": 0,
+                "completed_jobs": 0,
+            }
+        )
         assert agent["status"] == "working"
 
     def test_recent_failure_warns(self) -> None:
-        agent = map_backtester({"running_jobs": 0, "pending_jobs": 0, "failed_jobs": 1, "completed_jobs": 0})
+        agent = map_backtester(
+            {
+                "running_jobs": 0,
+                "pending_jobs": 0,
+                "failed_jobs": 1,
+                "completed_jobs": 0,
+            }
+        )
         assert agent["status"] == "warning"
 
 

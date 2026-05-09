@@ -14,9 +14,9 @@ import json
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Union
 from enum import Enum
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -71,71 +71,81 @@ def normalize_indicator_func_path(func_path: str) -> str:
 
 class ComputeMode(str, Enum):
     """计算模式"""
-    STANDARD = "standard"      # 标准计算
+
+    STANDARD = "standard"  # 标准计算
     INCREMENTAL = "incremental"  # 增量计算
-    PARALLEL = "parallel"      # 并行计算
+    PARALLEL = "parallel"  # 并行计算
 
 
 class CacheStrategy(str, Enum):
     """缓存策略"""
-    NONE = "none"              # 无缓存
-    SIMPLE = "simple"          # 简单缓存
-    LRU_TTL = "lru_ttl"        # LRU+TTL智能缓存
+
+    NONE = "none"  # 无缓存
+    SIMPLE = "simple"  # 简单缓存
+    LRU_TTL = "lru_ttl"  # LRU+TTL智能缓存
 
 
 @dataclass
 class IndicatorConfig:
     """单个指标配置"""
-    name: str                  # 指标名称
-    func_path: str            # 函数路径，如 "src.indicators.mean.sma"
-    params: Dict[str, Any]    # 参数，如 {"period": 20, "min_bars": 20}
+
+    name: str  # 指标名称
+    func_path: str  # 函数路径，如 "src.indicators.mean.sma"
+    params: Dict[str, Any]  # 参数，如 {"period": 20, "min_bars": 20}
     dependencies: List[str] = field(default_factory=list)  # 依赖的指标
     compute_mode: ComputeMode = ComputeMode.STANDARD  # 计算模式
-    display: bool = False     # 前端展示标记（不被策略引用但需要在 UI 展示的指标）
-    description: str = ""     # 指标描述
+    display: bool = False  # 前端展示标记（不被策略引用但需要在 UI 展示的指标）
+    description: str = ""  # 指标描述
     tags: List[str] = field(default_factory=list)  # 标签，如 ["trend", "momentum"]
     delta_bars: List[int] = field(default_factory=list)
-    cache_ttl: Optional[int] = None  # per-indicator TTL (秒)；None = 使用全局 PipelineConfig.cache_ttl
+    cache_ttl: Optional[int] = (
+        None  # per-indicator TTL (秒)；None = 使用全局 PipelineConfig.cache_ttl
+    )
 
 
 @dataclass
 class PipelineConfig:
     """流水线配置"""
-    enable_parallel: bool = True      # 启用并行计算
-    max_workers: int = 4              # 最大工作线程数
-    enable_cache: bool = True         # 启用缓存
+
+    enable_parallel: bool = True  # 启用并行计算
+    max_workers: int = 4  # 最大工作线程数
+    enable_cache: bool = True  # 启用缓存
     cache_strategy: CacheStrategy = CacheStrategy.LRU_TTL  # 缓存策略
-    cache_ttl: float = 300.0          # 缓存TTL（秒）
-    cache_maxsize: int = 1000         # 缓存最大大小
-    enable_incremental: bool = True   # 启用增量计算
-    max_retries: int = 2              # 最大重试次数
-    retry_delay: float = 0.1          # 重试延迟（秒）
-    enable_monitoring: bool = True    # 启用监控
-    poll_interval: float = 5.0        # 轮询间隔（秒）
+    cache_ttl: float = 300.0  # 缓存TTL（秒）
+    cache_maxsize: int = 1000  # 缓存最大大小
+    enable_incremental: bool = True  # 启用增量计算
+    max_retries: int = 2  # 最大重试次数
+    retry_delay: float = 0.1  # 重试延迟（秒）
+    enable_monitoring: bool = True  # 启用监控
+    poll_interval: float = 5.0  # 轮询间隔（秒）
 
 
 @dataclass
 class UnifiedIndicatorConfig:
     """统一指标配置"""
+
     # 指标配置
     indicators: List[IndicatorConfig] = field(default_factory=list)
-    
+
     # 流水线配置
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
-    
+
     # 符号和时间框架配置
     symbols: List[str] = field(default_factory=list)
     timeframes: List[str] = field(default_factory=list)
     inherit_symbols: bool = True
     inherit_timeframes: bool = True
-    
+
     # 系统配置
-    auto_start: bool = True           # 是否自动启动
+    auto_start: bool = True  # 是否自动启动
     config_file: str = "config/indicators.json"  # 配置文件路径
-    hot_reload: bool = True           # 是否支持热重载
-    reload_interval: float = 60.0     # 热重载间隔（秒）
+    hot_reload: bool = True  # 是否支持热重载
+    reload_interval: float = 60.0  # 热重载间隔（秒）
+
     def __post_init__(self) -> None:
-        shared_symbols, shared_timeframes, shared_reload_interval = _shared_indicator_defaults()
+        shared_symbols, shared_timeframes, shared_reload_interval = (
+            _shared_indicator_defaults()
+        )
         if not self.symbols:
             self.symbols = list(shared_symbols)
         if not self.timeframes:
@@ -146,117 +156,127 @@ class UnifiedIndicatorConfig:
 
 class ConfigLoader:
     """配置加载器"""
-    
+
     @staticmethod
     def from_ini(filepath: str) -> UnifiedIndicatorConfig:
         """
         从INI文件加载配置（兼容现有格式）
-        
+
         Args:
             filepath: INI文件路径
-            
+
         Returns:
             统一配置对象
         """
         import configparser
-        
+
         config = configparser.ConfigParser()
-        config.read(filepath, encoding='utf-8')
-        
-        shared_symbols, shared_timeframes, shared_reload_interval = _shared_indicator_defaults()
+        config.read(filepath, encoding="utf-8")
+
+        shared_symbols, shared_timeframes, shared_reload_interval = (
+            _shared_indicator_defaults()
+        )
         unified_config = UnifiedIndicatorConfig(
             symbols=shared_symbols,
             timeframes=shared_timeframes,
             reload_interval=shared_reload_interval,
         )
-        
+
         # 加载流水线配置
-        if 'worker' in config:
-            worker_section = config['worker']
+        if "worker" in config:
+            worker_section = config["worker"]
             unified_config.pipeline.poll_interval = float(
-                worker_section.get('poll_seconds', '5.0')
+                worker_section.get("poll_seconds", "5.0")
             )
-        
+
         # 加载指标配置
         indicators = []
         for section in config.sections():
-            if section == 'worker':
+            if section == "worker":
                 continue
-                
-            if 'func' in config[section]:
+
+            if "func" in config[section]:
                 indicator_config = IndicatorConfig(
                     name=section,
-                    func_path=normalize_indicator_func_path(config[section]['func']),
-                    params=json.loads(config[section].get('params', '{}')),
-                    dependencies=[]  # INI格式不支持依赖配置
+                    func_path=normalize_indicator_func_path(config[section]["func"]),
+                    params=json.loads(config[section].get("params", "{}")),
+                    dependencies=[],  # INI格式不支持依赖配置
                 )
                 indicators.append(indicator_config)
-        
+
         unified_config.indicators = indicators
         return unified_config
-    
+
     @staticmethod
     def from_json(filepath: str) -> UnifiedIndicatorConfig:
         """
         从JSON文件加载配置（推荐格式）
-        
+
         Args:
             filepath: JSON文件路径
-            
+
         Returns:
             统一配置对象
         """
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
-        shared_symbols, shared_timeframes, shared_reload_interval = _shared_indicator_defaults()
-        
+        shared_symbols, shared_timeframes, shared_reload_interval = (
+            _shared_indicator_defaults()
+        )
+
         # 解析指标配置
         indicators = []
-        for indicator_data in data.get('indicators', []):
+        for indicator_data in data.get("indicators", []):
             indicator_config = IndicatorConfig(
-                name=indicator_data['name'],
-                func_path=normalize_indicator_func_path(indicator_data['func_path']),
-                params=indicator_data.get('params', {}),
-                dependencies=indicator_data.get('dependencies', []),
-                compute_mode=ComputeMode(indicator_data.get('compute_mode', 'standard')),
-                display=indicator_data.get('display', False),
-                description=indicator_data.get('description', ''),
-                tags=indicator_data.get('tags', []),
+                name=indicator_data["name"],
+                func_path=normalize_indicator_func_path(indicator_data["func_path"]),
+                params=indicator_data.get("params", {}),
+                dependencies=indicator_data.get("dependencies", []),
+                compute_mode=ComputeMode(
+                    indicator_data.get("compute_mode", "standard")
+                ),
+                display=indicator_data.get("display", False),
+                description=indicator_data.get("description", ""),
+                tags=indicator_data.get("tags", []),
                 delta_bars=[
                     int(item)
-                    for item in indicator_data.get('delta_bars', [])
+                    for item in indicator_data.get("delta_bars", [])
                     if int(item) > 0
                 ],
             )
             indicators.append(indicator_config)
-        
+
         # 解析流水线配置
-        pipeline_data = data.get('pipeline', {})
+        pipeline_data = data.get("pipeline", {})
         pipeline_config = PipelineConfig(
-            enable_parallel=pipeline_data.get('enable_parallel', True),
-            max_workers=pipeline_data.get('max_workers', 4),
-            enable_cache=pipeline_data.get('enable_cache', True),
-            cache_strategy=CacheStrategy(pipeline_data.get('cache_strategy', 'lru_ttl')),
-            cache_ttl=float(pipeline_data.get('cache_ttl', 300.0)),
-            cache_maxsize=pipeline_data.get('cache_maxsize', 1000),
-            enable_incremental=pipeline_data.get('enable_incremental', True),
-            max_retries=pipeline_data.get('max_retries', 2),
-            retry_delay=float(pipeline_data.get('retry_delay', 0.1)),
-            enable_monitoring=pipeline_data.get('enable_monitoring', True),
-            poll_interval=float(pipeline_data.get('poll_interval', 5.0))
+            enable_parallel=pipeline_data.get("enable_parallel", True),
+            max_workers=pipeline_data.get("max_workers", 4),
+            enable_cache=pipeline_data.get("enable_cache", True),
+            cache_strategy=CacheStrategy(
+                pipeline_data.get("cache_strategy", "lru_ttl")
+            ),
+            cache_ttl=float(pipeline_data.get("cache_ttl", 300.0)),
+            cache_maxsize=pipeline_data.get("cache_maxsize", 1000),
+            enable_incremental=pipeline_data.get("enable_incremental", True),
+            max_retries=pipeline_data.get("max_retries", 2),
+            retry_delay=float(pipeline_data.get("retry_delay", 0.1)),
+            enable_monitoring=pipeline_data.get("enable_monitoring", True),
+            poll_interval=float(pipeline_data.get("poll_interval", 5.0)),
         )
 
-        inherit_symbols = _as_bool(data.get('inherit_symbols'), 'symbols' not in data)
-        inherit_timeframes = _as_bool(data.get('inherit_timeframes'), 'timeframes' not in data)
+        inherit_symbols = _as_bool(data.get("inherit_symbols"), "symbols" not in data)
+        inherit_timeframes = _as_bool(
+            data.get("inherit_timeframes"), "timeframes" not in data
+        )
         symbols = (
             list(shared_symbols)
             if inherit_symbols
-            else _normalize_scope(data.get('symbols'), shared_symbols)
+            else _normalize_scope(data.get("symbols"), shared_symbols)
         )
         timeframes = (
             list(shared_timeframes)
             if inherit_timeframes
-            else _normalize_scope(data.get('timeframes'), shared_timeframes)
+            else _normalize_scope(data.get("timeframes"), shared_timeframes)
         )
 
         extra_symbols = sorted(set(symbols) - set(shared_symbols))
@@ -271,7 +291,7 @@ class ConfigLoader:
                 "Indicator config expands timeframe scope beyond shared config: %s",
                 extra_timeframes,
             )
-        
+
         # 解析其他配置
         unified_config = UnifiedIndicatorConfig(
             indicators=indicators,
@@ -280,14 +300,14 @@ class ConfigLoader:
             timeframes=timeframes,
             inherit_symbols=inherit_symbols,
             inherit_timeframes=inherit_timeframes,
-            auto_start=data.get('auto_start', True),
+            auto_start=data.get("auto_start", True),
             config_file=filepath,
-            hot_reload=data.get('hot_reload', True),
-            reload_interval=float(data.get('reload_interval', shared_reload_interval))
+            hot_reload=data.get("hot_reload", True),
+            reload_interval=float(data.get("reload_interval", shared_reload_interval)),
         )
-        
+
         return unified_config
-    
+
     @staticmethod
     def load(config_file: Optional[str] = None) -> UnifiedIndicatorConfig:
         """加载指标配置（仅支持 JSON 格式）。
@@ -334,25 +354,25 @@ class ConfigLoader:
 
 class ConfigManager:
     """配置管理器（支持热重载）"""
-    
+
     def __init__(self, config_file: Optional[str] = None):
         self.config_file = config_file
         self.config: Optional[UnifiedIndicatorConfig] = None
         self._last_modified: float = 0.0
         self._lock = threading.RLock()
-        
+
         # 初始加载配置
         self.reload()
-    
+
     def reload(self) -> bool:
         """
         重新加载配置
-        
+
         Returns:
             是否成功重新加载
         """
         import os
-        
+
         with self._lock:
             try:
                 # 检查文件是否被修改
@@ -360,46 +380,48 @@ class ConfigManager:
                     current_modified = os.path.getmtime(self.config_file)
                     if current_modified <= self._last_modified:
                         return False  # 文件未修改
-                    
+
                     self._last_modified = current_modified
-                
+
                 # 加载配置
                 self.config = ConfigLoader.load(self.config_file)
-                logger.info(f"Configuration reloaded from {self.config_file or 'default'}")
+                logger.info(
+                    f"Configuration reloaded from {self.config_file or 'default'}"
+                )
                 return True
-                
+
             except Exception as e:
                 logger.error(f"Failed to reload configuration: {e}")
                 return False
-    
+
     def get_config(self) -> UnifiedIndicatorConfig:
         """获取当前配置"""
         with self._lock:
             if self.config is None:
                 self.config = ConfigLoader.load(self.config_file)
             return self.config
-    
+
     def save(self, filepath: Optional[str] = None) -> bool:
         """
         保存配置到文件
-        
+
         Args:
             filepath: 文件路径，如果为None则使用当前配置文件
-            
+
         Returns:
             是否保存成功
         """
         if filepath is None:
             filepath = self.config_file
-        
+
         if filepath is None:
             logger.error("No filepath specified for saving configuration")
             return False
-        
+
         with self._lock:
             try:
                 config = self.get_config()
-                
+
                 # 转换为字典
                 data = {
                     "indicators": [],
@@ -414,7 +436,7 @@ class ConfigManager:
                         "max_retries": config.pipeline.max_retries,
                         "retry_delay": config.pipeline.retry_delay,
                         "enable_monitoring": config.pipeline.enable_monitoring,
-                        "poll_interval": config.pipeline.poll_interval
+                        "poll_interval": config.pipeline.poll_interval,
                     },
                     "symbols": config.symbols,
                     "timeframes": config.timeframes,
@@ -422,9 +444,9 @@ class ConfigManager:
                     "inherit_timeframes": config.inherit_timeframes,
                     "auto_start": config.auto_start,
                     "hot_reload": config.hot_reload,
-                    "reload_interval": config.reload_interval
+                    "reload_interval": config.reload_interval,
                 }
-                
+
                 # 添加指标配置
                 for indicator in config.indicators:
                     indicator_data = {
@@ -439,18 +461,18 @@ class ConfigManager:
                         "delta_bars": list(indicator.delta_bars),
                     }
                     data["indicators"].append(indicator_data)
-                
+
                 # 保存到文件
-                with open(filepath, 'w', encoding='utf-8') as f:
+                with open(filepath, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
-                
+
                 logger.info(f"Configuration saved to {filepath}")
                 return True
-                
+
             except Exception as e:
                 logger.error(f"Failed to save configuration: {e}")
                 return False
-    
+
     def add_indicator(self, indicator: IndicatorConfig) -> None:
         """添加指标配置"""
         with self._lock:
@@ -461,11 +483,11 @@ class ConfigManager:
                     config.indicators[i] = indicator
                     logger.info(f"Updated indicator: {indicator.name}")
                     return
-            
+
             # 添加新指标
             config.indicators.append(indicator)
             logger.info(f"Added new indicator: {indicator.name}")
-    
+
     def remove_indicator(self, name: str) -> bool:
         """移除指标配置"""
         with self._lock:
@@ -476,7 +498,7 @@ class ConfigManager:
                     logger.info(f"Removed indicator: {name}")
                     return True
             return False
-    
+
     def get_indicator(self, name: str) -> Optional[IndicatorConfig]:
         """获取指标配置"""
         with self._lock:
@@ -485,7 +507,7 @@ class ConfigManager:
                 if indicator.name == name:
                     return indicator
             return None
-    
+
     def update_pipeline_config(self, **kwargs) -> None:
         """更新流水线配置"""
         with self._lock:
@@ -503,10 +525,10 @@ _global_config_manager: Optional[ConfigManager] = None
 def get_global_config_manager(config_file: Optional[str] = None) -> ConfigManager:
     """
     获取全局配置管理器实例（单例模式）
-    
+
     Args:
         config_file: 配置文件路径
-        
+
     Returns:
         配置管理器实例
     """
@@ -519,7 +541,7 @@ def get_global_config_manager(config_file: Optional[str] = None) -> ConfigManage
 def get_config() -> UnifiedIndicatorConfig:
     """
     获取当前配置（便捷函数）
-    
+
     Returns:
         统一配置对象
     """

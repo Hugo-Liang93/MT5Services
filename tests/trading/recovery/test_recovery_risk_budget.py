@@ -24,7 +24,7 @@ def test_risk_budget_ignores_losses_from_other_account_key() -> None:
                 "cycle_id": "other-account-loss",
                 "account_key": "demo:broker:other",
                 "symbol": "XAUUSD",
-                "strategy": "tick_martingale_probe",
+                "strategy": "tick_recovery_probe",
                 "status_reason": "resident_recovery_cycle_loss_limit_submitted",
                 "realized_pnl": -12.5,
                 "closed_at": datetime(2026, 5, 8, 12, tzinfo=timezone.utc).isoformat(),
@@ -41,7 +41,7 @@ def test_risk_budget_ignores_losses_from_other_account_key() -> None:
         now=datetime(2026, 5, 8, 13, tzinfo=timezone.utc),
         account_key="demo:broker:current",
         symbol="XAUUSD",
-        strategy="tick_martingale_probe",
+        strategy="tick_recovery_probe",
         dry_run=False,
     )
 

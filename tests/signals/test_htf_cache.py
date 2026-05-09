@@ -8,6 +8,7 @@
 5. describe() 命中率统计
 6. 多线程读写安全
 """
+
 from __future__ import annotations
 
 import threading
@@ -27,6 +28,7 @@ from src.signals.strategies.htf_cache import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_signal_event(
     *,
@@ -56,6 +58,7 @@ def _make_signal_event(
 # ---------------------------------------------------------------------------
 # TestHTFDirectionContext
 # ---------------------------------------------------------------------------
+
 
 class TestHTFDirectionContext:
     """HTFDirectionContext dataclass 不可变性与字段正确性。"""
@@ -101,6 +104,7 @@ class TestHTFDirectionContext:
 # ---------------------------------------------------------------------------
 # TestHTFStateCacheBasic
 # ---------------------------------------------------------------------------
+
 
 class TestHTFStateCacheBasic:
     """基本读取：get_htf_direction / get_htf_context 命中、缺失。"""
@@ -165,6 +169,7 @@ class TestHTFStateCacheBasic:
 # TestHTFStateCacheSignalListener
 # ---------------------------------------------------------------------------
 
+
 class TestHTFStateCacheSignalListener:
     """on_signal_event 信号监听器：写入、递增、清除、过滤。"""
 
@@ -214,7 +219,9 @@ class TestHTFStateCacheSignalListener:
         assert ("XAUUSD", "H1") in cache._cache
 
         cache.on_signal_event(
-            _make_signal_event(timeframe="H1", signal_state="confirmed_cancelled", direction="hold")
+            _make_signal_event(
+                timeframe="H1", signal_state="confirmed_cancelled", direction="hold"
+            )
         )
         assert ("XAUUSD", "H1") not in cache._cache
 
@@ -250,12 +257,16 @@ class TestHTFStateCacheSignalListener:
         """不同品种的缓存应互相独立。"""
         cache = HTFStateCache()
         cache.on_signal_event(
-            _make_signal_event(symbol="XAUUSD", timeframe="H1", signal_state="confirmed_buy")
+            _make_signal_event(
+                symbol="XAUUSD", timeframe="H1", signal_state="confirmed_buy"
+            )
         )
         cache.on_signal_event(
             _make_signal_event(
-                symbol="EURUSD", timeframe="H1",
-                signal_state="confirmed_sell", direction="sell",
+                symbol="EURUSD",
+                timeframe="H1",
+                signal_state="confirmed_sell",
+                direction="sell",
             )
         )
         assert cache._cache[("XAUUSD", "H1")].direction == "buy"
@@ -265,6 +276,7 @@ class TestHTFStateCacheSignalListener:
 # ---------------------------------------------------------------------------
 # TestHTFStateCacheExpiration
 # ---------------------------------------------------------------------------
+
 
 class TestHTFStateCacheExpiration:
     """max_age 过期处理。"""
@@ -294,7 +306,9 @@ class TestHTFStateCacheExpiration:
         """未过期的条目应正常返回。"""
         cache = HTFStateCache(max_age_seconds=3600.0)
         cache.on_signal_event(
-            _make_signal_event(timeframe="H1", signal_state="confirmed_sell", direction="sell")
+            _make_signal_event(
+                timeframe="H1", signal_state="confirmed_sell", direction="sell"
+            )
         )
         assert cache.get_htf_direction("XAUUSD", "M15") == "sell"
 
@@ -307,6 +321,7 @@ class TestHTFStateCacheExpiration:
 # ---------------------------------------------------------------------------
 # TestHTFStateCacheStats
 # ---------------------------------------------------------------------------
+
 
 class TestHTFStateCacheStats:
     """describe() 命中率统计。"""
@@ -389,6 +404,7 @@ class TestHTFStateCacheStats:
 # TestHTFStateCacheCustomHTFMap
 # ---------------------------------------------------------------------------
 
+
 class TestHTFStateCacheCustomHTFMap:
     """自定义 htf_map。"""
 
@@ -408,6 +424,7 @@ class TestHTFStateCacheCustomHTFMap:
 # ---------------------------------------------------------------------------
 # TestHTFStateCacheAttach
 # ---------------------------------------------------------------------------
+
 
 class TestHTFStateCacheAttach:
     """attach() 将缓存注册为信号监听器。"""
@@ -430,6 +447,7 @@ class TestHTFStateCacheAttach:
 # ---------------------------------------------------------------------------
 # TestHTFStateCacheConcurrency
 # ---------------------------------------------------------------------------
+
 
 class TestHTFStateCacheConcurrency:
     """多线程读写安全。"""
@@ -480,7 +498,9 @@ class TestHTFStateCacheConcurrency:
                     sig_dir = "buy" if i % 2 == 0 else "sell"
                     cache.on_signal_event(
                         _make_signal_event(
-                            timeframe="H1", signal_state=state, direction=sig_dir,
+                            timeframe="H1",
+                            signal_state=state,
+                            direction=sig_dir,
                         )
                     )
                 stop_event.set()
@@ -523,7 +543,9 @@ class TestHTFStateCacheConcurrency:
                 for i in range(200):
                     if i % 2 == 0:
                         cache.on_signal_event(
-                            _make_signal_event(timeframe="H1", signal_state="confirmed_buy")
+                            _make_signal_event(
+                                timeframe="H1", signal_state="confirmed_buy"
+                            )
                         )
                     else:
                         cache.on_signal_event(

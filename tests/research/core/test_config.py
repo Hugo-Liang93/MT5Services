@@ -33,9 +33,9 @@ class TestResearchConfigDefaults:
         assert 1 not in cfg.forward_horizons
         assert 5 not in cfg.forward_horizons
         # 最大 horizon 应覆盖 Chandelier 期望持仓（20+ bar）
-        assert max(cfg.forward_horizons) >= 30, (
-            "forward_horizons 最大值应 ≥ 30 以覆盖 Chandelier trailing 平均持仓。"
-        )
+        assert (
+            max(cfg.forward_horizons) >= 30
+        ), "forward_horizons 最大值应 ≥ 30 以覆盖 Chandelier trailing 平均持仓。"
 
     def test_default_entry_meta_model_config_exists(self) -> None:
         cfg = ResearchConfig()
@@ -57,9 +57,9 @@ class TestPermutationBudget:
         若将来有人改回 1000 请先读 docs/codebase-review.md §F 2026-04-23 综合审查。
         """
         cfg = ResearchConfig()
-        assert cfg.predictive_power.n_permutations == 500, (
-            "pp n_permutations 应为 500（综合审查决定）。改回 1000 前请读审查记录。"
-        )
+        assert (
+            cfg.predictive_power.n_permutations == 500
+        ), "pp n_permutations 应为 500（综合审查决定）。改回 1000 前请读审查记录。"
 
 
 class TestLoadResearchConfigFromIni:
@@ -163,7 +163,9 @@ class TestLoadResearchConfigFromIni:
         assert cfg.entry_meta_model.threshold_grid == [0.45, 0.50, 0.75]
         assert cfg.entry_meta_model.feature_scope == "research_full"
 
-    def test_entry_meta_model_rejects_unknown_feature_scope(self, tmp_path: Path) -> None:
+    def test_entry_meta_model_rejects_unknown_feature_scope(
+        self, tmp_path: Path
+    ) -> None:
         ini = tmp_path / "research.ini"
         ini.write_text(
             textwrap.dedent(
@@ -207,9 +209,9 @@ class TestCostReflectedInForwardReturns:
 
         src = inspect.getsource(data_matrix.build_data_matrix)
         assert "round_trip_cost_pct" in src
-        assert "- cost" in src or "-cost" in src, (
-            "build_data_matrix 必须从 raw_return 扣除 cost，否则 cost 配置无效。"
-        )
+        assert (
+            "- cost" in src or "-cost" in src
+        ), "build_data_matrix 必须从 raw_return 扣除 cost，否则 cost 配置无效。"
 
 
 class TestDefaultResearchConfigPath:

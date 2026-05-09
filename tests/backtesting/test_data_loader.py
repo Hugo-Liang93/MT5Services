@@ -1,4 +1,5 @@
 """data_loader.py 单元测试。"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -106,7 +107,17 @@ class TestHistoricalDataLoader:
     def test_row_to_ohlc(self) -> None:
         """测试行转换。"""
         t = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
-        row = ("XAUUSD", "M5", 1999.0, 2001.0, 1998.0, 2000.0, 100.0, t, {"rsi14": {"rsi": 55.0}})
+        row = (
+            "XAUUSD",
+            "M5",
+            1999.0,
+            2001.0,
+            1998.0,
+            2000.0,
+            100.0,
+            t,
+            {"rsi14": {"rsi": 55.0}},
+        )
         ohlc = HistoricalDataLoader._row_to_ohlc(row)
         assert ohlc.symbol == "XAUUSD"
         assert ohlc.close == 2000.0

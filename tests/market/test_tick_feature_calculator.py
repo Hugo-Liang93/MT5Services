@@ -118,7 +118,9 @@ def test_calculator_blocks_when_tradeable_quote_side_is_missing() -> None:
             ask=None,
             last=1.1001 + index * 0.0001,
             volume=1.0,
-            time=datetime.fromtimestamp((8_000 + index * 1_000) / 1000, tz=timezone.utc),
+            time=datetime.fromtimestamp(
+                (8_000 + index * 1_000) / 1000, tz=timezone.utc
+            ),
             time_msc=8_000 + index * 1_000,
             flags=6,
         )

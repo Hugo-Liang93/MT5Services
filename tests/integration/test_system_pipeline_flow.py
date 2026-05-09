@@ -8,8 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.clients.mt5_market import OHLC, Quote, Tick
-from src.ingestion.ingestor import BackgroundIngestor
 from src.indicators.runtime import event_io, event_loops
+from src.ingestion.ingestor import BackgroundIngestor
 from src.market import MarketDataService
 from src.utils.event_store import LocalEventStore
 

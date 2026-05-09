@@ -68,7 +68,9 @@ def load_margin_guard_config(section: dict[str, str]) -> MarginGuardConfig:
         tighten_stops_level=_float("tighten_stops_level", 150.0),
         tighten_stops_factor=_float("tighten_stops_factor", 0.6),
         emergency_close_level=_float("emergency_close_level", 80.0),
-        emergency_close_strategy=section.get("emergency_close_strategy", "worst_first").strip(),
+        emergency_close_strategy=section.get(
+            "emergency_close_strategy", "worst_first"
+        ).strip(),
         emergency_close_cooldown=_float("emergency_close_cooldown", 30.0),
     )
 
@@ -140,7 +142,9 @@ class MarginGuard:
             return False
         return snap.should_block_new_trades
 
-    def evaluate(self, equity: float, margin: float, free_margin: float) -> MarginGuardSnapshot:
+    def evaluate(
+        self, equity: float, margin: float, free_margin: float
+    ) -> MarginGuardSnapshot:
         """Compute margin level and determine alert state + required actions.
 
         Pure computation — does NOT execute actions. Call ``act()`` to dispatch.
@@ -201,7 +205,9 @@ class MarginGuard:
                     actions.append(f"tighten_stops:{count}")
                     logger.warning(
                         "MarginGuard: tightened trailing stops for %d positions (factor=%.2f, margin_level=%.1f%%)",
-                        count, snapshot.tighten_factor, snapshot.margin_level,
+                        count,
+                        snapshot.tighten_factor,
+                        snapshot.margin_level,
                     )
             except Exception:
                 logger.warning("MarginGuard: tighten_stops_fn failed", exc_info=True)
@@ -212,7 +218,9 @@ class MarginGuard:
             if self._block_count == 1 or self._block_count % 50 == 0:
                 logger.warning(
                     "MarginGuard: blocking new trades (margin_level=%.1f%% < %.0f%%, count=%d)",
-                    snapshot.margin_level, self.config.block_new_trades_level, self._block_count,
+                    snapshot.margin_level,
+                    self.config.block_new_trades_level,
+                    self._block_count,
                 )
 
         # Update snapshot with actions taken

@@ -59,9 +59,7 @@ class TradeControlStateService:
             self._state["auto_entry_enabled"] = bool(
                 state.get("auto_entry_enabled", True)
             )
-            self._state["close_only_mode"] = bool(
-                state.get("close_only_mode", False)
-            )
+            self._state["close_only_mode"] = bool(state.get("close_only_mode", False))
             self._state["reason"] = str(state.get("reason") or "").strip() or None
             self._state["actor"] = str(state.get("actor") or "").strip() or None
             self._state["action_id"] = str(state.get("action_id") or "").strip() or None
@@ -75,7 +73,9 @@ class TradeControlStateService:
             )
             updated_at = state.get("updated_at")
             self._state["updated_at"] = (
-                updated_at.isoformat() if isinstance(updated_at, datetime) else updated_at
+                updated_at.isoformat()
+                if isinstance(updated_at, datetime)
+                else updated_at
             )
             return dict(self._state)
 
@@ -96,8 +96,12 @@ class TradeControlStateService:
                 self._state["auto_entry_enabled"] = bool(auto_entry_enabled)
             if close_only_mode is not None:
                 self._state["close_only_mode"] = bool(close_only_mode)
-            self._state["reason"] = (str(reason).strip() or None) if reason is not None else None
-            self._state["actor"] = (str(actor).strip() or None) if actor is not None else None
+            self._state["reason"] = (
+                (str(reason).strip() or None) if reason is not None else None
+            )
+            self._state["actor"] = (
+                (str(actor).strip() or None) if actor is not None else None
+            )
             self._state["action_id"] = (
                 str(action_id).strip() or None if action_id is not None else None
             )

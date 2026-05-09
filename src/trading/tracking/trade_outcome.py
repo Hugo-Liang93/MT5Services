@@ -19,6 +19,7 @@
 3. 用 fill_price vs close_price 计算实际盈亏
 4. 回调 PerformanceTracker + 写入 DB
 """
+
 from __future__ import annotations
 
 import logging
@@ -128,17 +129,17 @@ class TradeOutcomeTracker:
                 now = datetime.now(timezone.utc)
                 stale_cutoff = now - timedelta(hours=24)
                 stale_keys = [
-                    k for k, v in self._active.items()
-                    if v.opened_at < stale_cutoff
+                    k for k, v in self._active.items() if v.opened_at < stale_cutoff
                 ]
                 if stale_keys:
-                    for k in stale_keys[:len(self._active) - self._max_active]:
+                    for k in stale_keys[: len(self._active) - self._max_active]:
                         removed = self._active.pop(k, None)
                         if removed:
                             self._total_unresolved += 1
                             logger.warning(
                                 "TradeOutcomeTracker: evicting stale trade %s (opened %s)",
-                                k, removed.opened_at.isoformat(),
+                                k,
+                                removed.opened_at.isoformat(),
                             )
                 elif len(self._active) > self._max_active:
                     oldest_key = min(
@@ -148,11 +149,15 @@ class TradeOutcomeTracker:
                     if removed:
                         self._total_unresolved += 1
                         logger.warning(
-                            "TradeOutcomeTracker: force-evicting oldest trade %s", oldest_key,
+                            "TradeOutcomeTracker: force-evicting oldest trade %s",
+                            oldest_key,
                         )
         logger.debug(
             "TradeOutcomeTracker: registered trade signal_id=%s %s %s @ %.5f",
-            signal_id, direction, symbol, fill_price,
+            signal_id,
+            direction,
+            symbol,
+            fill_price,
         )
 
     def restore_tracked_position(self, pos: Any) -> None:
@@ -192,7 +197,9 @@ class TradeOutcomeTracker:
         # §0y P2：旧实现读 pos._close_source 但 TrackedPosition 公开字段是
         # close_source（manager.py:116 + reconciliation.py:376），真实关仓来源
         # 静默被丢失 → metadata 落库永远为默认 'position_closed'，污染审计事实。
-        close_source: str = getattr(pos, "close_source", "position_closed") or "position_closed"
+        close_source: str = (
+            getattr(pos, "close_source", "position_closed") or "position_closed"
+        )
         signal_id: str = getattr(pos, "signal_id", "") or ""
         if not signal_id:
             return
@@ -234,11 +241,17 @@ class TradeOutcomeTracker:
                     self._total_wins += 1
 
         # 实时绩效回调（仅已解析的交易）
-        if won is not None and price_change is not None and self._on_outcome_fn is not None:
+        if (
+            won is not None
+            and price_change is not None
+            and self._on_outcome_fn is not None
+        ):
             try:
                 exit_reason = getattr(pos, "last_exit_reason", "") or ""
                 self._on_outcome_fn(
-                    trade.strategy, won, price_change,
+                    trade.strategy,
+                    won,
+                    price_change,
                     regime=trade.regime,
                     source="trade",
                     exit_reason=exit_reason,
@@ -246,14 +259,18 @@ class TradeOutcomeTracker:
             except Exception:
                 logger.debug(
                     "TradeOutcomeTracker: on_outcome_fn callback failed for %s",
-                    trade.strategy, exc_info=True,
+                    trade.strategy,
+                    exc_info=True,
                 )
 
         if close_price_f is None:
             logger.warning(
                 "TradeOutcomeTracker: unresolved close for signal_id=%s %s %s "
                 "(close_price unavailable, source=%s)",
-                signal_id, trade.direction, trade.symbol, close_source,
+                signal_id,
+                trade.direction,
+                trade.symbol,
+                close_source,
             )
 
         # DB 持久化（包括 unresolved，便于事后审计）
@@ -265,7 +282,11 @@ class TradeOutcomeTracker:
             exit_regime = getattr(pos, "last_exit_regime", "") or ""
             metadata: Dict[str, Any] = {
                 "opened_at": trade.opened_at.isoformat(),
-                "close_source": close_source if close_price_f is not None else POSITION_CLOSE_SOURCE_MT5_MISSING,
+                "close_source": (
+                    close_source
+                    if close_price_f is not None
+                    else POSITION_CLOSE_SOURCE_MT5_MISSING
+                ),
             }
             if exit_reason:
                 metadata[MK.EXIT_REASON] = exit_reason
@@ -273,24 +294,26 @@ class TradeOutcomeTracker:
                 metadata[MK.R_MULTIPLE] = round(float(r_multiple), 4)
             if exit_regime:
                 metadata[MK.EXIT_REGIME] = exit_regime
-            rows: List[Tuple] = [(
-                now,
-                trade.signal_id,
-                trade.account_key,
-                trade.account_alias,
-                trade.intent_id,
-                trade.symbol,
-                trade.timeframe,
-                trade.strategy,
-                trade.direction,
-                trade.confidence,
-                trade.fill_price,
-                close_price_f,
-                price_change,
-                won,
-                trade.regime,
-                metadata,
-            )]
+            rows: List[Tuple] = [
+                (
+                    now,
+                    trade.signal_id,
+                    trade.account_key,
+                    trade.account_alias,
+                    trade.intent_id,
+                    trade.symbol,
+                    trade.timeframe,
+                    trade.strategy,
+                    trade.direction,
+                    trade.confidence,
+                    trade.fill_price,
+                    close_price_f,
+                    price_change,
+                    won,
+                    trade.regime,
+                    metadata,
+                )
+            ]
             try:
                 self._write_fn(rows)
             except Exception:

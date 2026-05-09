@@ -26,6 +26,7 @@ SignalQualityTracker 作为 SignalRuntime 的信号监听器注册：
     2. _register_signal_for_evaluation：若为 confirmed_buy/sell，登记新的待评估信号
     3. 当 bars_elapsed >= bars_to_evaluate，用最新 close 作为 exit_price 计算胜负，写入 DB
 """
+
 from __future__ import annotations
 
 import logging
@@ -44,9 +45,17 @@ class _PendingSignal:
     """等待回填的未结信号记录。"""
 
     __slots__ = (
-        "signal_id", "symbol", "timeframe", "strategy", "direction",
-        "confidence", "entry_price", "issued_at", "bar_time",
-        "regime", "bars_elapsed",
+        "signal_id",
+        "symbol",
+        "timeframe",
+        "strategy",
+        "direction",
+        "confidence",
+        "entry_price",
+        "issued_at",
+        "bar_time",
+        "regime",
+        "bars_elapsed",
     )
 
     def __init__(
@@ -142,7 +151,9 @@ class SignalQualityTracker:
                     if self._total_evaluated > 0
                     else None
                 ),
-                "pending_count": sum(len(v) for v in self._awaiting_evaluation.values()),
+                "pending_count": sum(
+                    len(v) for v in self._awaiting_evaluation.values()
+                ),
             }
 
     def on_execution_skip(self, signal_id: str, reason: str) -> None:
@@ -232,7 +243,9 @@ class SignalQualityTracker:
             self._last_advanced_bar_time[symbol_tf] = dedup_key
 
             keys_to_scan = [
-                k for k in self._awaiting_evaluation if k[0] == symbol_tf[0] and k[1] == symbol_tf[1]
+                k
+                for k in self._awaiting_evaluation
+                if k[0] == symbol_tf[0] and k[1] == symbol_tf[1]
             ]
             for key in keys_to_scan:
                 lst = self._awaiting_evaluation.get(key, [])
@@ -277,36 +290,43 @@ class SignalQualityTracker:
             if won is not None and self._on_quality_fn is not None:
                 try:
                     self._on_quality_fn(
-                        p.strategy, won, price_change or 0.0,
+                        p.strategy,
+                        won,
+                        price_change or 0.0,
                         regime=p.regime,
                     )
                 except Exception:
                     logger.debug(
                         "SignalQualityTracker: on_quality_fn callback failed for %s",
-                        p.strategy, exc_info=True,
+                        p.strategy,
+                        exc_info=True,
                     )
 
-            rows.append((
-                now,
-                p.signal_id,
-                p.symbol,
-                p.timeframe,
-                p.strategy,
-                p.direction,
-                p.confidence,
-                p.entry_price,
-                exit_price,
-                price_change,
-                won,
-                p.bars_elapsed,
-                p.regime,
-                {"entry_bar_time": p.bar_time.isoformat()},
-            ))
+            rows.append(
+                (
+                    now,
+                    p.signal_id,
+                    p.symbol,
+                    p.timeframe,
+                    p.strategy,
+                    p.direction,
+                    p.confidence,
+                    p.entry_price,
+                    exit_price,
+                    price_change,
+                    won,
+                    p.bars_elapsed,
+                    p.regime,
+                    {"entry_bar_time": p.bar_time.isoformat()},
+                )
+            )
 
         try:
             self._write_fn(rows)
         except Exception:
             logger.exception(
                 "SignalQualityTracker: failed to write %d outcome rows for %s/%s",
-                len(rows), event.symbol, event.timeframe,
+                len(rows),
+                event.symbol,
+                event.timeframe,
             )

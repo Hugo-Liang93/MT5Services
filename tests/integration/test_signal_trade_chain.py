@@ -7,6 +7,7 @@
   4. close_position 竞态修复验证：order_send=None 且持仓已消失 → 视为成功
   5. 会话过滤验证：非允许时段不触发信号
 """
+
 from __future__ import annotations
 
 import threading
@@ -18,17 +19,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.app_runtime.factories import build_entry_policy_registry
+from src.config.models.entry_policy import EntryPolicyConfig
+from src.signals.evaluation.indicators_helpers import extract_close_price
 from src.signals.evaluation.regime import RegimeType
-from src.signals.models import SignalContext, SignalDecision, SignalEvent
 from src.signals.metadata_keys import MetadataKey as MK
+from src.signals.models import SignalContext, SignalDecision, SignalEvent
 from src.signals.orchestration.policy import SignalPolicy
 from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
-from src.signals.evaluation.indicators_helpers import extract_close_price
 from src.signals.service import SignalModule
 from src.signals.strategies.adapters import IndicatorSource
 from src.signals.strategies.base import SignalStrategy, StrategyCategory
-from src.app_runtime.factories import build_entry_policy_registry
-from src.config.models.entry_policy import EntryPolicyConfig
 from src.trading.execution.executor import ExecutorConfig, TradeExecutor
 
 
@@ -58,8 +59,10 @@ def _default_runtime_identity() -> _StubRuntimeIdentity:
 # 测试用 Stub 策略（替代已移除的 legacy 策略）
 # ---------------------------------------------------------------------------
 
+
 class StubTrendBuyStrategy:
     """总是输出 buy 信号的 stub 策略，用于集成测试。"""
+
     name = "stub_trend_buy"
     category = StrategyCategory.TREND
     required_indicators = ("atr14",)
@@ -97,6 +100,7 @@ class StubTrendBuyStrategy:
 
 class StubIntrabarStrategy:
     """支持 intrabar scope 的 stub 策略，RSI<30 买入。"""
+
     name = "stub_intrabar"
     category = StrategyCategory.REVERSION
     required_indicators = ("rsi14", "atr14")
@@ -142,43 +146,65 @@ class StubIntrabarStrategy:
 # 通用指标快照构造器
 # ---------------------------------------------------------------------------
 
-def _trending_buy_indicators(close: float = 3000.0, atr: float = 5.0) -> Dict[str, Dict[str, float]]:
+
+def _trending_buy_indicators(
+    close: float = 3000.0, atr: float = 5.0
+) -> Dict[str, Dict[str, float]]:
     """构造触发趋势策略 buy 信号 + TRENDING regime 的指标快照。
 
     关键：BB 宽度 > KC 宽度（bb_upper > kc_upper），确保无 Keltner-Bollinger Squeeze，
     regime 由 ADX≥25 决定为 TRENDING，sma_trend 的 affinity=1.0，confidence 不被压制。
     """
     return {
-        "sma20":    {"sma": close + 10.0, "close": close},    # fast >> slow → clear buy
-        "ema50":    {"ema": close - 5.0},
-        "atr14":    {"atr": atr},
-        "adx14":    {"adx": 30.0, "plus_di": 28.0, "minus_di": 15.0},  # ADX≥25 → TRENDING
-        "boll20":   {"bb_upper": close + 30, "bb_lower": close - 30, "bb_mid": close, "close": close},
-        "keltner20":{"kc_upper": close + 20, "kc_lower": close - 20},  # KC < BB → 无 Squeeze
-        "rsi14":    {"rsi": 55.0},
+        "sma20": {"sma": close + 10.0, "close": close},  # fast >> slow → clear buy
+        "ema50": {"ema": close - 5.0},
+        "atr14": {"atr": atr},
+        "adx14": {"adx": 30.0, "plus_di": 28.0, "minus_di": 15.0},  # ADX≥25 → TRENDING
+        "boll20": {
+            "bb_upper": close + 30,
+            "bb_lower": close - 30,
+            "bb_mid": close,
+            "close": close,
+        },
+        "keltner20": {
+            "kc_upper": close + 20,
+            "kc_lower": close - 20,
+        },  # KC < BB → 无 Squeeze
+        "rsi14": {"rsi": 55.0},
     }
 
 
-def _ranging_rsi_buy_indicators(close: float = 3000.0, atr: float = 5.0) -> Dict[str, Dict[str, float]]:
+def _ranging_rsi_buy_indicators(
+    close: float = 3000.0, atr: float = 5.0
+) -> Dict[str, Dict[str, float]]:
     """构造触发 RSI 超卖 buy 信号 + RANGING regime 的指标快照。
 
     关键：BB > KC（无 Squeeze），ADX<20 → RANGING，rsi_reversion affinity=1.0。
     RSI<30 → buy（超卖反弹信号）。
     """
     return {
-        "sma20":    {"sma": close,  "close": close},
-        "ema50":    {"ema": close},
-        "atr14":    {"atr": atr},
-        "adx14":    {"adx": 15.0, "plus_di": 12.0, "minus_di": 18.0},  # ADX<20 → RANGING
-        "boll20":   {"bb_upper": close + 30, "bb_lower": close - 30, "bb_mid": close, "close": close},
-        "keltner20":{"kc_upper": close + 20, "kc_lower": close - 20},  # KC < BB → 无 Squeeze
-        "rsi14":    {"rsi": 22.0},   # RSI<30 → buy（超卖）
+        "sma20": {"sma": close, "close": close},
+        "ema50": {"ema": close},
+        "atr14": {"atr": atr},
+        "adx14": {"adx": 15.0, "plus_di": 12.0, "minus_di": 18.0},  # ADX<20 → RANGING
+        "boll20": {
+            "bb_upper": close + 30,
+            "bb_lower": close - 30,
+            "bb_mid": close,
+            "close": close,
+        },
+        "keltner20": {
+            "kc_upper": close + 20,
+            "kc_lower": close - 20,
+        },  # KC < BB → 无 Squeeze
+        "rsi14": {"rsi": 22.0},  # RSI<30 → buy（超卖）
     }
 
 
 # ---------------------------------------------------------------------------
 # 测试用 Stub
 # ---------------------------------------------------------------------------
+
 
 class SnapshotSource:
     """最小化的快照源：持有 listener 列表，提供 publish 方法。"""
@@ -187,10 +213,11 @@ class SnapshotSource:
         self._listeners: list = []
         self.current_trace_id: str | None = None
         self.market_service = type(
-            "MS", (),
+            "MS",
+            (),
             {
                 "get_current_spread": lambda _s, symbol=None: spread_points,
-                "get_symbol_point":   lambda _s, symbol=None: symbol_point,
+                "get_symbol_point": lambda _s, symbol=None: symbol_point,
             },
         )()
 
@@ -203,8 +230,14 @@ class SnapshotSource:
     def get_current_trace_id(self) -> str | None:
         return self.current_trace_id
 
-    def publish(self, symbol: str, timeframe: str, bar_time: datetime,
-                indicators: dict, scope: str = "confirmed") -> None:
+    def publish(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
+        indicators: dict,
+        scope: str = "confirmed",
+    ) -> None:
         for fn in list(self._listeners):
             fn(symbol, timeframe, bar_time, indicators, scope)
 
@@ -277,6 +310,7 @@ class TradingModuleCapture:
 # 辅助构建函数
 # ---------------------------------------------------------------------------
 
+
 def _build_signal_module(indicators: dict = None) -> SignalModule:
     src = DummyIndicatorSource(indicators or {})
     return SignalModule(
@@ -291,10 +325,14 @@ def _build_runtime(
     *,
     allow_all_sessions: bool = True,
 ) -> SignalRuntime:
-    from src.signals.orchestration.policy import SignalPolicy
     from src.signals.contracts import SESSION_ASIA, SESSION_LONDON, SESSION_NEW_YORK
+    from src.signals.orchestration.policy import SignalPolicy
 
-    sessions = (SESSION_ASIA, SESSION_LONDON, SESSION_NEW_YORK) if allow_all_sessions else (SESSION_LONDON, SESSION_NEW_YORK)
+    sessions = (
+        (SESSION_ASIA, SESSION_LONDON, SESSION_NEW_YORK)
+        if allow_all_sessions
+        else (SESSION_LONDON, SESSION_NEW_YORK)
+    )
     policy = SignalPolicy(
         allowed_sessions=sessions,
     )
@@ -318,6 +356,7 @@ def _build_executor(
     max_consecutive_failures: int = 3,
 ) -> TradeExecutor:
     from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
+
     entry_policy_registry = build_entry_policy_registry(
         EntryPolicyConfig(
             enabled_policies=["market"],
@@ -340,9 +379,9 @@ def _build_executor(
             min_confidence=min_confidence,
             sl_atr_multiplier=1.5,
             tp_atr_multiplier=3.0,
-            max_spread_to_stop_ratio=0.99,   # 测试中不过滤 spread
+            max_spread_to_stop_ratio=0.99,  # 测试中不过滤 spread
             max_consecutive_failures=max_consecutive_failures,
-            circuit_auto_reset_minutes=0,    # 不自动恢复
+            circuit_auto_reset_minutes=0,  # 不自动恢复
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         account_balance_getter=lambda: 10000.0,
@@ -353,7 +392,9 @@ def _build_executor(
     )
 
 
-def _wait_for_calls(module: TradingModuleCapture, expected: int, timeout: float = 10.0) -> bool:
+def _wait_for_calls(
+    module: TradingModuleCapture, expected: int, timeout: float = 10.0
+) -> bool:
     """向后兼容包装器 — 委托给 TradingModuleCapture.wait_for_calls()。"""
     return module.wait_for_calls(expected, timeout=timeout)
 
@@ -361,6 +402,7 @@ def _wait_for_calls(module: TradingModuleCapture, expected: int, timeout: float 
 # ===========================================================================
 # 测试 1：confirmed snapshot → stub_trend buy → TradeExecutor 下单
 # ===========================================================================
+
 
 def test_confirmed_buy_triggers_trade() -> None:
     """confirmed 快照触发趋势 buy 信号，TradeExecutor 成功下单。"""
@@ -393,6 +435,7 @@ def test_confirmed_buy_triggers_trade() -> None:
 # 测试 2：RSI 超卖 → stub_intrabar buy 信号 → 下单
 # ===========================================================================
 
+
 def test_rsi_oversold_triggers_buy_trade() -> None:
     """RSI < 30 触发 stub_intrabar buy 信号，TradeExecutor 成功下单。"""
     indicators = _ranging_rsi_buy_indicators(close=3000.0, atr=4.0)
@@ -412,7 +455,7 @@ def test_rsi_oversold_triggers_buy_trade() -> None:
 
     op, payload = trading.calls[0]
     assert op == "trade"
-    assert payload["side"] == "buy"   # RSI oversold → buy
+    assert payload["side"] == "buy"  # RSI oversold → buy
 
     runtime.stop()
 
@@ -420,6 +463,7 @@ def test_rsi_oversold_triggers_buy_trade() -> None:
 # ===========================================================================
 # 测试 3：熔断器 — 连续失败后暂停，手动 reset 后恢复
 # ===========================================================================
+
 
 def test_circuit_breaker_pauses_and_resets() -> None:
     """连续失败 max_consecutive_failures 次后熔断，reset 后下一笔成功执行。"""
@@ -477,6 +521,7 @@ def test_circuit_breaker_pauses_and_resets() -> None:
 # 测试 5：会话过滤 — 非允许时段不评估信号
 # ===========================================================================
 
+
 def test_session_filter_blocks_signal_outside_session() -> None:
     """当 UTC 小时为 off_hours，且 allowed_sessions 不含 off_hours 时，信号被过滤。"""
     from src.signals.execution.filters import SessionFilter
@@ -496,9 +541,15 @@ def test_session_filter_blocks_signal_outside_session() -> None:
 # 测试 6：extract_close_price 工具函数
 # ===========================================================================
 
+
 def testextract_close_price_from_boll_payload() -> None:
     indicators = {
-        "boll20": {"bb_upper": 3010.0, "bb_lower": 2990.0, "bb_mid": 3000.0, "close": 3001.5},
+        "boll20": {
+            "bb_upper": 3010.0,
+            "bb_lower": 2990.0,
+            "bb_mid": 3000.0,
+            "close": 3001.5,
+        },
         "sma20": {"sma": 2999.0},
     }
     price = extract_close_price(indicators)
@@ -522,6 +573,7 @@ def testextract_close_price_returns_none_if_absent() -> None:
 # ===========================================================================
 # 测试 7：close_position 竞态修复 — order_send=None 且持仓已消失 → 视为成功
 # ===========================================================================
+
 
 def test_close_position_returns_true_when_position_gone_after_send_none() -> None:
     """
@@ -549,8 +601,8 @@ def test_close_position_returns_true_when_position_gone_after_send_none() -> Non
 
     mock_mt5 = MagicMock()
     mock_mt5.positions_get.side_effect = [
-        (fake_pos,),   # 初始 positions_get → 找到持仓
-        (),            # 重查（order_send None 后）→ 持仓已消失
+        (fake_pos,),  # 初始 positions_get → 找到持仓
+        (),  # 重查（order_send None 后）→ 持仓已消失
     ]
     mock_mt5.symbol_info_tick.return_value = fake_tick
     mock_mt5.last_error.return_value = (-2, 'Invalid "comment" argument')
@@ -571,19 +623,30 @@ def test_close_position_returns_true_when_position_gone_after_send_none() -> Non
 # 测试 8：TradeExecutor 低置信度信号被过滤
 # ===========================================================================
 
+
 def test_trade_executor_skips_low_confidence() -> None:
     trading = TradingModuleCapture()
     executor = _build_executor(trading, min_confidence=0.80)
 
     event = SignalEvent(
-        symbol="XAUUSD", timeframe="M1", strategy="sma_trend",
-        direction="buy", confidence=0.50,  # 低于阈值
-        signal_state="confirmed_buy", scope="confirmed",
+        symbol="XAUUSD",
+        timeframe="M1",
+        strategy="sma_trend",
+        direction="buy",
+        confidence=0.50,  # 低于阈值
+        signal_state="confirmed_buy",
+        scope="confirmed",
         indicators={"atr14": {"atr": 5.0}, "sma20": {"sma": 3000.0}},
-        metadata={"previous_state": "armed_buy", "close_price": 3000.0,
-                  "spread_points": 5.0, "spread_price": 0.05, "symbol_point": 0.01},
+        metadata={
+            "previous_state": "armed_buy",
+            "close_price": 3000.0,
+            "spread_points": 5.0,
+            "spread_price": 0.05,
+            "symbol_point": 0.01,
+        },
         generated_at=datetime.now(timezone.utc),
-        signal_id="test_low_conf", reason="test",
+        signal_id="test_low_conf",
+        reason="test",
     )
     executor.on_signal_event(event)
     assert trading.calls == [], "低置信度信号不应触发下单"
@@ -592,6 +655,7 @@ def test_trade_executor_skips_low_confidence() -> None:
 # ===========================================================================
 # 测试 9：多信号不重复下单（相同 bar_time + 相同策略的 confirmed）
 # ===========================================================================
+
 
 def test_no_duplicate_trade_on_same_bar() -> None:
     """同一 bar_time 的重复 confirmed 快照不应触发重复下单。"""
@@ -617,6 +681,8 @@ def test_no_duplicate_trade_on_same_bar() -> None:
 
     # 相同 bar_time + 相同指标的重复 confirmed 快照被状态机去重，只触发 1 次下单
     trade_calls = [c for c in trading.calls if c[0] == "trade"]
-    assert len(trade_calls) == 1, f"重复快照触发了 {len(trade_calls)} 次下单，预期只有 1 次"
+    assert (
+        len(trade_calls) == 1
+    ), f"重复快照触发了 {len(trade_calls)} 次下单，预期只有 1 次"
 
     runtime.stop()

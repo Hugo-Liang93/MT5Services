@@ -67,7 +67,9 @@ def test_replay_uses_same_tick_feature_calculator_as_live_path() -> None:
     config = TickFeatureConfig(window_seconds=5.0, min_ticks_per_window=3)
     calculator = TickFeatureCalculator(config)
 
-    snapshots = TickReplayRunner(calculator=calculator).build_feature_snapshots("EURUSD", ticks)
+    snapshots = TickReplayRunner(calculator=calculator).build_feature_snapshots(
+        "EURUSD", ticks
+    )
     live_snapshot = calculator.calculate("EURUSD", ticks, now=ticks[-1].time)
 
     assert snapshots[-1].spread_points == live_snapshot.spread_points
@@ -147,7 +149,9 @@ def test_replay_report_exposes_coverage_spread_and_rejection_counts() -> None:
     assert report.rejected_signal_count == report.feature_snapshot_count
 
 
-def test_replay_feature_coverage_is_bounded_when_ticks_are_not_feature_eligible() -> None:
+def test_replay_feature_coverage_is_bounded_when_ticks_are_not_feature_eligible() -> (
+    None
+):
     ticks = [
         Tick(
             symbol="EURUSD",

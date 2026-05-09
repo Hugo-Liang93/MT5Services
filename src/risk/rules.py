@@ -23,11 +23,9 @@ class EconomicCalendarRuleProvider(Protocol):
 class AccountStateProvider(Protocol):
     def account_info(self) -> AccountSnapshot: ...
 
-    def positions(self, symbol: Optional[str] = None) -> List[PositionSnapshot]:
-        ...
+    def positions(self, symbol: Optional[str] = None) -> List[PositionSnapshot]: ...
 
-    def orders(self, symbol: Optional[str] = None) -> List[PositionSnapshot]:
-        ...
+    def orders(self, symbol: Optional[str] = None) -> List[PositionSnapshot]: ...
 
 
 class PositionSnapshot(Protocol):
@@ -50,8 +48,7 @@ class TradeFrequencyProvider(Protocol):
         since: datetime,
         *,
         account_key: str | None = None,
-    ) -> int:
-        ...
+    ) -> int: ...
 
     def reserve_trade_slot(
         self,
@@ -60,11 +57,9 @@ class TradeFrequencyProvider(Protocol):
         at_time: datetime,
         max_trades_per_day: int | None,
         max_trades_per_hour: int | None,
-    ) -> str:
-        ...
+    ) -> str: ...
 
-    def finalize_trade_slot(self, reservation_id: str, *, committed: bool) -> None:
-        ...
+    def finalize_trade_slot(self, reservation_id: str, *, committed: bool) -> None: ...
 
 
 class TradeFrequencyQuotaExceeded(RuntimeError):
@@ -92,9 +87,11 @@ class RiskRule:
 
 
 def _risk_data_policy(context: RuleContext) -> str:
-    policy = str(
-        getattr(context.risk_settings, "data_unavailable_policy", "warn_only")
-    ).strip().lower()
+    policy = (
+        str(getattr(context.risk_settings, "data_unavailable_policy", "warn_only"))
+        .strip()
+        .lower()
+    )
     return policy if policy in {"warn_only", "fail_closed"} else "warn_only"
 
 
@@ -268,9 +265,7 @@ class AccountSnapshotRule(RiskRule):
                     if (intent_side == "buy" and pos_type == 0) or (
                         intent_side == "sell" and pos_type == 1
                     ):
-                        same_side_volume += float(
-                            position.volume or 0.0
-                        )
+                        same_side_volume += float(position.volume or 0.0)
                 projected_net_lots = same_side_volume + float(
                     context.intent.volume or 0.0
                 )

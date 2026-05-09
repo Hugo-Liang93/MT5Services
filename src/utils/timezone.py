@@ -39,6 +39,7 @@ def configure(tz_name: str = "UTC") -> None:
 
 # ── Core helpers ──────────────────────────────────────────────
 
+
 def utc_now() -> datetime:
     """Return the current time in UTC (timezone-aware)."""
     return datetime.now(timezone.utc)
@@ -94,6 +95,7 @@ def get_display_tz() -> tzinfo:
 
 # ── Logging formatter ─────────────────────────────────────────
 
+
 class LocalTimeFormatter(logging.Formatter):
     """A logging formatter that converts timestamps to the display timezone.
 
@@ -116,6 +118,7 @@ class LocalTimeFormatter(logging.Formatter):
 
 # ── Internal ──────────────────────────────────────────────────
 
+
 @lru_cache(maxsize=16)
 def _load_tz(name: str) -> tzinfo:
     """Load a timezone by name, with fallback to UTC."""
@@ -123,11 +126,13 @@ def _load_tz(name: str) -> tzinfo:
         return timezone.utc
     try:
         from zoneinfo import ZoneInfo
+
         return ZoneInfo(name)
     except (ImportError, KeyError):
         pass
     try:
         import pytz
+
         return pytz.timezone(name)
     except (ImportError, Exception):
         pass

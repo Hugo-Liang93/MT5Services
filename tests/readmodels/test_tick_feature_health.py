@@ -70,7 +70,9 @@ def test_tick_feature_health_summary_uses_public_projection_port() -> None:
     assert payload["symbols"]["XAUUSD"]["status"] == "healthy"
 
 
-def test_tradability_exposes_stale_tick_feature_without_blocking_confirmed_route() -> None:
+def test_tradability_exposes_stale_tick_feature_without_blocking_confirmed_route() -> (
+    None
+):
     read_model = RuntimeReadModel(
         trade_executor=object(),
         signal_runtime=_SignalRuntime(("tick:XAUUSD",)),

@@ -11,7 +11,11 @@ class DummyMarketService:
         self._bars = list(bars)
 
     def get_ohlc_closed(self, symbol, timeframe, limit=None):
-        bars = [bar for bar in self._bars if bar.symbol == symbol and bar.timeframe == timeframe]
+        bars = [
+            bar
+            for bar in self._bars
+            if bar.symbol == symbol and bar.timeframe == timeframe
+        ]
         return bars[-limit:] if limit is not None else bars
 
 
@@ -36,7 +40,11 @@ def test_market_structure_analyzer_builds_breakout_context() -> None:
 
     for index in range(24):
         ts = day0 + timedelta(hours=index)
-        bars.append(_build_bar(ts, high=3002.0 + index * 0.05, low=2990.0 - index * 0.02, close=2998.0))
+        bars.append(
+            _build_bar(
+                ts, high=3002.0 + index * 0.05, low=2990.0 - index * 0.02, close=2998.0
+            )
+        )
 
     for hour in range(0, 7):
         ts = day1 + timedelta(hours=hour)
@@ -176,8 +184,14 @@ def test_market_structure_analyzer_detects_bullish_first_pullback() -> None:
         ts = day0 + timedelta(hours=index)
         bars.append(_build_bar(ts, high=3001.0, low=2990.0, close=2997.0))
 
-    bars.append(_build_bar(day1 + timedelta(hours=8), high=3005.0, low=3002.0, close=3004.0))
-    bars.append(_build_bar(day1 + timedelta(hours=8, minutes=5), high=3004.5, low=3000.5, close=3002.5))
+    bars.append(
+        _build_bar(day1 + timedelta(hours=8), high=3005.0, low=3002.0, close=3004.0)
+    )
+    bars.append(
+        _build_bar(
+            day1 + timedelta(hours=8, minutes=5), high=3004.5, low=3000.5, close=3002.5
+        )
+    )
 
     analyzer = MarketStructureAnalyzer(DummyMarketService(bars))
 

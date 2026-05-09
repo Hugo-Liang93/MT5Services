@@ -92,7 +92,9 @@ class MarketImpactAnalyzer:
 
     @property
     def _final_delay_minutes(self) -> int:
-        if self._settings and hasattr(self._settings, "market_impact_final_collection_delay_minutes"):
+        if self._settings and hasattr(
+            self._settings, "market_impact_final_collection_delay_minutes"
+        ):
             return self._settings.market_impact_final_collection_delay_minutes
         return 130
 
@@ -186,7 +188,9 @@ class MarketImpactAnalyzer:
             with self._lock:
                 for uid in completed_uids:
                     self._pending.pop(uid, None)
-            logger.info("Completed market impact analysis for %d events", len(completed_uids))
+            logger.info(
+                "Completed market impact analysis for %d events", len(completed_uids)
+            )
 
     def _collect_and_store(
         self,
@@ -235,7 +239,9 @@ class MarketImpactAnalyzer:
                 symbol, timeframe, start, end, limit=2000
             )
         except Exception:
-            logger.exception("Failed to fetch OHLC for market impact: %s %s", symbol, timeframe)
+            logger.exception(
+                "Failed to fetch OHLC for market impact: %s %s", symbol, timeframe
+            )
             return None
 
         if not bars:
@@ -253,7 +259,9 @@ class MarketImpactAnalyzer:
         # Pre windows
         for minutes in self._pre_windows:
             window_start = event_time - timedelta(minutes=minutes)
-            window_bars = [b for b in bars if window_start <= b[self._COL_TIME] < event_time]
+            window_bars = [
+                b for b in bars if window_start <= b[self._COL_TIME] < event_time
+            ]
             change, range_val = self._calc_window_stats(window_bars, pre_price)
             result[f"pre_{minutes}m_change"] = change
             result[f"pre_{minutes}m_range"] = range_val
@@ -261,7 +269,9 @@ class MarketImpactAnalyzer:
         # Post windows
         for minutes in self._post_windows:
             window_end = event_time + timedelta(minutes=minutes)
-            window_bars = [b for b in bars if event_time <= b[self._COL_TIME] <= window_end]
+            window_bars = [
+                b for b in bars if event_time <= b[self._COL_TIME] <= window_end
+            ]
             change, range_val = self._calc_window_stats(window_bars, pre_price)
             result[f"post_{minutes}m_change"] = change
             result[f"post_{minutes}m_range"] = range_val
@@ -413,27 +423,29 @@ class MarketImpactAnalyzer:
         )
         results = []
         for row in rows:
-            results.append({
-                "event_name": row[0],
-                "country": row[1],
-                "importance": row[2],
-                "symbol": row[3],
-                "timeframe": row[4],
-                "sample_count": row[5],
-                "avg_post_5m_change": row[6],
-                "avg_post_15m_change": row[7],
-                "avg_post_30m_change": row[8],
-                "avg_post_60m_change": row[9],
-                "avg_post_5m_range": row[10],
-                "avg_post_15m_range": row[11],
-                "avg_post_30m_range": row[12],
-                "avg_post_60m_range": row[13],
-                "bullish_pct": row[14],
-                "avg_volatility_spike": row[15],
-                "max_volatility_spike": row[16],
-                "surprise_positive_avg_change": row[17],
-                "surprise_negative_avg_change": row[18],
-            })
+            results.append(
+                {
+                    "event_name": row[0],
+                    "country": row[1],
+                    "importance": row[2],
+                    "symbol": row[3],
+                    "timeframe": row[4],
+                    "sample_count": row[5],
+                    "avg_post_5m_change": row[6],
+                    "avg_post_15m_change": row[7],
+                    "avg_post_30m_change": row[8],
+                    "avg_post_60m_change": row[9],
+                    "avg_post_5m_range": row[10],
+                    "avg_post_15m_range": row[11],
+                    "avg_post_30m_range": row[12],
+                    "avg_post_60m_range": row[13],
+                    "bullish_pct": row[14],
+                    "avg_volatility_spike": row[15],
+                    "max_volatility_spike": row[16],
+                    "surprise_positive_avg_change": row[17],
+                    "surprise_negative_avg_change": row[18],
+                }
+            )
         return results
 
     def get_impact_forecast(
@@ -467,7 +479,9 @@ class MarketImpactAnalyzer:
         """回填过去 N 天内已发布但未统计的事件。"""
         if not self._enabled:
             return 0
-        backfill_enabled = getattr(self._settings, "market_impact_backfill_enabled", True)
+        backfill_enabled = getattr(
+            self._settings, "market_impact_backfill_enabled", True
+        )
         if not backfill_enabled:
             return 0
         backfill_days = getattr(self._settings, "market_impact_backfill_days", 30)
@@ -491,34 +505,61 @@ class MarketImpactAnalyzer:
                     for timeframe in self._timeframes:
                         impact = self.collect_impact(event, symbol, timeframe)
                         if impact:
-                            db_row = self._impact_to_row(event, symbol, timeframe, impact, "complete")
+                            db_row = self._impact_to_row(
+                                event, symbol, timeframe, impact, "complete"
+                            )
                             self._db.write_market_impact([db_row])
                             count += 1
             except Exception:
-                logger.exception("Failed to backfill market impact for row: %s", row[:5])
+                logger.exception(
+                    "Failed to backfill market impact for row: %s", row[:5]
+                )
         if count:
-            logger.info("Backfilled market impact for %d event/symbol/tf combinations", count)
+            logger.info(
+                "Backfilled market impact for %d event/symbol/tf combinations", count
+            )
         return count
 
     @staticmethod
     def _row_to_dict(row: tuple) -> dict[str, Any]:
         """将 DB 行转为字典。"""
         columns = [
-            "recorded_at", "event_uid", "symbol", "timeframe",
-            "event_name", "country", "currency", "importance",
-            "scheduled_at", "released_at",
-            "actual", "forecast", "previous", "surprise_pct",
+            "recorded_at",
+            "event_uid",
+            "symbol",
+            "timeframe",
+            "event_name",
+            "country",
+            "currency",
+            "importance",
+            "scheduled_at",
+            "released_at",
+            "actual",
+            "forecast",
+            "previous",
+            "surprise_pct",
             "pre_price",
-            "pre_30m_change", "pre_30m_range",
-            "pre_60m_change", "pre_60m_range",
-            "pre_120m_change", "pre_120m_range",
-            "post_5m_change", "post_5m_range",
-            "post_15m_change", "post_15m_range",
-            "post_30m_change", "post_30m_range",
-            "post_60m_change", "post_60m_range",
-            "post_120m_change", "post_120m_range",
-            "volatility_pre_atr", "volatility_post_atr", "volatility_spike",
-            "analysis_status", "metadata",
+            "pre_30m_change",
+            "pre_30m_range",
+            "pre_60m_change",
+            "pre_60m_range",
+            "pre_120m_change",
+            "pre_120m_range",
+            "post_5m_change",
+            "post_5m_range",
+            "post_15m_change",
+            "post_15m_range",
+            "post_30m_change",
+            "post_30m_range",
+            "post_60m_change",
+            "post_60m_range",
+            "post_120m_change",
+            "post_120m_range",
+            "volatility_pre_atr",
+            "volatility_post_atr",
+            "volatility_spike",
+            "analysis_status",
+            "metadata",
         ]
         result = {}
         for i, col in enumerate(columns):

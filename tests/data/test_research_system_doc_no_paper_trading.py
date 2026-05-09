@@ -1,6 +1,7 @@
 """§0dd P3 + §0dj sentinel: research-system.md 不再引用已删除的 Paper Trading
 心智模型 / 已重命名的 paper_shadow_required 字段。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,8 +18,10 @@ def test_research_system_doc_does_not_reference_deleted_paper_trading_stage() ->
     # 主流程区段不能再写 Paper Trading 阶段
     # 允许在历史/迁移注释中提及"已删除 Paper Trading 模块"等说明
     forbidden_lines = [
-        line for line in doc.splitlines()
-        if "Paper Trading" in line and not any(
+        line
+        for line in doc.splitlines()
+        if "Paper Trading" in line
+        and not any(
             tag in line.lower()
             for tag in ("已删除", "removed", "adr-010", "deprecated", "历史")
         )
@@ -46,9 +49,19 @@ def test_research_system_doc_uses_demo_validation_required_field() -> None:
         if "paper_shadow_required" not in line:
             continue
         # 允许显式说明"已移除/已重命名"等迁移文本
-        marker_keywords = ("已移除", "已物理移除", "已重命名", "原 ", "原`",
-                            "removed", "renamed", "deprecated")
-        if not any(kw in line.lower() if kw.isascii() else kw in line for kw in marker_keywords):
+        marker_keywords = (
+            "已移除",
+            "已物理移除",
+            "已重命名",
+            "原 ",
+            "原`",
+            "removed",
+            "renamed",
+            "deprecated",
+        )
+        if not any(
+            kw in line.lower() if kw.isascii() else kw in line for kw in marker_keywords
+        ):
             bad_lines.append(line)
     assert not bad_lines, (
         "research-system.md 不能再把 paper_shadow_required 当正式字段名指导——"

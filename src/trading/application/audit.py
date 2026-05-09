@@ -139,7 +139,10 @@ class TradeCommandAuditService:
         for row in rows:
             request_payload = row[15] or {}
             response_payload = row[16] or {}
-            if str(request_payload.get("request_id") or "").strip() != normalized_request_id:
+            if (
+                str(request_payload.get("request_id") or "").strip()
+                != normalized_request_id
+            ):
                 continue
             if not isinstance(response_payload, dict):
                 continue
@@ -169,7 +172,10 @@ class TradeCommandAuditService:
         for row in rows:
             request_payload = row[15] or {}
             response_payload = row[16] or {}
-            if str(request_payload.get("idempotency_key") or "").strip() != normalized_idempotency_key:
+            if (
+                str(request_payload.get("idempotency_key") or "").strip()
+                != normalized_idempotency_key
+            ):
                 continue
             return {
                 "recorded_at": row[0].isoformat() if row[0] else None,
@@ -179,8 +185,12 @@ class TradeCommandAuditService:
                 "command_type": row[3],
                 "status": row[4],
                 "error_message": row[14],
-                "request_payload": request_payload if isinstance(request_payload, dict) else {},
-                "response_payload": response_payload if isinstance(response_payload, dict) else {},
+                "request_payload": (
+                    request_payload if isinstance(request_payload, dict) else {}
+                ),
+                "response_payload": (
+                    response_payload if isinstance(response_payload, dict) else {}
+                ),
             }
         return None
 
@@ -363,12 +373,16 @@ class TradeDailyStatsService:
                 op_stats["success"] += 1
             else:
                 op_stats["failed"] += 1
-            if record.command_type == "precheck_trade" and isinstance(record.response_payload, dict):
+            if record.command_type == "precheck_trade" and isinstance(
+                record.response_payload, dict
+            ):
                 action = str(record.response_payload.get("verdict") or "allow").lower()
                 if action not in {"allow", "warn", "block"}:
                     action = "allow"
                 bucket["risk"]["blocked" if action == "block" else action] += 1
-            bucket["last_trade_at"] = (record.recorded_at or datetime.now(timezone.utc)).isoformat()
+            bucket["last_trade_at"] = (
+                record.recorded_at or datetime.now(timezone.utc)
+            ).isoformat()
 
     def summary(
         self,

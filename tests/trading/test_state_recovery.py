@@ -180,9 +180,7 @@ def test_trading_state_recovery_marks_missing_orders_when_not_found() -> None:
     assert ("missing", 1002, "startup_missing") in store.events
 
 
-def test_trading_state_recovery_closes_open_position_states_missing_from_mt5() -> (
-    None
-):
+def test_trading_state_recovery_closes_open_position_states_missing_from_mt5() -> None:
     store = DummyStateStore()
     store.position_rows = [
         {

@@ -31,6 +31,7 @@
     - 复用 src/persistence/db.py 的 TimescaleWriter（与实盘相同的写入/校验逻辑）
     - 不引入任何新的 MT5 或 DB 操作代码
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,9 +40,10 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from src.utils.timezone import parse_iso_to_utc
 from pathlib import Path
 from typing import List, Optional
+
+from src.utils.timezone import parse_iso_to_utc
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -55,7 +57,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _get_db_coverage(writer: "TimescaleWriter", symbol: str, timeframes: List[str]) -> dict:
+def _get_db_coverage(
+    writer: "TimescaleWriter", symbol: str, timeframes: List[str]
+) -> dict:
     """查询 DB 中各 TF 的数据覆盖情况。"""
     coverage = {}
     try:
@@ -120,7 +124,11 @@ def backfill(
     # 初始化 MT5 客户端
     mt5_settings = load_mt5_settings()
     client = MT5MarketClient(mt5_settings)
-    logger.info("MT5 connected: server=%s login=%s", mt5_settings.mt5_server, mt5_settings.mt5_login)
+    logger.info(
+        "MT5 connected: server=%s login=%s",
+        mt5_settings.mt5_server,
+        mt5_settings.mt5_login,
+    )
 
     # 初始化 DB
     db_settings = load_db_settings()
@@ -142,12 +150,20 @@ def backfill(
         if incremental and tf in coverage and coverage[tf]["last"]:
             tf_start = coverage[tf]["last"] + timedelta(seconds=1)
             if tf_start >= end:
-                logger.info("  %s %s: already up to date (last=%s)", symbol, tf, coverage[tf]["last"])
+                logger.info(
+                    "  %s %s: already up to date (last=%s)",
+                    symbol,
+                    tf,
+                    coverage[tf]["last"],
+                )
                 continue
 
         logger.info(
             "=== %s %s [%s ~ %s] ===",
-            symbol, tf, tf_start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"),
+            symbol,
+            tf,
+            tf_start.strftime("%Y-%m-%d"),
+            end.strftime("%Y-%m-%d"),
         )
 
         cursor = tf_start
@@ -164,7 +180,9 @@ def backfill(
                 continue
 
             if not bars:
-                logger.info("  No more bars after %s", cursor.strftime("%Y-%m-%d %H:%M"))
+                logger.info(
+                    "  No more bars after %s", cursor.strftime("%Y-%m-%d %H:%M")
+                )
                 break
 
             # 过滤超出 end 的 bar
@@ -197,7 +215,10 @@ def backfill(
             cursor = bars[-1].time + timedelta(seconds=1)
             logger.info(
                 "  %s: +%d bars → %s (total: %d)",
-                tf, len(bars), bars[-1].time.strftime("%Y-%m-%d %H:%M"), tf_bars,
+                tf,
+                len(bars),
+                bars[-1].time.strftime("%Y-%m-%d %H:%M"),
+                tf_bars,
             )
             time.sleep(0.3)
 
@@ -214,7 +235,9 @@ def backfill(
     client.shutdown()
     logger.info(
         "=== Done: %d bars fetched, %d written, %d timeframes ===",
-        total_bars, total_written, len(timeframes),
+        total_bars,
+        total_written,
+        len(timeframes),
     )
 
 
@@ -228,18 +251,32 @@ def main() -> None:
         required=True,
         help="显式指定写入哪个环境数据库",
     )
-    parser.add_argument("--symbol", default="XAUUSD", help="Trading symbol (default: XAUUSD)")
+    parser.add_argument(
+        "--symbol", default="XAUUSD", help="Trading symbol (default: XAUUSD)"
+    )
     parser.add_argument(
         "--tf",
         default="M5,M15,M30,H1,H4,D1",
         help="Timeframes, comma-separated (default: M5,M15,M30,H1,H4,D1)",
     )
-    parser.add_argument("--start", default=None, help="Start date YYYY-MM-DD (default: 6 months ago)")
-    parser.add_argument("--end", default=None, help="End date YYYY-MM-DD (default: today)")
-    parser.add_argument("--batch-size", type=int, default=5000, help="Bars per batch (default: 5000)")
-    parser.add_argument("--dry-run", action="store_true", help="Fetch only, don't write to DB")
-    parser.add_argument("--incremental", action="store_true", help="Continue from last bar in DB")
-    parser.add_argument("--status", action="store_true", help="Show current DB coverage and exit")
+    parser.add_argument(
+        "--start", default=None, help="Start date YYYY-MM-DD (default: 6 months ago)"
+    )
+    parser.add_argument(
+        "--end", default=None, help="End date YYYY-MM-DD (default: today)"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=5000, help="Bars per batch (default: 5000)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Fetch only, don't write to DB"
+    )
+    parser.add_argument(
+        "--incremental", action="store_true", help="Continue from last bar in DB"
+    )
+    parser.add_argument(
+        "--status", action="store_true", help="Show current DB coverage and exit"
+    )
     args = parser.parse_args()
     set_current_environment(args.environment)
 
@@ -280,4 +317,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

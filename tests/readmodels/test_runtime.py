@@ -283,7 +283,7 @@ class DummyTradingStateStore:
                 "cycle_id": "cycle-1",
                 "symbol": "XAUUSD",
                 "direction": "sell",
-                "strategy": "tick_martingale_probe",
+                "strategy": "tick_recovery_probe",
                 "timeframe": "TICK",
                 "source_signal_id": "demo-recovery-runner:cycle-1:initial",
                 "status": "closed",
@@ -393,7 +393,7 @@ class DummyRecoveryRunner:
             "running": True,
             "dry_run": True,
             "symbol": "XAUUSD",
-            "strategy": "tick_martingale_probe",
+            "strategy": "tick_recovery_probe",
             "active_cycle_id": "cycle-1",
             "processed_snapshots": 12,
             "decision_counts": {"open_initial": 1, "open_step": 1},
@@ -1135,9 +1135,9 @@ def test_build_trading_summary_treats_failed_row_without_count_as_failure() -> N
         "daily": {},
     }
     payload = RuntimeReadModel.build_trading_summary(trading_stats)
-    assert payload["status"] != "healthy", (
-        f"failed 行存在必须把 status 抬到 >=warning；got {payload['status']!r}"
-    )
+    assert (
+        payload["status"] != "healthy"
+    ), f"failed 行存在必须把 status 抬到 >=warning；got {payload['status']!r}"
     assert payload["coordination_issues"], (
         "failed 行存在必须产生 coordination_issues；"
         f"got {payload['coordination_issues']!r}"
@@ -1156,9 +1156,9 @@ def test_build_pending_entries_summary_marks_critical_when_running_false() -> No
         {"active_count": 0, "entries": [], "stats": {}},
         running=False,
     )
-    assert payload["status"] != "healthy", (
-        f"running=False 必须把 status 抬到 critical；got {payload['status']!r}"
-    )
+    assert (
+        payload["status"] != "healthy"
+    ), f"running=False 必须把 status 抬到 critical；got {payload['status']!r}"
 
 
 def test_build_pending_entries_summary_keeps_healthy_when_running_true() -> None:
@@ -1176,3 +1176,103 @@ def test_build_pending_entries_summary_default_running_keeps_healthy() -> None:
         {"active_count": 1, "entries": [{}], "stats": {}}
     )
     assert payload["status"] == "healthy"
+
+
+class _PositionManagerWithVolume:
+    """测试桩：返回带 ticket/symbol/volume 的活跃持仓，用于 ADR-014 投影。"""
+
+    def __init__(self, positions):
+        self._positions = list(positions)
+
+    def status(self):
+        return {
+            "running": True,
+            "tracked_positions": len(self._positions),
+            "reconcile_interval": 30,
+            "reconcile_count": 5,
+            "last_reconcile_at": "2026-01-01T00:00:00+00:00",
+        }
+
+    def active_positions(self):
+        return list(self._positions)
+
+
+class _RecoveryRunnerWithLivePositions:
+    """测试桩：能返回 active_live_position_tickets。"""
+
+    def __init__(self, *, active_cycle_id="cycle-1", live_tickets=()):
+        self._active_cycle_id = active_cycle_id
+        self._live_tickets = list(live_tickets)
+
+    def status(self):
+        return {
+            "enabled": True,
+            "running": True,
+            "dry_run": False,
+            "symbol": "XAUUSD",
+            "active_cycle_id": self._active_cycle_id,
+            "active_live_position_tickets": list(self._live_tickets),
+        }
+
+
+def test_combined_exposure_payload_classifies_recovery_vs_signal_lots() -> None:
+    """ADR-014: combined_exposure_payload() 必须按 ticket 分类信号轨与恢复轨占用。"""
+    positions = [
+        {"ticket": 1001, "symbol": "XAUUSD", "volume": 0.02},  # 恢复轨 leg
+        {"ticket": 1002, "symbol": "XAUUSD", "volume": 0.01},  # 恢复轨 leg
+        {"ticket": 2001, "symbol": "XAUUSD", "volume": 0.01},  # 信号轨
+    ]
+    read_model = RuntimeReadModel(
+        position_manager=_PositionManagerWithVolume(positions),
+        recovery_runner=_RecoveryRunnerWithLivePositions(
+            active_cycle_id="cycle-42", live_tickets=[1001, 1002]
+        ),
+    )
+
+    payload = read_model.combined_exposure_payload()
+
+    assert payload["view"] == "combined_exposure"
+    assert payload["source_status"] == "ok"
+    assert payload["recovery_runner_enabled"] is True
+    assert payload["recovery_active_cycle_id"] == "cycle-42"
+    assert payload["recovery_position_count"] == 2
+    assert payload["signal_position_count"] == 1
+    assert payload["total_position_count"] == 3
+    assert payload["recovery_lots"] == 0.03
+    assert payload["signal_lots"] == 0.01
+    assert payload["total_lots"] == 0.04
+    by_symbol = payload["by_symbol"]["XAUUSD"]
+    assert by_symbol["recovery_lots"] == 0.03
+    assert by_symbol["signal_lots"] == 0.01
+    assert by_symbol["total_lots"] == 0.04
+
+
+def test_combined_exposure_payload_no_recovery_runner_marks_all_as_signal() -> None:
+    """无 recovery_runner 时所有持仓归类为信号轨。"""
+    positions = [
+        {"ticket": 2001, "symbol": "XAUUSD", "volume": 0.01},
+        {"ticket": 2002, "symbol": "XAUUSD", "volume": 0.02},
+    ]
+    read_model = RuntimeReadModel(
+        position_manager=_PositionManagerWithVolume(positions),
+    )
+
+    payload = read_model.combined_exposure_payload()
+
+    assert payload["recovery_runner_enabled"] is False
+    assert payload["recovery_active_cycle_id"] is None
+    assert payload["recovery_position_count"] == 0
+    assert payload["signal_position_count"] == 2
+    assert payload["recovery_lots"] == 0.0
+    assert payload["signal_lots"] == 0.03
+
+
+def test_combined_exposure_payload_no_position_manager_reports_unavailable() -> None:
+    """无 position_manager 时 source_status 标记不可用。"""
+    read_model = RuntimeReadModel()
+
+    payload = read_model.combined_exposure_payload()
+
+    assert payload["source_status"] == "position_manager_unavailable"
+    assert payload["total_lots"] == 0.0
+    assert payload["by_symbol"] == {}

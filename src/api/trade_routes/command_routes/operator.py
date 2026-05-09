@@ -34,7 +34,11 @@ router = APIRouter(tags=["trade"])
 
 
 def _mutation_result_details(result: dict[str, object]) -> dict[str, object]:
-    details = dict(result.get("details") or {}) if isinstance(result.get("details"), dict) else {}
+    details = (
+        dict(result.get("details") or {})
+        if isinstance(result.get("details"), dict)
+        else {}
+    )
     for key in (
         "status",
         "action_id",
@@ -109,9 +113,9 @@ def _queue_operator_command_response(
         "command_id": result.get("command_id"),
         "audit_id": result.get("audit_id"),
         "actor": actor,
-        "target_account_alias": (
-            result.get("effective_state", {}) or {}
-        ).get("target_account_alias")
+        "target_account_alias": (result.get("effective_state", {}) or {}).get(
+            "target_account_alias"
+        )
         or target_account_alias,
     }
     if metadata:
@@ -122,7 +126,9 @@ def _queue_operator_command_response(
         return ApiResponse.success_response(data=result, metadata=success_metadata)
     return ApiResponse.error_response(
         error_code=error_code,
-        error_message=str(result.get("error_message") or result.get("message") or operation),
+        error_message=str(
+            result.get("error_message") or result.get("message") or operation
+        ),
         suggested_action=suggested_action,
         details=_mutation_result_details(result),
     )
@@ -235,7 +241,9 @@ def close_all(
     )
 
 
-@router.post("/trade/closeout-exposure", response_model=ApiResponse[ExposureCloseoutActionView])
+@router.post(
+    "/trade/closeout-exposure", response_model=ApiResponse[ExposureCloseoutActionView]
+)
 def trade_closeout_exposure(
     request: ExposureCloseoutRequest,
     command_queue: OperatorCommandService = Depends(get_operator_command_service),
@@ -332,7 +340,9 @@ def cancel_orders(
     )
 
 
-@router.post("/cancel_orders/batch", response_model=ApiResponse[TradeMutationResultView])
+@router.post(
+    "/cancel_orders/batch", response_model=ApiResponse[TradeMutationResultView]
+)
 def cancel_orders_batch(
     request: BatchCancelOrdersRequest,
     command_queue: OperatorCommandService = Depends(get_operator_command_service),

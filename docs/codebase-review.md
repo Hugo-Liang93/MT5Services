@@ -1,9 +1,60 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-05-08
+> 最近更新：2026-05-09
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
+
+---
+
+## 0zk. 2026-05-09 tick-derived recovery 落地后的全量审查 + 文档同步
+
+### 触发
+
+用户在 commit 7d0e366 + merge 043c37f（tick-derived recovery runtime architecture，224 文件 +36992/-7482 行）后请求"完整审查当前出现的问题 + 后续方案 + 不增新策略前提下找机会点和风险点"。范围限定为信号轨（PA candidate）+ 恢复轨（martingale 独立子系统）两种策略对当前架构的支持度。
+
+### 审查方法
+
+- 3 个 Explore agent 并行核实：架构现状（commit 改动 + builder 装配链）、策略实现（catalog + risk profile + recovery runner）、风险台账（ADR + sentinel grep + Known Issues）
+- 1 个 Plan agent 综合产出审查报告与 17 任务清单
+- 主线核实关键事实行号：[catalog.py:23-25](../src/signals/strategies/catalog.py#L23-L25) 仅注册 PA、[container.py:182](../src/app_runtime/container.py#L182) Optional runtime_identity、[risk.local.ini:77-81](../config/instances/demo-main/risk.local.ini#L77-L81) cycle 限流字段全 0
+- 计划文件：`C:\Users\Hugo\.claude\plans\snuggly-nibbling-cookie.md`
+
+### 关键发现（11 条风险 / 7 条机会）
+
+P0 风险（5 条）：
+
+1. **PA 是回测系统唯一活跃验证策略，但 PF 0.29 / DD 99% 不达标** — 整套 backtest_routes 在为 candidate 服务而非晋升通道。
+2. **马丁 demo_only 长期化** — 3000+ 行新代码上线一周仅 demo 验证，calibration 样本不积累。
+3. **PA × 马丁同账户共享 max_open_positions_total=3** — 两轨不互知 budget，马丁追单占满 `max_volume_per_symbol=0.03` 时 PA 信号被直接拒。
+4. **138 commits 未推送 origin/main** — 本地仓库即灾备孤本，约 5 万行架构变更未备份。
+5. **recovery cycle 限流字段全 0** — `max_cycles_per_session/day/hour` + `cooldown_after_cycle_close_seconds` + `min_cycle_interval_seconds` 全 0；live 推进前必须设非 0。
+
+P1/P2 风险见计划文件 R6-R11，包括 except Exception 597 处合规分类未审计 / /v1/trade/state.recovery_cycles 前端断链 / CLAUDE.md 与现实漂移 / tick_martingale_probe 命名与实现语义偏移（max_steps=1 + multiplier=2.0 实为单步追单，非经典马丁；本轮已改名 tick_recovery_probe）/ runtime_identity Optional 兜底 / recovery 仅运行 1 周 bug 概率高。
+
+### 收口
+
+1. **CLAUDE.md 同步**：项目概览 14 策略 → 双轨执行体系；11 层风控堆栈移除已删策略名 + 加恢复轨独立 admission 标注；数据链路双轨展开；关键模块路径加 src/trading/recovery/ + src/market/tick_features/ + entry_policy/；ADR 索引 1-12 → 1-13。
+2. **docs/architecture.md 同步**：1.1 领域层 trading 子域 4 → 12 子包；§2 装配顺序加 ensure_tick_feature_runtime + build_recovery_runtime_layer；§3 数据流双轨；ADR 索引表完整覆盖 1-13。
+3. **docs/design/full-runtime-dataflow.md 同步**：§2.1 装配顺序按 role 分支表达（main vs executor），加 recovery + tick_features 阶段；§2.2 FULL 模式启动顺序加 recovery_runner。
+4. **新增 ADR-014（双轨契约）**：共享层（broker 仓位池/手数）+ 隔离层（决策内核独立）+ 共享 budget 视图 `combined_exposure_payload()` + recovery_budgeted profile 必须保留 economic_event 与 calendar_health。
+
+### 后续行动
+
+P0 优先级修复（计划文件 §6）：
+
+- T1 138 commits 分批推 origin/main（推前 pytest -q 全 3595 通过）
+- T2 PA 参数 grid 扫描，落地 PF≥1.0 + DD<30%（aggression_scan 工具扩展）
+- T3 共享仓位预算视图 PA × 马丁（`combined_exposure_payload()`）
+- T4 recovery 添加 chaos test 覆盖竞态（mock broker 注入 Position not found / Margin not enough）
+- T5 calibration_guard min_samples 10 → 50；cycle 限流默认值 max_cycles_per_day=20 / per_hour=3 / cooldown=180s
+
+### 验证
+
+- ADR 索引表 1-13 → 1-14（ADR-014 落地）
+- CLAUDE.md `grep "14 个策略"` 返回空
+- ADR-014 中 `recovery_budgeted` profile 的 `pre_trade_rules` 必须包含 `economic_event` 与 `calendar_health`（已通过当前 risk.local.ini:22 验证）
+- 计划文件 17 任务的验收方法逐一可执行（详见 plan §7 验证方法）
 
 ---
 

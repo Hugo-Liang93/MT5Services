@@ -14,7 +14,9 @@ class _DummyExecutor:
         self.guard = guard
 
 
-def test_build_account_runtime_layer_wires_intrabar_guard_for_executor(monkeypatch) -> None:
+def test_build_account_runtime_layer_wires_intrabar_guard_for_executor(
+    monkeypatch,
+) -> None:
     container = AppContainer()
     container.market_service = object()
     container.storage_writer = SimpleNamespace()

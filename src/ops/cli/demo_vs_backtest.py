@@ -273,9 +273,7 @@ def _build_report(
         # 信号密度漂移：demo signal_count 与 backtest trades 之比反映信号生成密度
         signal_drift = 0.0
         if agg.backtest_trades > 0 and agg.demo_signal_count >= 0:
-            signal_drift = abs(
-                agg.demo_signal_count / max(agg.backtest_trades, 1) - 1
-            )
+            signal_drift = abs(agg.demo_signal_count / max(agg.backtest_trades, 1) - 1)
 
         payload = {
             "strategy": strategy,
@@ -365,9 +363,7 @@ _DURATION_RE = re.compile(r"^(\d+)([dh])$")
 def _parse_duration(text: str) -> timedelta:
     m = _DURATION_RE.match(text.strip().lower())
     if not m:
-        raise ValueError(
-            f"Invalid duration: {text!r}. Use formats like '7d' / '24h'."
-        )
+        raise ValueError(f"Invalid duration: {text!r}. Use formats like '7d' / '24h'.")
     n, unit = int(m.group(1)), m.group(2)
     if unit == "d":
         return timedelta(days=n)

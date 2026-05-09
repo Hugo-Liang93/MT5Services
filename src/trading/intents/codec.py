@@ -10,7 +10,9 @@ from src.signals.models import SignalEvent
 def _serialize_datetime(value: datetime | None) -> str | None:
     if value is None:
         return None
-    normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    normalized = (
+        value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    )
     return normalized.isoformat()
 
 

@@ -12,10 +12,7 @@ from src.config.instance_context import (
     normalize_instance_name,
     resolve_instance_config_dir,
 )
-from src.config.topology import (
-    find_topology_group_for_instance,
-    iter_group_instances,
-)
+from src.config.topology import find_topology_group_for_instance, iter_group_instances
 
 
 class MT5Settings(BaseModel):
@@ -46,7 +43,11 @@ def _config_root(base_dir: Optional[str] = None) -> Path:
 
 
 def _local_name(filename: str) -> str:
-    return filename[:-4] + ".local.ini" if filename.endswith(".ini") else filename + ".local"
+    return (
+        filename[:-4] + ".local.ini"
+        if filename.endswith(".ini")
+        else filename + ".local"
+    )
 
 
 def _read_optional_ini(path: Path) -> configparser.ConfigParser | None:
@@ -80,7 +81,11 @@ def _cfg_str(sec, key: str, default=None):
     if not isinstance(value, str):
         return value
     normalized = value.strip()
-    if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+    if (
+        len(normalized) >= 2
+        and normalized[0] == normalized[-1]
+        and normalized[0] in {"'", '"'}
+    ):
         normalized = normalized[1:-1].strip()
     return normalized
 
@@ -116,7 +121,9 @@ def _load_mt5_layer(
             return None
         return parser["mt5"]
 
-    normalized_instance = normalize_instance_name(get_current_instance_name(instance_name))
+    normalized_instance = normalize_instance_name(
+        get_current_instance_name(instance_name)
+    )
     if normalized_instance is None:
         parser = _read_optional_ini(_config_root(base_dir) / filename)
         if parser is None or not parser.has_section("mt5"):
@@ -144,15 +151,25 @@ def _load_mt5_sections(
         _load_mt5_layer("mt5.ini", base_dir=base_dir, root_only=True),
         _load_mt5_layer(_local_name("mt5.ini"), base_dir=base_dir, root_only=True),
     )
-    root_sec = root_section["mt5"] if root_section and root_section.has_section("mt5") else None
+    root_sec = (
+        root_section["mt5"]
+        if root_section and root_section.has_section("mt5")
+        else None
+    )
 
-    normalized_instance = normalize_instance_name(get_current_instance_name(instance_name))
+    normalized_instance = normalize_instance_name(
+        get_current_instance_name(instance_name)
+    )
     if normalized_instance is None:
         return root_sec, None
 
     instance_section = _merge_sections(
-        _load_mt5_layer("mt5.ini", base_dir=base_dir, instance_name=normalized_instance),
-        _load_mt5_layer(_local_name("mt5.ini"), base_dir=base_dir, instance_name=normalized_instance),
+        _load_mt5_layer(
+            "mt5.ini", base_dir=base_dir, instance_name=normalized_instance
+        ),
+        _load_mt5_layer(
+            _local_name("mt5.ini"), base_dir=base_dir, instance_name=normalized_instance
+        ),
     )
     instance_sec = (
         instance_section["mt5"]
@@ -218,7 +235,9 @@ def load_mt5_settings(
     instance_name: Optional[str] = None,
     base_dir: Optional[str] = None,
 ) -> MT5Settings:
-    normalized_instance = normalize_instance_name(get_current_instance_name(instance_name))
+    normalized_instance = normalize_instance_name(
+        get_current_instance_name(instance_name)
+    )
     root_sec, instance_sec = _load_mt5_sections(
         instance_name=normalized_instance,
         base_dir=base_dir,
@@ -241,7 +260,9 @@ def load_mt5_settings(
     return MT5Settings(
         instance_name=normalized_instance,
         account_alias=str(account_alias or alias_default).strip() or alias_default,
-        account_label=str(account_label).strip() if account_label not in (None, "") else None,
+        account_label=(
+            str(account_label).strip() if account_label not in (None, "") else None
+        ),
         mt5_login=_pick_int(root_sec, instance_sec, "login", default=None),
         mt5_password=_pick_value(root_sec, instance_sec, "password", default=None),
         mt5_server=_pick_value(root_sec, instance_sec, "server", default=None),
@@ -264,12 +285,16 @@ def load_group_mt5_settings(
     instance_name: Optional[str] = None,
     base_dir: Optional[str] = None,
 ) -> dict[str, MT5Settings]:
-    normalized_instance = normalize_instance_name(get_current_instance_name(instance_name))
+    normalized_instance = normalize_instance_name(
+        get_current_instance_name(instance_name)
+    )
     resolved_group = group_name
     if resolved_group is None:
         group = find_topology_group_for_instance(normalized_instance, base_dir=base_dir)
         if group is None:
-            settings = load_mt5_settings(instance_name=normalized_instance, base_dir=base_dir)
+            settings = load_mt5_settings(
+                instance_name=normalized_instance, base_dir=base_dir
+            )
             return {settings.account_alias: settings}
         resolved_group = group.name
 
@@ -277,7 +302,10 @@ def load_group_mt5_settings(
     for group_instance in iter_group_instances(resolved_group, base_dir=base_dir):
         settings = load_mt5_settings(instance_name=group_instance, base_dir=base_dir)
         alias = settings.account_alias
-        if alias in accounts and accounts[alias].instance_name != settings.instance_name:
+        if (
+            alias in accounts
+            and accounts[alias].instance_name != settings.instance_name
+        ):
             raise ValueError(
                 f"duplicate MT5 account_alias configured across instances: {alias}"
             )

@@ -5,9 +5,9 @@ from pathlib import Path
 
 def _runner_source() -> str:
     repo_root = Path(__file__).resolve().parents[2]
-    return (
-        repo_root / "src" / "ops" / "cli" / "walkforward_runner.py"
-    ).read_text(encoding="utf-8")
+    return (repo_root / "src" / "ops" / "cli" / "walkforward_runner.py").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_walkforward_runner_uses_current_split_field_names() -> None:

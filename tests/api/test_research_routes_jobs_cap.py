@@ -1,6 +1,7 @@
 """§0cc P2 + P3 回归：_mining_jobs 必须有容量上限 + cli _cleanup_components
 必须关 pipeline。
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -19,9 +20,9 @@ def test_mining_jobs_dict_has_capacity_cap() -> None:
 
     # 探测：插入 max+10 条目，最旧的应被淘汰
     cap = getattr(routes, "_MINING_JOBS_MAX", None)
-    assert cap is not None, (
-        "routes 必须暴露 _MINING_JOBS_MAX 容量上限常量；当前为 None（无 cap）"
-    )
+    assert (
+        cap is not None
+    ), "routes 必须暴露 _MINING_JOBS_MAX 容量上限常量；当前为 None（无 cap）"
     assert cap > 0, f"容量必须 > 0；got {cap}"
 
     # 模拟完成结果常驻
@@ -34,9 +35,9 @@ def test_mining_jobs_dict_has_capacity_cap() -> None:
     for i in range(cap + 5):
         set_fn(f"run-{i}", {"status": "completed", "data": "x" * 100})
 
-    assert len(routes._mining_jobs) <= cap, (
-        f"_mining_jobs 不能超过容量上限 {cap}；got {len(routes._mining_jobs)}"
-    )
+    assert (
+        len(routes._mining_jobs) <= cap
+    ), f"_mining_jobs 不能超过容量上限 {cap}；got {len(routes._mining_jobs)}"
     # 最早的 5 条应被淘汰
     assert "run-0" not in routes._mining_jobs
     # 最新的应保留
@@ -58,6 +59,6 @@ def test_backtesting_cli_cleanup_components_closes_pipeline() -> None:
     cli._cleanup_components({"writer": fake_writer, "pipeline": fake_pipeline})
 
     assert fake_writer.close.called, "writer 必须关"
-    assert fake_pipeline.shutdown.called, (
-        "pipeline 必须关——否则 isolated 线程池/缓存遗留"
-    )
+    assert (
+        fake_pipeline.shutdown.called
+    ), "pipeline 必须关——否则 isolated 线程池/缓存遗留"

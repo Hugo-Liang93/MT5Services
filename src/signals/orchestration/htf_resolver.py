@@ -86,7 +86,12 @@ def resolve_htf_indicators(
                         if count <= 3 or count % 200 == 0:
                             logger.info(
                                 "HTF indicator %s/%s/%s stale: bar_time=%s age=%s > max=%s, skipping (total=%d)",
-                                symbol, tf, ind_name, bar_time_str, age, max_age,
+                                symbol,
+                                tf,
+                                ind_name,
+                                bar_time_str,
+                                age,
+                                max_age,
                                 count,
                             )
                         continue
@@ -96,5 +101,3 @@ def resolve_htf_indicators(
         if tf_indicators:
             result[tf] = tf_indicators
     return result
-
-

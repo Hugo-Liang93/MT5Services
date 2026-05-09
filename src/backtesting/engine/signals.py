@@ -5,11 +5,11 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.clients.mt5_market import OHLC
+from src.research.entry_meta.features import EntryMetaFeatureContext
 from src.signals.confidence import apply_intrabar_decay
 from src.signals.evaluation.regime import RegimeType
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalDecision
-from src.research.entry_meta.features import EntryMetaFeatureContext
 from src.trading.execution.sizing import RegimeSizing, compute_trade_params
 
 from ..models import SignalEvaluation

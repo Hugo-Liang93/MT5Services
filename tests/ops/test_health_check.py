@@ -275,9 +275,9 @@ def test_indicator_engine_skipped_for_executor_role(
 
     rows = health_check._run_checks("localhost", 8808)
     indicator_row = next((r for r in rows if r[0] == "Indicator engine"), None)
-    assert indicator_row is None, (
-        f"executor role 应跳过 indicator engine 检查（无 row），实际 {indicator_row!r}"
-    )
+    assert (
+        indicator_row is None
+    ), f"executor role 应跳过 indicator engine 检查（无 row），实际 {indicator_row!r}"
 
 
 def test_indicator_engine_fail_on_http_error(

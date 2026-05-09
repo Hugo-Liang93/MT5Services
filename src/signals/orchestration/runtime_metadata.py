@@ -62,19 +62,23 @@ def _inject_spread(
     """尝试获取 spread 和 symbol point 并注入 metadata。"""
     try:
         source_get_spread = getattr(snapshot_source, "get_current_spread", None)
-        if source_get_spread is None and getattr(
-            snapshot_source, "market_service", None
-        ) is not None:
-            source_get_spread = getattr(snapshot_source.market_service, "get_current_spread")
+        if (
+            source_get_spread is None
+            and getattr(snapshot_source, "market_service", None) is not None
+        ):
+            source_get_spread = getattr(
+                snapshot_source.market_service, "get_current_spread"
+            )
         if source_get_spread is None:
             return
         spread_points = float(source_get_spread(symbol))
         metadata[MK.SPREAD_POINTS] = spread_points
 
         source_get_symbol_point = getattr(snapshot_source, "get_symbol_point", None)
-        if source_get_symbol_point is None and getattr(
-            snapshot_source, "market_service", None
-        ) is not None:
+        if (
+            source_get_symbol_point is None
+            and getattr(snapshot_source, "market_service", None) is not None
+        ):
             source_get_symbol_point = getattr(
                 snapshot_source.market_service, "get_symbol_point", None
             )
@@ -124,11 +128,15 @@ def _inject_intrabar_synthesis(
             "get_intrabar_metadata",
             None,
         )
-        if source_get_intrabar_metadata is None and getattr(
-            snapshot_source,
-            "market_service",
-            None,
-        ) is not None:
+        if (
+            source_get_intrabar_metadata is None
+            and getattr(
+                snapshot_source,
+                "market_service",
+                None,
+            )
+            is not None
+        ):
             source_get_intrabar_metadata = getattr(
                 snapshot_source.market_service,
                 "get_intrabar_metadata",

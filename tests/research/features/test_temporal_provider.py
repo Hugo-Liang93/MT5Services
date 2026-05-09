@@ -2,6 +2,7 @@
 
 TemporalFeatureProvider 单元测试。
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,10 +10,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.research.core.config import TemporalProviderConfig
 from src.research.features.protocol import FeatureRole
 from src.research.features.temporal import TemporalFeatureProvider
-from src.research.core.config import TemporalProviderConfig
-
 
 # ---------------------------------------------------------------------------
 # Mock DataMatrix helpers

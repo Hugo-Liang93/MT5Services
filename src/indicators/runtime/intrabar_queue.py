@@ -5,11 +5,10 @@ from __future__ import annotations
 import logging
 import queue
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from .intrabar_metrics import record_intrabar_drop
-
-from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 

@@ -86,9 +86,9 @@ def test_trading_state_alerts_does_not_report_healthy_when_data_sources_fail() -
 
     summary = alerts.summary()
 
-    assert summary["status"] != "healthy", (
-        f"双数据源失败不应被报 healthy；summary={summary!r}"
-    )
+    assert (
+        summary["status"] != "healthy"
+    ), f"双数据源失败不应被报 healthy；summary={summary!r}"
     codes = {item["code"] for item in summary["alerts"]}
     assert codes & {
         "data_source_unavailable",
@@ -108,9 +108,10 @@ def test_trading_state_alerts_state_store_only_failure_still_alerts() -> None:
     summary = alerts.summary()
     assert summary["status"] != "healthy"
     codes = {item["code"] for item in summary["alerts"]}
-    assert codes & {"state_store_unavailable", "data_source_unavailable"}, (
-        f"state_store 故障必须告警；alerts={summary['alerts']!r}"
-    )
+    assert codes & {
+        "state_store_unavailable",
+        "data_source_unavailable",
+    }, f"state_store 故障必须告警；alerts={summary['alerts']!r}"
 
 
 # ── P3 回归：monitoring_summary(hours) 必须真实生效 ─────────────────────────
@@ -127,9 +128,9 @@ def test_monitoring_summary_records_hours_in_payload() -> None:
     )
     summary_1h = alerts.monitoring_summary(hours=1)
     summary_24h = alerts.monitoring_summary(hours=24)
-    assert summary_1h.get("time_range_hours") == 1, (
-        f"hours=1 必须被记录到 payload；got {summary_1h!r}"
-    )
-    assert summary_24h.get("time_range_hours") == 24, (
-        f"hours=24 必须被记录到 payload；got {summary_24h!r}"
-    )
+    assert (
+        summary_1h.get("time_range_hours") == 1
+    ), f"hours=1 必须被记录到 payload；got {summary_1h!r}"
+    assert (
+        summary_24h.get("time_range_hours") == 24
+    ), f"hours=24 必须被记录到 payload；got {summary_24h!r}"

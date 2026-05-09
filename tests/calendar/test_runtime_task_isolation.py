@@ -2,6 +2,7 @@
 查询 runtime_task_status 时必须按 instance_id 隔离，禁止跨实例串行/读取
 其他实例的 next_run_at / failure_count / freshness。
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -9,7 +10,6 @@ from typing import Any
 
 from src.calendar.economic_calendar.calendar_sync import restore_job_state
 from src.calendar.read_only_provider import ReadOnlyEconomicCalendarProvider
-
 
 # ── 共用 stub ──
 
@@ -55,9 +55,9 @@ def test_restore_job_state_passes_instance_id_to_runtime_task_query() -> None:
     restore_job_state(service)
     assert db.calls, "应至少调用一次 fetch_runtime_task_status"
     call = db.calls[0]
-    assert call.get("instance_id") == "instance-a", (
-        f"必须按 instance_id 过滤；got params={call!r}"
-    )
+    assert (
+        call.get("instance_id") == "instance-a"
+    ), f"必须按 instance_id 过滤；got params={call!r}"
 
 
 # ── §0dh P2 回归：ReadOnlyEconomicCalendarProvider 必须按 main 的 target_instance_id 过滤 ──
@@ -101,9 +101,9 @@ def test_read_only_provider_runtime_rows_pass_target_instance_id() -> None:
     provider._runtime_rows()
     assert db.calls, "应至少调用一次 fetch_runtime_task_status"
     call = db.calls[0]
-    assert call.get("instance_id") == "live:live-main", (
-        f"必须按 target_instance_id（main 身份）过滤；got params={call!r}"
-    )
+    assert (
+        call.get("instance_id") == "live:live-main"
+    ), f"必须按 target_instance_id（main 身份）过滤；got params={call!r}"
 
 
 def test_read_only_provider_target_instance_id_is_required() -> None:
@@ -168,7 +168,9 @@ class _PersistRecorder:
         self.calls.append(job_type)
 
 
-def test_stop_service_does_not_mark_stopped_when_worker_still_alive(monkeypatch) -> None:
+def test_stop_service_does_not_mark_stopped_when_worker_still_alive(
+    monkeypatch,
+) -> None:
     """P2 §0z 回归：旧实现不管线程是否真停下，无条件把每个 job 持久化为 stopped
     → 把"线程卡死未退出"的高风险 shutdown 漂白成正常停止。线程真停下才能标
     STOPPED；卡死时必须保留线程引用 + 记录 STOP_REQUESTED 反映真实状态。
@@ -192,15 +194,15 @@ def test_stop_service_does_not_mark_stopped_when_worker_still_alive(monkeypatch)
     stop_service(service)
 
     # worker 仍活着 → 不应被清掉引用（ADR-005）
-    assert service._worker is fake_thread, (
-        "worker join 超时仍 is_alive=True → 必须保留线程引用，不能清掉"
-    )
+    assert (
+        service._worker is fake_thread
+    ), "worker join 超时仍 is_alive=True → 必须保留线程引用，不能清掉"
 
     # 任一 job 不能被标 STOPPED（线程没真停下）
     for job_type, state in service._job_state.items():
-        assert state["last_status"] != RuntimeTaskState.STOPPED.value, (
-            f"线程卡死时 {job_type} 不能被标 STOPPED；got {state['last_status']!r}"
-        )
+        assert (
+            state["last_status"] != RuntimeTaskState.STOPPED.value
+        ), f"线程卡死时 {job_type} 不能被标 STOPPED；got {state['last_status']!r}"
 
 
 def test_stop_service_marks_stopped_when_worker_actually_dies(monkeypatch) -> None:
@@ -242,6 +244,7 @@ def test_legacy_instance_id_helper_no_longer_exists() -> None:
     RuntimeIdentity，无 identity 即装配失败 fail-fast，禁止任何 fallback 字面量。
     """
     import pytest
+
     from src.config import runtime_identity as ri_mod
 
     assert not hasattr(ri_mod, "legacy_instance_id"), (
@@ -254,9 +257,11 @@ def test_runtime_task_writer_raises_when_runtime_identity_missing() -> None:
     """§0dj：calendar_sync.runtime_task_row 必须在 _runtime_identity=None 时
     显式 raise，而不是 fallback 到任何字面量。
     """
-    import pytest
-    from src.calendar.economic_calendar.calendar_sync import runtime_task_row
     from types import SimpleNamespace
+
+    import pytest
+
+    from src.calendar.economic_calendar.calendar_sync import runtime_task_row
 
     service = SimpleNamespace(
         _runtime_identity=None,

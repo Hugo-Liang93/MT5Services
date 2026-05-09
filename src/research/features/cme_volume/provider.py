@@ -14,17 +14,14 @@ All features emit None when:
     or weekend with no published volume)
   - rolling-window features lack enough history (first 5 / 20 / 60 bars)
 """
+
 from __future__ import annotations
 
 import statistics
 from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from src.research.features.protocol import (
-    FeatureRole,
-    ProviderDataRequirement,
-)
-
+from src.research.features.protocol import FeatureRole, ProviderDataRequirement
 
 _FEATURE_KEYS: Tuple[Tuple[str, str], ...] = (
     ("cme_volume", "cme_volume_zscore_20d"),
@@ -121,9 +118,7 @@ class CMEVolumeFeatureProvider:
             if len(history_20) >= 20:
                 mean_20 = sum(history_20) / len(history_20)
                 std_20 = statistics.pstdev(history_20)
-                zscore_by_date[d] = (
-                    (v - mean_20) / std_20 if std_20 > 0 else 0.0
-                )
+                zscore_by_date[d] = (v - mean_20) / std_20 if std_20 > 0 else 0.0
             else:
                 zscore_by_date[d] = None
 

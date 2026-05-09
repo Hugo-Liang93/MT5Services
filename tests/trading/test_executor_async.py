@@ -50,6 +50,7 @@ def _default_runtime_identity() -> _StubRuntimeIdentity:
 # Helpers (adapted from test_signal_executor.py)
 # ---------------------------------------------------------------------------
 
+
 class DummyTradingModule:
     def __init__(self, *, delay: float = 0.0, error: Exception | None = None):
         self.calls: list[tuple] = []
@@ -170,6 +171,7 @@ def _make_executor(
 # ===========================================================================
 # Tests
 # ===========================================================================
+
 
 def test_on_signal_event_is_non_blocking() -> None:
     """on_signal_event must return in < 50ms even when worker is slow."""
@@ -307,7 +309,9 @@ def test_stop_timeout_does_not_create_dual_threads() -> None:
     executor.start()
 
     # 旧线程应该已退出
-    assert not old_thread.is_alive(), "Old worker thread should have exited during start()"
+    assert (
+        not old_thread.is_alive()
+    ), "Old worker thread should have exited during start()"
 
     # 发新事件触发 _start_worker
     executor.on_signal_event(_build_event(signal_id="sig_new"))

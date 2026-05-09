@@ -22,7 +22,6 @@ from src.research.core.ports import (
 )
 from src.signals.evaluation.regime import RegimeType, SoftRegimeResult
 
-
 # ---------------------------------------------------------------------------
 # Fake implementations — 确认 Protocol 签名不包含过度约束
 # ---------------------------------------------------------------------------

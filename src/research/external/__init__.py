@@ -3,6 +3,7 @@
 Public API: ExternalDataSource protocol + registry. Concrete sources
 (YFinanceClient, future FredClient/PolygonClient) live as siblings.
 """
+
 from src.research.external.protocol import (
     DailyBar,
     ExternalDataSource,

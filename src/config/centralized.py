@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
 
+from src.config.instance_context import resolve_instance_scoped_dir
 from src.config.models import (
     APIConfig,
     EconomicConfig,
@@ -25,7 +26,6 @@ from src.config.models import (
     TradingConfig,
     TradingOpsConfig,
 )
-from src.config.instance_context import resolve_instance_scoped_dir
 from src.config.risk import normalize_risk_config_payload
 from src.config.signal import get_signal_config
 from src.config.utils import (

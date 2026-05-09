@@ -127,7 +127,9 @@ def run_monte_carlo(
     dd_p = sum(1 for d in random_dds if d <= real_dd) / cfg.num_simulations
 
     # 百分位
-    sharpe_pct = sum(1 for s in random_sharpes if s < real_sharpe) / cfg.num_simulations * 100
+    sharpe_pct = (
+        sum(1 for s in random_sharpes if s < real_sharpe) / cfg.num_simulations * 100
+    )
     pf_pct = sum(1 for p in random_pfs if p < real_pf) / cfg.num_simulations * 100
 
     # 随机分布统计

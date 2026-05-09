@@ -32,7 +32,8 @@ def test_supervisor_start_initial_runs_main_gate_then_workers(monkeypatch) -> No
     monkeypatch.setattr(
         supervisor,
         "_spawn",
-        lambda instance_name, restart_count=0: calls.append(f"spawn:{instance_name}") or ManagedProcess(
+        lambda instance_name, restart_count=0: calls.append(f"spawn:{instance_name}")
+        or ManagedProcess(
             instance_name=instance_name,
             process=_DummyProcess(),
             restart_count=restart_count,
@@ -60,12 +61,17 @@ def test_supervisor_start_initial_runs_main_gate_then_workers(monkeypatch) -> No
 def test_supervisor_start_initial_main_gate_failure_aborts(monkeypatch) -> None:
     """main gate 失败必须 fail-fast，整个 group 启动中止。"""
     group = SimpleNamespace(
-        name="live", main="live-main", workers=["live-exec-a"], environment="live",
+        name="live",
+        main="live-main",
+        workers=["live-exec-a"],
+        environment="live",
     )
     supervisor = Supervisor(group, ready_timeout_seconds=5.0)
 
     def gate_fail(instance_name=None):
-        raise RuntimeError("MT5 session gate failed for live-main [terminal_path_missing]")
+        raise RuntimeError(
+            "MT5 session gate failed for live-main [terminal_path_missing]"
+        )
 
     monkeypatch.setattr(
         "src.entrypoint.supervisor.ensure_mt5_session_gate_or_raise", gate_fail
@@ -88,7 +94,9 @@ def test_supervisor_start_initial_worker_gate_failure_skips_worker(monkeypatch) 
 
     def gate(instance_name=None):
         if instance_name == "live-exec-a":
-            raise RuntimeError("MT5 session gate failed for live-exec-a [terminal_not_running]")
+            raise RuntimeError(
+                "MT5 session gate failed for live-exec-a [terminal_not_running]"
+            )
         calls.append(f"gate:{instance_name}")
 
     monkeypatch.setattr(
@@ -97,7 +105,8 @@ def test_supervisor_start_initial_worker_gate_failure_skips_worker(monkeypatch) 
     monkeypatch.setattr(
         supervisor,
         "_spawn",
-        lambda instance_name, restart_count=0: calls.append(f"spawn:{instance_name}") or ManagedProcess(
+        lambda instance_name, restart_count=0: calls.append(f"spawn:{instance_name}")
+        or ManagedProcess(
             instance_name=instance_name,
             process=_DummyProcess(),
             restart_count=restart_count,
@@ -127,7 +136,10 @@ def test_supervisor_start_initial_worker_gate_failure_skips_worker(monkeypatch) 
 def test_supervisor_spawn_no_longer_runs_gate(monkeypatch) -> None:
     """_spawn 不应再调用 gate（gate 由调用方负责）。"""
     group = SimpleNamespace(
-        name="live", main="live-main", workers=[], environment="live",
+        name="live",
+        main="live-main",
+        workers=[],
+        environment="live",
     )
     supervisor = Supervisor(group, ready_timeout_seconds=5.0)
     gate_calls: list[str] = []
@@ -137,7 +149,8 @@ def test_supervisor_spawn_no_longer_runs_gate(monkeypatch) -> None:
         lambda instance_name=None: gate_calls.append(instance_name),
     )
     monkeypatch.setattr(
-        "subprocess.Popen", lambda *args, **kwargs: _DummyProcess(),
+        "subprocess.Popen",
+        lambda *args, **kwargs: _DummyProcess(),
     )
 
     managed = supervisor._spawn("live-main")
@@ -149,7 +162,10 @@ def test_supervisor_spawn_no_longer_runs_gate(monkeypatch) -> None:
 def test_supervisor_pending_worker_retry_spawns_once_gate_passes(monkeypatch) -> None:
     """启动期 gate 失败的 worker 应被放入 _pending_workers；gate 恢复后自动 spawn。"""
     group = SimpleNamespace(
-        name="live", main="live-main", workers=["live-exec-a"], environment="live",
+        name="live",
+        main="live-main",
+        workers=["live-exec-a"],
+        environment="live",
     )
     supervisor = Supervisor(group, ready_timeout_seconds=5.0)
     supervisor._pending_workers.add("live-exec-a")
@@ -196,13 +212,17 @@ def test_supervisor_pending_worker_retry_spawns_once_gate_passes(monkeypatch) ->
 def test_supervisor_pending_worker_retry_respects_throttle(monkeypatch) -> None:
     """节流：在同一 interval 内不应重复调 gate。"""
     group = SimpleNamespace(
-        name="live", main="live-main", workers=["live-exec-a"], environment="live",
+        name="live",
+        main="live-main",
+        workers=["live-exec-a"],
+        environment="live",
     )
     supervisor = Supervisor(group, ready_timeout_seconds=5.0)
     supervisor._pending_workers.add("live-exec-a")
     supervisor._PENDING_WORKER_RETRY_INTERVAL_SECONDS = 30.0
     # 设为当前时间 - 1s，还没到 30s 节流间隔
     import time as _time
+
     supervisor._last_pending_retry_at = _time.monotonic() - 1.0
 
     gate_calls: list[str] = []
@@ -220,6 +240,7 @@ def test_supervisor_pending_worker_retry_respects_throttle(monkeypatch) -> None:
 
 class _ExitedNormallyProcess:
     """模拟 exit code = 0 的子进程。"""
+
     pid = 9999
 
     def poll(self):
@@ -261,7 +282,8 @@ def test_monitor_loop_does_not_keep_stale_normal_exit_in_managed(monkeypatch) ->
     monkeypatch.setattr(
         supervisor,
         "_spawn",
-        lambda instance_name, restart_count=0: spawned.append(instance_name) or ManagedProcess(
+        lambda instance_name, restart_count=0: spawned.append(instance_name)
+        or ManagedProcess(
             instance_name=instance_name,
             process=_DummyProcess(),
             restart_count=restart_count,
@@ -333,8 +355,8 @@ def test_normal_exit_increments_unexpected_normal_exits_counter(monkeypatch) -> 
     supervisor._monitor_loop()
 
     counts = supervisor.unexpected_normal_exits()
-    assert counts.get("live-main", 0) >= 1, (
-        f"normal exit 必须把 live-main counter +1；got {counts!r}"
-    )
+    assert (
+        counts.get("live-main", 0) >= 1
+    ), f"normal exit 必须把 live-main counter +1；got {counts!r}"
     # 其他实例不应被错误计数
     assert "live-exec-a" not in counts

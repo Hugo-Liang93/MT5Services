@@ -10,6 +10,7 @@
 - 连胜连败统计
 - 滑点/手续费成本记录
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -18,8 +19,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.backtesting.data.loader import CachedDataLoader
 from src.backtesting.analysis.metrics import _consecutive_streaks, compute_metrics
+from src.backtesting.data.loader import CachedDataLoader
+from src.backtesting.engine.portfolio import PortfolioTracker
 from src.backtesting.models import (
     BacktestConfig,
     BacktestMetrics,
@@ -27,7 +29,6 @@ from src.backtesting.models import (
     SignalEvaluation,
     TradeRecord,
 )
-from src.backtesting.engine.portfolio import PortfolioTracker
 from src.clients.mt5_market import OHLC
 from src.trading.execution.sizing import TradeParameters
 
@@ -94,8 +95,12 @@ class TestCachedDataLoader:
         test = _make_bars(20)
         loader = CachedDataLoader(warmup, test)
 
-        result_warmup = loader.preload_warmup_bars("X", "M5", datetime.now(timezone.utc))
-        result_test = loader.load_all_bars("X", "M5", datetime.now(timezone.utc), datetime.now(timezone.utc))
+        result_warmup = loader.preload_warmup_bars(
+            "X", "M5", datetime.now(timezone.utc)
+        )
+        result_test = loader.load_all_bars(
+            "X", "M5", datetime.now(timezone.utc), datetime.now(timezone.utc)
+        )
 
         assert len(result_warmup) == 10
         assert len(result_test) == 20
@@ -106,10 +111,14 @@ class TestCachedDataLoader:
         test = _make_bars(10)
         loader = CachedDataLoader(warmup, test)
 
-        result1 = loader.load_all_bars("X", "M5", datetime.now(timezone.utc), datetime.now(timezone.utc))
+        result1 = loader.load_all_bars(
+            "X", "M5", datetime.now(timezone.utc), datetime.now(timezone.utc)
+        )
         result1.clear()  # 清空副本
 
-        result2 = loader.load_all_bars("X", "M5", datetime.now(timezone.utc), datetime.now(timezone.utc))
+        result2 = loader.load_all_bars(
+            "X", "M5", datetime.now(timezone.utc), datetime.now(timezone.utc)
+        )
         assert len(result2) == 10  # 原始数据不受影响
 
     def test_ignores_arguments(self) -> None:
@@ -119,8 +128,12 @@ class TestCachedDataLoader:
         loader = CachedDataLoader(warmup, test)
 
         # 传入不同参数应该返回相同数据
-        r1 = loader.load_all_bars("EURUSD", "H1", datetime.now(timezone.utc), datetime.now(timezone.utc))
-        r2 = loader.load_all_bars("XAUUSD", "M5", datetime.now(timezone.utc), datetime.now(timezone.utc))
+        r1 = loader.load_all_bars(
+            "EURUSD", "H1", datetime.now(timezone.utc), datetime.now(timezone.utc)
+        )
+        r2 = loader.load_all_bars(
+            "XAUUSD", "M5", datetime.now(timezone.utc), datetime.now(timezone.utc)
+        )
         assert len(r1) == len(r2) == 7
 
 
@@ -226,12 +239,12 @@ class TestConsecutiveStreaks:
 
     def test_mixed(self) -> None:
         trades = [
-            _make_trade(100.0),   # W
-            _make_trade(50.0),    # W
-            _make_trade(200.0),   # W -> 3 连胜
-            _make_trade(-50.0),   # L
-            _make_trade(-30.0),   # L -> 2 连败
-            _make_trade(10.0),    # W
+            _make_trade(100.0),  # W
+            _make_trade(50.0),  # W
+            _make_trade(200.0),  # W -> 3 连胜
+            _make_trade(-50.0),  # L
+            _make_trade(-30.0),  # L -> 2 连败
+            _make_trade(10.0),  # W
         ]
         wins, losses = _consecutive_streaks(trades)
         assert wins == 3
@@ -265,22 +278,37 @@ class TestCostTracking:
             commission_per_lot=7.0,
         )
         bar = OHLC(
-            symbol="XAUUSD", timeframe="M5",
+            symbol="XAUUSD",
+            timeframe="M5",
             time=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            open=2000.0, high=2015.0, low=1999.0, close=2000.0, volume=100.0,
+            open=2000.0,
+            high=2015.0,
+            low=1999.0,
+            close=2000.0,
+            volume=100.0,
         )
         params = TradeParameters(
-            entry_price=2000.0, stop_loss=1995.0, take_profit=2010.0,
-            position_size=0.1, risk_reward_ratio=2.0, atr_value=5.0,
-            sl_distance=5.0, tp_distance=10.0,
+            entry_price=2000.0,
+            stop_loss=1995.0,
+            take_profit=2010.0,
+            position_size=0.1,
+            risk_reward_ratio=2.0,
+            atr_value=5.0,
+            sl_distance=5.0,
+            tp_distance=10.0,
         )
         pt.open_position("test", "buy", bar, params, "TRENDING", 0.7, 0)
 
         # TP 触发
         exit_bar = OHLC(
-            symbol="XAUUSD", timeframe="M5",
+            symbol="XAUUSD",
+            timeframe="M5",
             time=datetime(2025, 1, 1, 0, 5, tzinfo=timezone.utc),
-            open=2008.0, high=2012.0, low=2005.0, close=2008.0, volume=100.0,
+            open=2008.0,
+            high=2012.0,
+            low=2005.0,
+            close=2008.0,
+            volume=100.0,
         )
         closed = pt.check_exits(exit_bar, 1)
         assert len(closed) == 1
@@ -408,10 +436,15 @@ class TestConfidencePipelineFlags:
             }
         ]
         signal_module.evaluate.return_value = SignalDecision(
-            strategy="test", symbol="XAUUSD", timeframe="M5",
-            direction="hold", confidence=0.0, reason="test",
+            strategy="test",
+            symbol="XAUUSD",
+            timeframe="M5",
+            direction="hold",
+            confidence=0.0,
+            reason="test",
             used_indicators=["rsi14"],
-            timestamp=datetime.now(timezone.utc), metadata={},
+            timestamp=datetime.now(timezone.utc),
+            metadata={},
         )
 
         pipeline = MagicMock()
@@ -439,14 +472,24 @@ class TestEquityCurveSampling:
         """开仓应自动记录资金快照。"""
         pt = PortfolioTracker(initial_balance=10000.0)
         bar = OHLC(
-            symbol="XAUUSD", timeframe="M5",
+            symbol="XAUUSD",
+            timeframe="M5",
             time=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            open=2000.0, high=2001.0, low=1999.0, close=2000.0, volume=100.0,
+            open=2000.0,
+            high=2001.0,
+            low=1999.0,
+            close=2000.0,
+            volume=100.0,
         )
         params = TradeParameters(
-            entry_price=2000.0, stop_loss=1995.0, take_profit=2010.0,
-            position_size=0.1, risk_reward_ratio=2.0, atr_value=5.0,
-            sl_distance=5.0, tp_distance=10.0,
+            entry_price=2000.0,
+            stop_loss=1995.0,
+            take_profit=2010.0,
+            position_size=0.1,
+            risk_reward_ratio=2.0,
+            atr_value=5.0,
+            sl_distance=5.0,
+            tp_distance=10.0,
         )
         initial_curve_len = len(pt.equity_curve)
         pt.open_position("test", "buy", bar, params, "TRENDING", 0.7, 0)
@@ -457,22 +500,37 @@ class TestEquityCurveSampling:
         """平仓应自动记录资金快照。"""
         pt = PortfolioTracker(initial_balance=10000.0, contract_size=100.0)
         bar = OHLC(
-            symbol="XAUUSD", timeframe="M5",
+            symbol="XAUUSD",
+            timeframe="M5",
             time=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            open=2000.0, high=2015.0, low=1999.0, close=2000.0, volume=100.0,
+            open=2000.0,
+            high=2015.0,
+            low=1999.0,
+            close=2000.0,
+            volume=100.0,
         )
         params = TradeParameters(
-            entry_price=2000.0, stop_loss=1995.0, take_profit=2010.0,
-            position_size=0.1, risk_reward_ratio=2.0, atr_value=5.0,
-            sl_distance=5.0, tp_distance=10.0,
+            entry_price=2000.0,
+            stop_loss=1995.0,
+            take_profit=2010.0,
+            position_size=0.1,
+            risk_reward_ratio=2.0,
+            atr_value=5.0,
+            sl_distance=5.0,
+            tp_distance=10.0,
         )
         pt.open_position("test", "buy", bar, params, "TRENDING", 0.7, 0)
         curve_after_open = len(pt.equity_curve)
 
         exit_bar = OHLC(
-            symbol="XAUUSD", timeframe="M5",
+            symbol="XAUUSD",
+            timeframe="M5",
             time=datetime(2025, 1, 1, 0, 5, tzinfo=timezone.utc),
-            open=2008.0, high=2012.0, low=2005.0, close=2008.0, volume=100.0,
+            open=2008.0,
+            high=2012.0,
+            low=2005.0,
+            close=2008.0,
+            volume=100.0,
         )
         pt.check_exits(exit_bar, 1)
         # 平仓后应多一个采样点

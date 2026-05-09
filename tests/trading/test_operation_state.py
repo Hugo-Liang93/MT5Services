@@ -67,7 +67,9 @@ class _AuditWriter:
         self.rows.extend(list(rows))
 
 
-def test_trade_command_audit_service_projects_broker_ids_from_response_payload() -> None:
+def test_trade_command_audit_service_projects_broker_ids_from_response_payload() -> (
+    None
+):
     writer = _AuditWriter()
     service = TradeCommandAuditService(
         writer,

@@ -25,9 +25,7 @@ _DEPRECATED_VOTE_SECTIONS = (
     "standalone_override",
 )
 
-_DEPRECATED_VOTE_PREFIXES = (
-    "voting_group.",
-)
+_DEPRECATED_VOTE_PREFIXES = ("voting_group.",)
 
 _DEPRECATED_VOTE_SIGNAL_KEYS = frozenset(
     {
@@ -44,12 +42,13 @@ _DEPRECATED_VOTE_SIGNAL_KEYS = frozenset(
 
 
 def _assert_no_deprecated_signal_keys(signal_section: dict[str, object]) -> None:
-    deprecated = sorted(key for key in signal_section if key in _DEPRECATED_ECONOMIC_SIGNAL_KEYS)
+    deprecated = sorted(
+        key for key in signal_section if key in _DEPRECATED_ECONOMIC_SIGNAL_KEYS
+    )
     if deprecated:
         raise ValueError(
             "signal.ini no longer owns economic-event windows. "
-            "Move these keys to economic.ini / EconomicConfig: "
-            + ", ".join(deprecated)
+            "Move these keys to economic.ini / EconomicConfig: " + ", ".join(deprecated)
         )
 
 
@@ -74,8 +73,7 @@ def _assert_no_vote_configuration(
     if deprecated_signal_keys:
         raise ValueError(
             "signal.ini no longer supports vote/consensus settings. "
-            "Remove deprecated signal keys: "
-            + ", ".join(deprecated_signal_keys)
+            "Remove deprecated signal keys: " + ", ".join(deprecated_signal_keys)
         )
 
     deprecated_sections = [
@@ -87,8 +85,7 @@ def _assert_no_vote_configuration(
         section_name
         for section_name in merged
         if any(
-            str(section_name).startswith(prefix)
-            for prefix in _DEPRECATED_VOTE_PREFIXES
+            str(section_name).startswith(prefix) for prefix in _DEPRECATED_VOTE_PREFIXES
         )
         and _section_has_non_blank_values(dict(merged.get(section_name, {})))
     )
@@ -471,7 +468,9 @@ def get_signal_config() -> SignalConfig:
         "contract_size_map": _normalize_float_map(
             contract_sizes_section,
             key_transform=lambda value: (
-                "default" if str(value).strip().lower() == "default" else str(value).strip().upper()
+                "default"
+                if str(value).strip().lower() == "default"
+                else str(value).strip().upper()
             ),
         ),
         "timeframe_risk_multipliers": _normalize_float_map(

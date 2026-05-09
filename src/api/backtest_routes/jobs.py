@@ -152,6 +152,7 @@ async def run_backtest(
             },
         )
     except Exception as exc:
+        logger.exception("Backtest submission failed for run %s", run_id)
         backtest_runtime_store.fail_job(run_id, str(exc))
         error_payload = build_action_error_payload(
             action_id=run_id,
@@ -263,7 +264,8 @@ async def get_result(run_id: str) -> ApiResponse:
             if db_result is not None:
                 return ApiResponse(success=True, data=db_result)
     except Exception:
-        logger.debug("DB fallback query failed for %s", run_id, exc_info=True)
+        # T6: debug + exc_info 是 CLAUDE.md §12 反模式（静默吞异常），升级 warning。
+        logger.warning("DB fallback query failed for %s", run_id, exc_info=True)
 
     job = backtest_runtime_store.get_job(run_id)
     if job is not None:
@@ -312,6 +314,7 @@ async def list_history(limit: int = 50, offset: int = 0) -> ApiResponse:
         runs = repo.fetch_runs(limit=limit, offset=offset)
         return ApiResponse(success=True, data=runs)
     except Exception as exc:
+        logger.exception("fetch_runs failed (limit=%s offset=%s)", limit, offset)
         return ApiResponse(success=False, error=str(exc))
 
 
@@ -323,6 +326,7 @@ async def get_trades(run_id: str) -> ApiResponse:
             return ApiResponse(success=False, error="Database not available")
         return ApiResponse(success=True, data=repo.fetch_trades(run_id))
     except Exception as exc:
+        logger.exception("fetch_trades failed for run %s", run_id)
         return ApiResponse(success=False, error=str(exc))
 
 
@@ -345,6 +349,7 @@ async def get_evaluations(
         )
         return ApiResponse(success=True, data=evaluations)
     except Exception as exc:
+        logger.exception("fetch_evaluations failed for run %s", run_id)
         return ApiResponse(success=False, error=str(exc))
 
 
@@ -357,6 +362,7 @@ async def get_evaluation_summary(run_id: str) -> ApiResponse:
         summary = repo.fetch_evaluation_summary(run_id)
         return ApiResponse(success=True, data=summary)
     except Exception as exc:
+        logger.exception("fetch_evaluation_summary failed for run %s", run_id)
         return ApiResponse(success=False, error=str(exc))
 
 

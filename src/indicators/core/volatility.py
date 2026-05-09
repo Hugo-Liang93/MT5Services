@@ -2,9 +2,9 @@ from typing import Any, Dict, Iterable, List
 
 import numpy as np
 
+from ..cache.incremental import IncrementalIndicator, IndicatorState
 from .base import get_closes_array, get_float, get_hlc_arrays, get_int, tail_bars
 from .mean import _ema_sequence
-from ..cache.incremental import IndicatorState, IncrementalIndicator
 
 
 def _compute_tr_array(
@@ -17,7 +17,9 @@ def _compute_tr_array(
     prev_closes = closes[:-1]
     h = highs[1:]
     l = lows[1:]
-    return np.maximum(h - l, np.maximum(np.abs(h - prev_closes), np.abs(l - prev_closes)))
+    return np.maximum(
+        h - l, np.maximum(np.abs(h - prev_closes), np.abs(l - prev_closes))
+    )
 
 
 def atr(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
@@ -48,7 +50,9 @@ class AtrIncremental(IncrementalIndicator):
     def __init__(self, name: str, params: Dict[str, Any]) -> None:
         super().__init__(name, params)
         # ATR needs period + 1 bars to compute the first TR sequence
-        self.min_data_points = get_int(params, "period", default=14, aliases=("window",)) + 1
+        self.min_data_points = (
+            get_int(params, "period", default=14, aliases=("window",)) + 1
+        )
 
     def _compute_full(self, bars: list) -> Dict[str, float]:
         return atr(bars, self.params)
@@ -61,7 +65,9 @@ class AtrIncremental(IncrementalIndicator):
             and "prev_close" in state.intermediate_results
         )
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
         period = get_int(self.params, "period", default=14, aliases=("window",))
         bar = bars[-1]
         prev_close = float(state.intermediate_results["prev_close"])  # type: ignore[index]
@@ -93,7 +99,12 @@ def bollinger(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     lower = mean - mult * std
     # close 字段：策略比较 close vs 带宽时需要当前收盘价，
     # 由指标本身携带，避免策略层多级回退猜测
-    return {"bb_mid": mean, "bb_upper": upper, "bb_lower": lower, "close": float(closes[-1])}
+    return {
+        "bb_mid": mean,
+        "bb_upper": upper,
+        "bb_lower": lower,
+        "close": float(closes[-1]),
+    }
 
 
 class BollingerIncremental(IncrementalIndicator):
@@ -111,7 +122,9 @@ class BollingerIncremental(IncrementalIndicator):
 
     def __init__(self, name: str, params: Dict[str, Any]) -> None:
         super().__init__(name, params)
-        self.min_data_points = get_int(params, "period", default=20, aliases=("window",))
+        self.min_data_points = get_int(
+            params, "period", default=20, aliases=("window",)
+        )
 
     def _compute_full(self, bars: list) -> Dict[str, float]:
         return bollinger(bars, self.params)
@@ -127,7 +140,9 @@ class BollingerIncremental(IncrementalIndicator):
             and "last_closes" in ir
         )
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
         period = get_int(self.params, "period", default=20, aliases=("window",))
         mult = get_float(self.params, "mult", default=2.0, aliases=("num_std",))
         running_sum = float(state.intermediate_results["running_sum"])  # type: ignore[index]
@@ -136,10 +151,10 @@ class BollingerIncremental(IncrementalIndicator):
         new_close = bars[-1].close
         dropped = last_closes[0] if len(last_closes) >= period else 0.0
         running_sum = running_sum - dropped + new_close
-        running_sq_sum = running_sq_sum - dropped ** 2 + new_close ** 2
+        running_sq_sum = running_sq_sum - dropped**2 + new_close**2
         mean = running_sum / period
-        var = running_sq_sum / period - mean ** 2
-        std = var ** 0.5 if var > 0 else 0.0
+        var = running_sq_sum / period - mean**2
+        std = var**0.5 if var > 0 else 0.0
         return {
             "bb_mid": mean,
             "bb_upper": mean + mult * std,
@@ -153,7 +168,7 @@ class BollingerIncremental(IncrementalIndicator):
         closes = get_closes_array(bars, period)
         state.intermediate_results = {
             "running_sum": float(np.sum(closes)),
-            "running_sq_sum": float(np.sum(closes ** 2)),
+            "running_sq_sum": float(np.sum(closes**2)),
             "last_closes": closes.tolist(),
         }
         return state
@@ -170,7 +185,7 @@ def keltner(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     highs, lows, closes = get_hlc_arrays(window)
     # typical price 向量化
     typicals = ((highs + lows + closes) / 3.0).tolist()
-    mid = _ema_sequence(typicals[-max(period * 3, period):], period)
+    mid = _ema_sequence(typicals[-max(period * 3, period) :], period)
 
     # TR 向量化
     trs = _compute_tr_array(highs, lows, closes)
@@ -192,7 +207,12 @@ def donchian(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     lower = float(np.min(lows))
     mid = (upper + lower) / 2
     # close 字段：DonchianBreakoutStrategy 比较 close vs 通道边界时使用
-    return {"donchian_upper": upper, "donchian_lower": lower, "donchian_mid": mid, "close": float(closes[-1])}
+    return {
+        "donchian_upper": upper,
+        "donchian_lower": lower,
+        "donchian_mid": mid,
+        "close": float(closes[-1]),
+    }
 
 
 class KeltnerIncremental(IncrementalIndicator):
@@ -215,13 +235,12 @@ class KeltnerIncremental(IncrementalIndicator):
             return False
         ir = state.intermediate_results
         return (
-            ir is not None
-            and "ema_tp" in ir
-            and "atr_val" in ir
-            and "prev_close" in ir
+            ir is not None and "ema_tp" in ir and "atr_val" in ir and "prev_close" in ir
         )
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
         period = get_int(self.params, "period", default=20, aliases=("window",))
         atr_period = get_int(self.params, "atr_period", default=14)
         mult = get_float(self.params, "mult", default=2.0)
@@ -236,7 +255,9 @@ class KeltnerIncremental(IncrementalIndicator):
         k = 2.0 / (period + 1)
         ema_tp = ema_tp + k * (tp - ema_tp)
 
-        tr = max(bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close))
+        tr = max(
+            bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close)
+        )
         atr_val = (atr_val * (atr_period - 1) + tr) / atr_period
 
         return {
@@ -283,7 +304,9 @@ class DonchianIncremental(IncrementalIndicator):
 
     def __init__(self, name: str, params: Dict[str, Any]) -> None:
         super().__init__(name, params)
-        self.min_data_points = get_int(params, "period", default=20, aliases=("window",))
+        self.min_data_points = get_int(
+            params, "period", default=20, aliases=("window",)
+        )
 
     def _compute_full(self, bars: list) -> Dict[str, float]:
         return donchian(bars, self.params)
@@ -292,13 +315,11 @@ class DonchianIncremental(IncrementalIndicator):
         if not super()._can_use_incremental(bars, state):
             return False
         ir = state.intermediate_results
-        return (
-            ir is not None
-            and "last_highs" in ir
-            and "last_lows" in ir
-        )
+        return ir is not None and "last_highs" in ir and "last_lows" in ir
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
         period = get_int(self.params, "period", default=20, aliases=("window",))
         ir = state.intermediate_results
         last_highs = list(ir["last_highs"])  # type: ignore[index]
@@ -361,7 +382,9 @@ class AdxIncremental(IncrementalIndicator):
             and "prev_close" in ir
         )
 
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+    def _compute_incremental(
+        self, bars: list, state: IndicatorState
+    ) -> Dict[str, float]:
         period = get_int(self.params, "period", default=14, aliases=("window",))
         ir = state.intermediate_results
         smooth_plus = float(ir["smooth_plus"])  # type: ignore[index]
@@ -378,7 +401,9 @@ class AdxIncremental(IncrementalIndicator):
         plus_dm = up_move if (up_move > down_move and up_move > 0) else 0.0
         minus_dm = down_move if (down_move > up_move and down_move > 0) else 0.0
 
-        tr = max(bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close))
+        tr = max(
+            bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close)
+        )
 
         # Wilder smoothing
         atr_val = atr_val - (atr_val / period) + tr
@@ -454,7 +479,7 @@ def adx(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     highs, lows, closes = get_hlc_arrays(window)
 
     # 向量化提取 DM 和 TR
-    up_move = np.diff(highs)   # curr.high - prev.high
+    up_move = np.diff(highs)  # curr.high - prev.high
     down_move = -np.diff(lows)  # prev.low - curr.low
 
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)

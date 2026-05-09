@@ -32,9 +32,9 @@ class TestTrainTestGap:
         # 最后 train 样本 i = train_end_idx - 1 = 69
         # barrier 最远访问 closes[i+1+time_bars] = closes[90]
         last_barrier_access = (train_end_idx - 1) + 1 + max_barrier_time
-        assert last_barrier_access < split_idx, (
-            f"barrier access idx={last_barrier_access} must be < split_idx={split_idx}"
-        )
+        assert (
+            last_barrier_access < split_idx
+        ), f"barrier access idx={last_barrier_access} must be < split_idx={split_idx}"
 
     def test_gap_when_forward_dominates(self) -> None:
         """forward_horizon > barrier_time + 1 时，max_forward 主导 gap。"""
@@ -86,9 +86,9 @@ class TestPValueCorrection:
         新逻辑保持 raw p-value，让下游 FDR/Bonferroni 统一决定。
         """
         # 直接调用的话需要完整 DataMatrix 构造，改为语义契约校验：
-        from src.research.analyzers import predictive_power
-
         import inspect
+
+        from src.research.analyzers import predictive_power
 
         src = inspect.getsource(predictive_power._compute_single)
         assert "* 2.0" not in src, (

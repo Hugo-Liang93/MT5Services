@@ -5,6 +5,7 @@ signal_executor.py、signal_quality_tracker.py、strategies.py 等多处。
 
 函数均为无副作用纯函数，可安全并发调用。
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional

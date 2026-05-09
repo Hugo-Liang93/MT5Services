@@ -68,10 +68,13 @@ def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
     §0cc P2：deps 用 with 自动 cleanup，避免 mining 入口连接池/线程池泄漏。
     任务状态写入全部走 _set_mining_job 强制 cap。
     """
-    _set_mining_job(run_id, {
-        "status": "running",
-        "started_at": utc_now().isoformat(),
-    })
+    _set_mining_job(
+        run_id,
+        {
+            "status": "running",
+            "started_at": utc_now().isoformat(),
+        },
+    )
     try:
         from src.backtesting.component_factory import build_research_data_deps
         from src.research.orchestration import MiningRunner
@@ -102,10 +105,13 @@ def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
             except Exception:
                 logger.debug("Failed to update experiment", exc_info=True)
 
-        _set_mining_job(run_id, {
-            "status": "completed",
-            "result": result.to_dict(),
-        })
+        _set_mining_job(
+            run_id,
+            {
+                "status": "completed",
+                "result": result.to_dict(),
+            },
+        )
     except Exception as exc:
         logger.exception("Mining run %s failed", run_id)
         _set_mining_job(run_id, {"status": "failed", "error": str(exc)})

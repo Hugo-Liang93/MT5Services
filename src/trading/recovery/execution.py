@@ -146,7 +146,9 @@ class RecoveryExecutionAdapter:
                 "pre_trade_risk": assessment,
                 "error_message": str(exc),
             }
-        except Exception as exc:  # noqa: BLE001 - trading port failures are dispatch blocks.
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - trading port failures are dispatch blocks.
             return {
                 "status": "skipped",
                 "reason": str(exc) or type(exc).__name__,
@@ -168,6 +170,29 @@ class RecoveryExecutionAdapter:
                 "payload": payload,
                 "result": result,
                 "pre_trade_risk": blocked_snapshot,
+            }
+        # T4 chaos fix: 与 canary.open_initial_recovery_cycle 对称——
+        # broker 端非异常失败（margin not enough / requote）必须归 trading_port_failure。
+        result_status = str((result or {}).get("status") or "").lower()
+        accepted = (result or {}).get("accepted")
+        if result_status in {"failed", "rejected", "error"} or accepted is False:
+            return {
+                "status": "skipped",
+                "reason": str(
+                    (result or {}).get("error_message")
+                    or (result or {}).get("message")
+                    or result_status
+                    or "trading_port_dispatch_failed"
+                ),
+                "category": "trading_port_failure",
+                "guard": guard_payload,
+                "payload": payload,
+                "result": result,
+                "error_message": str(
+                    (result or {}).get("error_message")
+                    or (result or {}).get("message")
+                    or ""
+                ),
             }
         status = "dry_run" if canary_policy.dry_run else "submitted"
         return {

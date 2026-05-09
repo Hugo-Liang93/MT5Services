@@ -413,7 +413,10 @@ class SignalRuntime:
             MK.TICK_FEATURE_REASONS: list(snapshot.reasons),
             MK.TICK_FEATURE_WINDOW_START_MSC: snapshot.window_start_msc,
             MK.TICK_FEATURE_WINDOW_END_MSC: snapshot.window_end_msc,
-            MK.CLOSE_PRICE: snapshot.last or snapshot.mid or snapshot.bid or snapshot.ask,
+            MK.CLOSE_PRICE: snapshot.last
+            or snapshot.mid
+            or snapshot.bid
+            or snapshot.ask,
         }
         for timeframe in target_timeframes:
             self._enqueue(
@@ -455,9 +458,7 @@ class SignalRuntime:
         }
         return {
             "tick_features": {
-                key: float(value)
-                for key, value in fields.items()
-                if value is not None
+                key: float(value) for key, value in fields.items() if value is not None
             }
         }
 

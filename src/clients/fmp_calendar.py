@@ -13,8 +13,8 @@ from typing import List, Optional
 
 from src.clients.economic_calendar import (
     EconomicCalendarEvent,
-    _BaseHttpClient,
     _as_text,
+    _BaseHttpClient,
     _coerce_datetime,
     _event_in_date_range,
     _importance_to_int,
@@ -58,15 +58,17 @@ class FmpCalendarClient(_BaseHttpClient):
         if not isinstance(response, list):
             return []
 
-        country_filter = (
-            {c.strip().lower() for c in countries} if countries else None
-        )
+        country_filter = {c.strip().lower() for c in countries} if countries else None
 
         events: List[EconomicCalendarEvent] = []
         for item in response:
             try:
                 country = _as_text(item.get("country"))
-                if country_filter and country and country.strip().lower() not in country_filter:
+                if (
+                    country_filter
+                    and country
+                    and country.strip().lower() not in country_filter
+                ):
                     continue
 
                 date_str = item.get("date")

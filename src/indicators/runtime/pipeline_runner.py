@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import time
 import inspect
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 _UNSET = object()
@@ -80,9 +80,7 @@ def compute_with_bars(
     bars: List[Any],
     indicator_names: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], float, List[str]]:
-    from ..query_services.runtime import (
-        select_indicator_names_for_history,
-    )
+    from ..query_services.runtime import select_indicator_names_for_history
 
     if len(bars) < 2:
         return {}, 0.0, []
@@ -111,9 +109,7 @@ def compute_results_with_priority_groups(
     scope: str,
     indicator_names: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], float]:
-    from ..query_services.runtime import (
-        select_indicator_names_for_history,
-    )
+    from ..query_services.runtime import select_indicator_names_for_history
 
     if len(bars) < 2:
         return {}, 0.0
@@ -177,7 +173,8 @@ def compute_priority_results(
     priority_groups = [
         indicator_group
         for indicator_group in manager.state.priority_indicator_groups
-        if indicator_group and all(indicator_name in selected_set for indicator_name in indicator_group)
+        if indicator_group
+        and all(indicator_name in selected_set for indicator_name in indicator_group)
     ]
     if not priority_groups:
         return {}, 0.0, set()
@@ -197,7 +194,9 @@ def compute_priority_results(
         if not group_results:
             continue
         grouped = group_indicator_values(manager, group_results)
-        if not grouped or any(indicator_name not in grouped for indicator_name in indicator_group):
+        if not grouped or any(
+            indicator_name not in grouped for indicator_name in indicator_group
+        ):
             continue
         merged_results.update(group_results)
         covered_names.update(indicator_group)

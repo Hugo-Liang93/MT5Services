@@ -1,4 +1,5 @@
 """metrics.py 单元测试。"""
+
 from __future__ import annotations
 
 import math
@@ -175,6 +176,8 @@ class TestGroupedMetrics:
             _make_trade(100.0, regime="TRENDING"),
             _make_trade(-50.0, regime="RANGING"),
         ]
-        grouped = compute_metrics_grouped(trades, 10000.0, [10000.0, 10100.0, 10050.0], "regime")
+        grouped = compute_metrics_grouped(
+            trades, 10000.0, [10000.0, 10100.0, 10050.0], "regime"
+        )
         assert "TRENDING" in grouped
         assert "RANGING" in grouped

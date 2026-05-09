@@ -40,7 +40,9 @@ def compute_metrics(
     expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
 
     total_pnl = sum(t.pnl for t in trades)
-    total_pnl_pct = (total_pnl / initial_balance) * 100.0 if initial_balance > 0 else 0.0
+    total_pnl_pct = (
+        (total_pnl / initial_balance) * 100.0 if initial_balance > 0 else 0.0
+    )
 
     avg_bars_held = sum(t.bars_held for t in trades) / total_trades
 
@@ -182,7 +184,7 @@ def _sortino_ratio(returns: List[float], risk_free_rate: float = 0.0) -> float:
     downside = [r for r in excess if r < 0]
     if not downside:
         return 999.99 if mean_r > 0 else 0.0
-    downside_var = sum(r ** 2 for r in downside) / len(downside)
+    downside_var = sum(r**2 for r in downside) / len(downside)
     downside_std = math.sqrt(downside_var) if downside_var > 0 else 0.0
     if downside_std == 0:
         return 0.0

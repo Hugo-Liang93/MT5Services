@@ -26,7 +26,7 @@ def _cycle() -> RecoveryCycleState:
         started_at=now,
         updated_at=now,
         last_step_at=now,
-        strategy="tick_martingale_probe",
+        strategy="tick_recovery_probe",
         timeframe="TICK",
         source_signal_id="sig-1",
         metadata={"cycle": "metadata"},
@@ -57,7 +57,7 @@ def test_recovery_execution_plan_creates_position_scaling_intent_from_open_step(
     assert intent.account_key == "demo:broker:1001"
     assert intent.symbol == "XAUUSD"
     assert intent.direction == "buy"
-    assert intent.strategy == "tick_martingale_probe"
+    assert intent.strategy == "tick_recovery_probe"
     assert intent.timeframe == "TICK"
     assert intent.source_signal_id == "sig-1"
     assert intent.step_index == 2
@@ -89,7 +89,7 @@ def test_position_scaling_intent_rejects_missing_account_or_invalid_size():
             account_key="",
             symbol="XAUUSD",
             direction="buy",
-            strategy="tick_martingale_probe",
+            strategy="tick_recovery_probe",
             timeframe="TICK",
             step_index=1,
             volume=0.01,
@@ -104,7 +104,7 @@ def test_position_scaling_intent_rejects_missing_account_or_invalid_size():
             account_key="demo:broker:1001",
             symbol="XAUUSD",
             direction="buy",
-            strategy="tick_martingale_probe",
+            strategy="tick_recovery_probe",
             timeframe="TICK",
             step_index=1,
             volume=0.0,

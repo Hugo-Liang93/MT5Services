@@ -247,7 +247,6 @@ class TestParamAggregation:
         # 中位数 30.0 vs 当前 30.0 → 变更 0% → 跳过
         assert len(strategy_changes) == 0
 
-
     def test_uses_timeframe_scoped_section_when_timeframe_provided(self) -> None:
         split_params = [
             {"rsi_reversion__oversold": 20.0},
@@ -472,9 +471,7 @@ class TestConfigApplicator:
             parser = configparser.ConfigParser()
             parser.read(str(config_dir / "signal.local.ini"))
             assert parser.has_section("strategy_params.M5")
-            assert (
-                parser.get("strategy_params.M5", "rsi_reversion__oversold") == "26.0"
-            )
+            assert parser.get("strategy_params.M5", "rsi_reversion__oversold") == "26.0"
 
             call_args = mock_module.apply_param_overrides.call_args
             assert call_args[0][0] == {}

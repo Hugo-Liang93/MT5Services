@@ -21,13 +21,18 @@ SessionEventProvider — 时间窗口与经济事件特征集。
 _batch_ny_session / _batch_day_progress / _batch_bars_to_next_high_impact_event /
 _batch_bars_since_last_high_impact_event / _batch_in_news_window。
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from src.research.features.protocol import FeatureProvider, FeatureRole, ProviderDataRequirement
+from src.research.features.protocol import (
+    FeatureProvider,
+    FeatureRole,
+    ProviderDataRequirement,
+)
 
 _GROUP = "session_event"
 

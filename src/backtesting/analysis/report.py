@@ -70,9 +70,7 @@ def format_summary(result: BacktestResult) -> str:
     # 按 Regime 分组
     if result.metrics_by_regime:
         lines.append("  按市场状态分组:")
-        lines.append(
-            f"  {'Regime':<20} {'交易数':>6} {'胜率':>8} {'盈亏':>12}"
-        )
+        lines.append(f"  {'Regime':<20} {'交易数':>6} {'胜率':>8} {'盈亏':>12}")
         for name, rm in sorted(
             result.metrics_by_regime.items(),
             key=lambda x: x[1].total_trades,
@@ -211,7 +209,11 @@ def _format_signal_eval_stats(result: BacktestResult) -> List[str]:
             key=lambda x: x[1]["total"],
             reverse=True,
         ):
-            wr = s["won"] / (s["won"] + s["lost"]) * 100 if (s["won"] + s["lost"]) > 0 else 0.0
+            wr = (
+                s["won"] / (s["won"] + s["lost"]) * 100
+                if (s["won"] + s["lost"]) > 0
+                else 0.0
+            )
             lines.append(f"    {name:<30} {s['total']:>6} {wr:>7.1f}%")
 
     lines.append(f"{'─' * 60}")
@@ -295,7 +297,9 @@ def result_to_json(result: BacktestResult) -> str:
                 return None
         return str(obj)
 
-    return json.dumps(result.to_dict(), ensure_ascii=False, indent=2, default=_json_default)
+    return json.dumps(
+        result.to_dict(), ensure_ascii=False, indent=2, default=_json_default
+    )
 
 
 def format_metrics_table(metrics: BacktestMetrics) -> Dict[str, Any]:

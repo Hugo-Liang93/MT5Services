@@ -15,6 +15,7 @@
 10. 未登记的仓位关闭不报错
 11. on_outcome_fn 回调正确触发（含 source="trade"）
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -38,6 +39,7 @@ _event_counter: int = 0
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_event(
     *,
     symbol: str = "EURUSD",
@@ -58,8 +60,9 @@ def _make_event(
     _event_counter += 1
     # 递增秒数，保证每个事件有不同的 bar_time
     from datetime import timedelta
-    unique_bar_time = (
-        datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=_event_counter)
+
+    unique_bar_time = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(
+        seconds=_event_counter
     )
     meta: dict = {
         "signal_state": signal_state,
@@ -69,11 +72,17 @@ def _make_event(
     }
     if use_metadata_close:
         meta["close_price"] = close
-        indicators: dict = indicators_override if indicators_override is not None else {}
+        indicators: dict = (
+            indicators_override if indicators_override is not None else {}
+        )
     else:
-        indicators = indicators_override if indicators_override is not None else {
-            "sma20": {"close": close},
-        }
+        indicators = (
+            indicators_override
+            if indicators_override is not None
+            else {
+                "sma20": {"close": close},
+            }
+        )
 
     return SimpleNamespace(
         symbol=symbol,
@@ -91,6 +100,7 @@ def _make_event(
 # ---------------------------------------------------------------------------
 # SignalQualityTracker Tests
 # ---------------------------------------------------------------------------
+
 
 class TestSignalQualityTrackerTrendScenario:
     """趋势行情：连续 confirmed_buy 信号，bars_elapsed 必须正确推进。"""
@@ -140,13 +150,28 @@ class TestSignalQualityTrackerTrendScenario:
             bars_to_evaluate=2,
         )
         tracker.on_signal_event(
-            _make_event(close=1.1020, signal_state="confirmed_sell", direction="sell", signal_id="s0")
+            _make_event(
+                close=1.1020,
+                signal_state="confirmed_sell",
+                direction="sell",
+                signal_id="s0",
+            )
         )
         tracker.on_signal_event(
-            _make_event(close=1.1025, signal_state="confirmed_sell", direction="sell", signal_id="s1")
+            _make_event(
+                close=1.1025,
+                signal_state="confirmed_sell",
+                direction="sell",
+                signal_id="s1",
+            )
         )
         tracker.on_signal_event(
-            _make_event(close=1.1030, signal_state="confirmed_sell", direction="sell", signal_id="s2")
+            _make_event(
+                close=1.1030,
+                signal_state="confirmed_sell",
+                direction="sell",
+                signal_id="s2",
+            )
         )
 
         assert len(rows_written) >= 1
@@ -161,7 +186,9 @@ class TestSignalQualityTrackerTrendScenario:
         )
         n = 10
         for i in range(n):
-            tracker.on_signal_event(_make_event(close=1.1000 + i * 0.001, signal_id=f"s{i}"))
+            tracker.on_signal_event(
+                _make_event(close=1.1000 + i * 0.001, signal_id=f"s{i}")
+            )
 
         total_pending = sum(len(v) for v in tracker._awaiting_evaluation.values())
         assert total_pending < n
@@ -179,10 +206,20 @@ class TestSignalQualityTrackerCancelledAdvancesPending:
         )
         tracker.on_signal_event(_make_event(close=1.1000, signal_id="orig"))
         tracker.on_signal_event(
-            _make_event(close=1.1010, signal_state="confirmed_cancelled", direction="hold", signal_id="c1")
+            _make_event(
+                close=1.1010,
+                signal_state="confirmed_cancelled",
+                direction="hold",
+                signal_id="c1",
+            )
         )
         tracker.on_signal_event(
-            _make_event(close=1.1020, signal_state="confirmed_cancelled", direction="hold", signal_id="c2")
+            _make_event(
+                close=1.1020,
+                signal_state="confirmed_cancelled",
+                direction="hold",
+                signal_id="c2",
+            )
         )
 
         assert len(rows_written) == 1
@@ -221,12 +258,20 @@ class TestSignalQualityTrackerMultiStrategy:
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=2,
         )
-        tracker.on_signal_event(_make_event(symbol="EURUSD", close=1.1000, signal_id="a0"))
-        tracker.on_signal_event(_make_event(symbol="XAUUSD", close=2000.0, signal_id="b0"))
+        tracker.on_signal_event(
+            _make_event(symbol="EURUSD", close=1.1000, signal_id="a0")
+        )
+        tracker.on_signal_event(
+            _make_event(symbol="XAUUSD", close=2000.0, signal_id="b0")
+        )
 
         # 只推进 EURUSD 两次
-        tracker.on_signal_event(_make_event(symbol="EURUSD", close=1.1010, signal_id="a1"))
-        tracker.on_signal_event(_make_event(symbol="EURUSD", close=1.1020, signal_id="a2"))
+        tracker.on_signal_event(
+            _make_event(symbol="EURUSD", close=1.1010, signal_id="a1")
+        )
+        tracker.on_signal_event(
+            _make_event(symbol="EURUSD", close=1.1020, signal_id="a2")
+        )
 
         evaluated_signals = [r[1] for r in rows_written]
         assert "a0" in evaluated_signals
@@ -281,10 +326,18 @@ class TestSignalQualityTrackerClosePriceExtraction:
         )
 
         rsi_only_indicators = {"rsi14": {"rsi": 72.5}, "atr14": {"atr": 0.0012}}
-        entry = _make_event(close=1.1000, signal_id="rsi-entry",
-                            use_metadata_close=True, indicators_override=rsi_only_indicators)
-        exit_ = _make_event(close=1.1015, signal_id="rsi-exit",
-                            use_metadata_close=True, indicators_override=rsi_only_indicators)
+        entry = _make_event(
+            close=1.1000,
+            signal_id="rsi-entry",
+            use_metadata_close=True,
+            indicators_override=rsi_only_indicators,
+        )
+        exit_ = _make_event(
+            close=1.1015,
+            signal_id="rsi-exit",
+            use_metadata_close=True,
+            indicators_override=rsi_only_indicators,
+        )
 
         tracker.on_signal_event(entry)
         tracker.on_signal_event(exit_)
@@ -302,27 +355,40 @@ class TestSignalQualityTrackerClosePriceExtraction:
         )
 
         from datetime import timedelta
+
         bar_t1 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         bar_t2 = bar_t1 + timedelta(hours=1)
         event_entry = SimpleNamespace(
-            symbol="EURUSD", timeframe="H1", strategy="test",
-            direction="buy", confidence=0.8, signal_id="e1",
+            symbol="EURUSD",
+            timeframe="H1",
+            strategy="test",
+            direction="buy",
+            confidence=0.8,
+            signal_id="e1",
             generated_at=datetime.now(timezone.utc),
             metadata={
-                "signal_state": "confirmed_buy", "scope": "confirmed",
+                "signal_state": "confirmed_buy",
+                "scope": "confirmed",
                 "bar_time": bar_t1.isoformat(),
-                "regime": "trending", "close_price": 1.2000,
+                "regime": "trending",
+                "close_price": 1.2000,
             },
             indicators={"boll20": {"close": 1.1000, "bb_mid": 1.0990}},
         )
         event_exit = SimpleNamespace(
-            symbol="EURUSD", timeframe="H1", strategy="test",
-            direction="buy", confidence=0.8, signal_id="e2",
+            symbol="EURUSD",
+            timeframe="H1",
+            strategy="test",
+            direction="buy",
+            confidence=0.8,
+            signal_id="e2",
             generated_at=datetime.now(timezone.utc),
             metadata={
-                "signal_state": "confirmed_buy", "scope": "confirmed",
+                "signal_state": "confirmed_buy",
+                "scope": "confirmed",
                 "bar_time": bar_t2.isoformat(),
-                "regime": "trending", "close_price": 1.2050,
+                "regime": "trending",
+                "close_price": 1.2050,
             },
             indicators={"boll20": {"close": 1.1010, "bb_mid": 1.1000}},
         )
@@ -341,10 +407,18 @@ class TestSignalQualityTrackerClosePriceExtraction:
             bars_to_evaluate=1,
         )
 
-        entry = _make_event(close=1.1000, signal_id="b-entry", use_metadata_close=False,
-                            indicators_override={"boll20": {"close": 1.1000, "bb_mid": 1.0990}})
-        exit_ = _make_event(close=1.1010, signal_id="b-exit", use_metadata_close=False,
-                            indicators_override={"boll20": {"close": 1.1010, "bb_mid": 1.1000}})
+        entry = _make_event(
+            close=1.1000,
+            signal_id="b-entry",
+            use_metadata_close=False,
+            indicators_override={"boll20": {"close": 1.1000, "bb_mid": 1.0990}},
+        )
+        exit_ = _make_event(
+            close=1.1010,
+            signal_id="b-exit",
+            use_metadata_close=False,
+            indicators_override={"boll20": {"close": 1.1010, "bb_mid": 1.1000}},
+        )
 
         tracker.on_signal_event(entry)
         tracker.on_signal_event(exit_)
@@ -361,10 +435,12 @@ class TestSignalQualityTrackerClosePriceExtraction:
         )
 
         no_close_indicators = {"rsi14": {"rsi": 68.0}}
-        entry = _make_event(close=1.0, signal_id="nc-entry",
-                            indicators_override=no_close_indicators)
-        exit_ = _make_event(close=1.0, signal_id="nc-exit",
-                            indicators_override=no_close_indicators)
+        entry = _make_event(
+            close=1.0, signal_id="nc-entry", indicators_override=no_close_indicators
+        )
+        exit_ = _make_event(
+            close=1.0, signal_id="nc-exit", indicators_override=no_close_indicators
+        )
 
         tracker.on_signal_event(entry)
         tracker.on_signal_event(exit_)
@@ -377,6 +453,7 @@ class TestSignalQualityTrackerClosePriceExtraction:
 # ---------------------------------------------------------------------------
 # TradeOutcomeTracker Tests
 # ---------------------------------------------------------------------------
+
 
 class TestTradeOutcomeTrackerBasic:
     """基本开仓 → 关仓评估流程。"""
@@ -404,11 +481,11 @@ class TestTradeOutcomeTrackerBasic:
 
         assert len(rows_written) == 1
         row = rows_written[0]
-        assert row[1] == "t-001"         # signal_id
-        assert row[10] == 2000.0         # fill_price
-        assert row[11] == 2010.0         # close_price
+        assert row[1] == "t-001"  # signal_id
+        assert row[10] == 2000.0  # fill_price
+        assert row[11] == 2010.0  # close_price
         assert row[12] == pytest.approx(10.0)  # price_change
-        assert row[13] is True           # won
+        assert row[13] is True  # won
 
     def test_sell_loss(self):
         """卖出后价格上涨 → won=False"""
@@ -457,8 +534,13 @@ class TestTradeOutcomeTrackerEdgeCases:
         )
 
         tracker.on_trade_opened(
-            signal_id="t-003", symbol="XAUUSD", timeframe="M1",
-            strategy="test", direction="buy", fill_price=2000.0, confidence=0.8,
+            signal_id="t-003",
+            symbol="XAUUSD",
+            timeframe="M1",
+            strategy="test",
+            direction="buy",
+            fill_price=2000.0,
+            confidence=0.8,
         )
 
         pos = SimpleNamespace(signal_id="t-003", symbol="XAUUSD", action="buy")
@@ -515,14 +597,18 @@ class TestTradeOutcomeTrackerCallback:
         """确认 on_outcome_fn 收到 source='trade'。"""
         callback_calls: List[dict] = []
 
-        def mock_callback(strategy, won, pnl, *, regime=None, source="signal", exit_reason=""):
-            callback_calls.append({
-                "strategy": strategy,
-                "won": won,
-                "pnl": pnl,
-                "regime": regime,
-                "source": source,
-            })
+        def mock_callback(
+            strategy, won, pnl, *, regime=None, source="signal", exit_reason=""
+        ):
+            callback_calls.append(
+                {
+                    "strategy": strategy,
+                    "won": won,
+                    "pnl": pnl,
+                    "regime": regime,
+                    "source": source,
+                }
+            )
 
         tracker = TradeOutcomeTracker(on_outcome_fn=mock_callback)
 
@@ -556,20 +642,32 @@ class TestTradeOutcomeTrackerSummary:
 
         # 一笔赢
         tracker.on_trade_opened(
-            signal_id="w1", symbol="XAUUSD", timeframe="M1",
-            strategy="test", direction="buy", fill_price=2000.0, confidence=0.8,
+            signal_id="w1",
+            symbol="XAUUSD",
+            timeframe="M1",
+            strategy="test",
+            direction="buy",
+            fill_price=2000.0,
+            confidence=0.8,
         )
         tracker.on_position_closed(
-            SimpleNamespace(signal_id="w1"), close_price=2010.0,
+            SimpleNamespace(signal_id="w1"),
+            close_price=2010.0,
         )
 
         # 一笔亏
         tracker.on_trade_opened(
-            signal_id="l1", symbol="XAUUSD", timeframe="M1",
-            strategy="test", direction="buy", fill_price=2000.0, confidence=0.8,
+            signal_id="l1",
+            symbol="XAUUSD",
+            timeframe="M1",
+            strategy="test",
+            direction="buy",
+            fill_price=2000.0,
+            confidence=0.8,
         )
         tracker.on_position_closed(
-            SimpleNamespace(signal_id="l1"), close_price=1990.0,
+            SimpleNamespace(signal_id="l1"),
+            close_price=1990.0,
         )
 
         summary = tracker.summary()

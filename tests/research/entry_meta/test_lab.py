@@ -61,7 +61,7 @@ def test_lab_trains_from_raw_results_trades_and_writes_artifact(
                     for index, pnl in enumerate(
                         [10.0, -8.0, 7.0, -3.0, 9.0, -4.0, 6.0, -2.0]
                     )
-                ]
+                ],
             }
         ]
     }
@@ -108,7 +108,10 @@ def test_lab_trains_from_raw_results_trades_and_writes_artifact(
     artifact_path = Path(payload["artifact_path"])
 
     assert build_calls and build_calls[0]["timeframe"] == "H1"
-    assert artifact_path == tmp_path / "artifacts" / "entry-meta-test" / "entry_meta_artifact.json"
+    assert (
+        artifact_path
+        == tmp_path / "artifacts" / "entry-meta-test" / "entry_meta_artifact.json"
+    )
     assert artifact_path.exists()
     artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert artifact["model_id"] == "entry-meta-test"

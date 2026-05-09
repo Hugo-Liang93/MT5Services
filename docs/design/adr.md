@@ -23,6 +23,7 @@
 | 011 | 2026-04-26 | EconomicDecayService 单一端口 + 时间注入 + 异常分层 | calendar 域唯一 decay 端口；`at_time` 强制显式；编码错误 fail-fast | ✅ 已确定 |
 | 012 | 2026-04-26 | 多账户/多实例运行时状态主键契约 | multi-account 表 PK 必含 `account_key`；multi-instance 表 PK 必含 `instance_id`；消费侧对称过滤 + 去重键对称 | ✅ 已确定 |
 | 013 | 2026-04-29 | EntryPolicy 可插拔入场决策端口 | 信号策略只输出方向/信心/出场，入场由 EntryPolicy 端口配置驱动；OCO 原生多 member；MK.ENTRY_SPEC 删除不留 fallback | ✅ 已确定 |
+| 014 | 2026-05-09 | 双轨 budget 共享 + economic guard 契约 | 信号轨与恢复轨在 broker 仓位池/手数限制层面共享，决策内核隔离；`recovery_budgeted` profile 必须保留 `economic_event` 与 `calendar_health` 在 pre_trade_rules 中 | ✅ 已确定 |
 
 ---
 
@@ -552,6 +553,64 @@ ADR-009 之前的事实快照：
 - `MK.ENTRY_SPEC` 不允许重新出现（CI sentinel 守护，反补丁纪律）。
 - 不允许新增策略实现 `_entry_spec`（CI sentinel 守护）。
 - Backtest 端不允许重新引入 `_pending_entries` Tuple 旧结构（回退会破坏 OCO 决定论）。
+
+---
+
+## ADR-014: 信号轨与恢复轨的资源共享与隔离契约
+
+**状态**：已确定（2026-05-09）
+
+**上下文**：
+
+2026-05-09 完成 tick-derived recovery runtime architecture 落地后（commit 7d0e366），项目形成双轨执行体系：
+
+- **信号轨**：`StructuredPriceAction`（confirmed-bar 驱动）→ SignalRuntime → 11 层 admission（standard_kline profile）→ TradeExecutor。
+- **恢复轨**：`DemoBoundedRecoveryRunner`（tick-derived 驱动）→ RecoveryDirectionPolicy + RecoveryCostGate + RecoveryRiskBudgetGuard（recovery_budgeted profile）→ TradeExecutor.execute_recovery_scaling_intent()。
+
+两轨决策内核独立（信号轨不感知 recovery cycle，恢复轨不消费 SignalEvent），但在 broker 仓位池层面竞争同一资源：
+- 共享 `max_open_positions_total = 3`（risk.local.ini:5）
+- 共享 `max_volume_per_symbol = 0.03`（risk.local.ini:8）
+- 共享 `max_pending_orders_per_symbol = 3`（risk.local.ini:6）
+
+实测痛点：当马丁开 cycle 时，PA 实际可用仓位配额=2；当马丁追单到 0.03 lots 占满 `max_volume_per_symbol`，PA 在 XAUUSD 上的新单会被 admission 直接拒绝。两轨不互知 budget，PA evaluator 缺乏入场前感知。
+
+同时存在的边界：`recovery_budgeted` profile（risk.local.ini:22）的 `pre_trade_rules` 已包含 `economic_event,calendar_health` —— 恢复轨与信号轨在经济事件保护上同步；但 `trade_frequency_enabled=false` 是恢复轨独立放开（cycle 需要连续追单，不能受信号轨 60 笔/小时限制）。
+
+**决策**：
+
+1. **共享层（broker 仓位池 / 手数 / 挂单数）**：两轨通过同一 `risk_profile_bindings` 落实风控限制；超额时由 admission 层 deny（信号轨走 11 层 / 恢复轨走 RecoveryRiskBudgetGuard），不允许恢复轨绕过 `max_open_positions_total` / `max_volume_per_symbol`。
+2. **隔离层（决策内核）**：两轨的 filter chain / direction policy / cost gate 独立。信号轨用 SignalFilterChain；恢复轨用 RecoveryDirectionPolicy + RecoveryCostGate。
+3. **共享 budget 视图**：`RuntimeReadModel.combined_exposure_payload()` 必须投影两轨的 lots 占用（recovery_lots / signal_lots / available_lots），供 PA evaluator 入场前感知。视图实现见 P0 任务清单。
+4. **经济事件 guard 契约**：`recovery_budgeted` profile 的 `pre_trade_rules` **必须保留** `economic_event` 与 `calendar_health`。`trade_frequency_enabled=false` 仅放开频率限制，不放开事件保护。
+5. **频率限制隔离**：恢复轨通过 `recovery_runtime_runner` 的 `max_cycles_per_session/day/hour` + `cooldown_after_cycle_close_seconds` + `min_cycle_interval_seconds` 自管频率，不复用 `[risk] max_trades_per_*`。
+
+**后果**：
+
+- PA evaluator 必须在入场前查 `combined_exposure_payload()`；超额时 deny 信号并记录 `combined_exposure_exceeded` 日志。
+- recovery_budgeted profile 不允许在 `pre_trade_rules` 删除 `economic_event` / `calendar_health` —— 即使为了"提高 cycle 触发率"。
+- 当账户级 budget 超限时，谁先到达 admission 谁先获得仓位（当前设计先到先得，未来若需要优先级（如恢复轨优先）需走新 ADR）。
+- 双轨同账户运行的隐性资源竞争从此显式化，`/v1/trade/state.combined_exposure` 是审计入口。
+
+**不可回退点**：
+
+- `recovery_budgeted` profile 的 `pre_trade_rules` 必须包含 `economic_event` 与 `calendar_health`（提交前 sentinel grep 验证）。
+- 不允许引入"恢复轨独占 broker 仓位池"的开关（如 `recovery_exclusive_position_pool=true`）—— 任何此类需求必须走新 ADR。
+- `combined_exposure_payload()` 投影是 PA evaluator 入场决策的正式输入，删除该方法会让 PA 退化为不感知恢复轨的状态，违反本 ADR。
+- **cycle 限流硬约束**：当 `[recovery_runtime_runner].enabled=true` 且 `dry_run=false` 时（无论 demo 还是 live），下列字段必须非 0：
+  - `max_cycles_per_day` ≥ 1
+  - `max_cycles_per_hour` ≥ 1
+  - `cooldown_after_cycle_close_seconds` ≥ 60
+  - `min_cycle_interval_seconds` ≥ 30
+  - `real_trade_calibration_min_samples` ≥ 50（不得反向覆盖全局基线 50）
+  违反此约束的实例级 .local.ini 必须在装配阶段 fail-fast。
+
+**关键文件**：
+
+- [src/trading/recovery/runner.py](../../src/trading/recovery/runner.py)：恢复轨 runner，启动时验证 demo_only=true
+- [src/trading/recovery/risk_budget.py](../../src/trading/recovery/risk_budget.py)：恢复轨 budget guard
+- [src/readmodels/runtime.py](../../src/readmodels/runtime.py)：`combined_exposure_payload()` 投影位置
+- [config/instances/demo-main/risk.local.ini](../../config/instances/demo-main/risk.local.ini)：`recovery_budgeted` profile 的 pre_trade_rules 落地
+- [src/trading/admission/service.py](../../src/trading/admission/service.py)：信号轨 admission 入口，未来读 combined_exposure 的位置
 
 ---
 

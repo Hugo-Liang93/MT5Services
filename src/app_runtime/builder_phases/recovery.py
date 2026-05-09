@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from src.app_runtime.container import AppContainer
 from src.app_runtime.builder_phases.tick_features import attach_tick_feature_listener
+from src.app_runtime.container import AppContainer
 from src.config.models import RiskConfig
 from src.risk.profiles import (
     resolve_recovery_budget_profile_settings,

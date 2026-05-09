@@ -196,7 +196,9 @@ class TestRegimeAwareSizing:
 
     def test_custom_regime_sizing_object_is_applied(self):
         custom = RegimeSizing(tp_trending=1.5, sl_trending=0.8)
-        params = compute_trade_params(**self.BASE_ARGS, regime="trending", regime_sizing=custom)
+        params = compute_trade_params(
+            **self.BASE_ARGS, regime="trending", regime_sizing=custom
+        )
         # M15: base tp=3.5 × 1.5 = 5.25 × atr=2.0 → 10.5
         assert params.tp_distance > 6.0
         # M15: base sl=2.0 × 0.8 = 1.6 × atr=2.0 → 3.2, verify regime scaling applied

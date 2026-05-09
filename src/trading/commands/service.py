@@ -95,8 +95,10 @@ class OperatorCommandService:
                     command_type=normalized_command_type,
                     idempotency_key=normalized_idempotency_key,
                     existing_record={
-                        "action_id": response_payload.get("action_id") or existing.get("action_id"),
-                        "audit_id": response_payload.get("audit_id") or existing.get("audit_id"),
+                        "action_id": response_payload.get("action_id")
+                        or existing.get("action_id"),
+                        "audit_id": response_payload.get("audit_id")
+                        or existing.get("audit_id"),
                         "recorded_at": response_payload.get("recorded_at")
                         or (
                             existing.get("created_at").isoformat()
@@ -211,7 +213,10 @@ class OperatorCommandService:
         return dict(rows[0]) if rows else None
 
     def _resolve_target_account(self, target_account_alias: str | None) -> MT5Settings:
-        alias = str(target_account_alias or "").strip() or self._runtime_identity.account_alias
+        alias = (
+            str(target_account_alias or "").strip()
+            or self._runtime_identity.account_alias
+        )
         account = self._accounts.get(alias)
         if account is None:
             raise ValueError(f"unknown operator command target account: {alias}")

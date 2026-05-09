@@ -37,10 +37,17 @@ def _cfg(*, sharpe_t: float = 0.20, dd_t: float = 0.15) -> NightlyWFConfig:
 
 def _metric(**kwargs) -> StrategyMetrics:
     defaults = dict(
-        strategy="trend_continuation", timeframe="M15", trades=100,
-        win_rate=0.55, pnl=1000.0, profit_factor=1.8,
-        sharpe=1.5, sortino=2.0, max_dd=0.10,
-        expectancy=10.0, avg_bars_held=20.0,
+        strategy="trend_continuation",
+        timeframe="M15",
+        trades=100,
+        win_rate=0.55,
+        pnl=1000.0,
+        profit_factor=1.8,
+        sharpe=1.5,
+        sortino=2.0,
+        max_dd=0.10,
+        expectancy=10.0,
+        avg_bars_held=20.0,
     )
     defaults.update(kwargs)
     return StrategyMetrics(**defaults)
@@ -58,16 +65,27 @@ class TestConfigContract:
     def test_empty_timeframes_raises(self) -> None:
         with pytest.raises(ValueError):
             NightlyWFConfig(
-                symbol="XAUUSD", timeframes=(), start_date="x", end_date="x",
-                strategies=(), sharpe_regression_threshold=0.1, dd_regression_threshold=0.1,
-                workers=1, output_dir="/tmp",
+                symbol="XAUUSD",
+                timeframes=(),
+                start_date="x",
+                end_date="x",
+                strategies=(),
+                sharpe_regression_threshold=0.1,
+                dd_regression_threshold=0.1,
+                workers=1,
+                output_dir="/tmp",
             )
 
     def test_zero_workers_raises(self) -> None:
         with pytest.raises(ValueError):
             _cfg_kwargs = dict(
-                symbol="XAUUSD", timeframes=("M15",), start_date="x", end_date="x",
-                strategies=(), sharpe_regression_threshold=0.1, dd_regression_threshold=0.1,
+                symbol="XAUUSD",
+                timeframes=("M15",),
+                start_date="x",
+                end_date="x",
+                strategies=(),
+                sharpe_regression_threshold=0.1,
+                dd_regression_threshold=0.1,
                 output_dir="/tmp",
             )
             NightlyWFConfig(workers=0, **_cfg_kwargs)
@@ -164,6 +182,7 @@ def test_run_single_combo_packed_propagates_infrastructure_errors() -> None:
     failed_runs，主流程返回看似正常的 report，违反"基础设施错误应直接抛出"契约。
     """
     import builtins
+
     from src.research.nightly import runner as nightly_runner
 
     original = nightly_runner._run_single_combo
@@ -175,7 +194,13 @@ def test_run_single_combo_packed_propagates_infrastructure_errors() -> None:
     try:
         with pytest.raises(ConnectionError):
             nightly_runner._run_single_combo_packed(
-                ("XAUUSD", "trendline", "M15", "2026-01-01T00:00:00", "2026-01-02T00:00:00")
+                (
+                    "XAUUSD",
+                    "trendline",
+                    "M15",
+                    "2026-01-01T00:00:00",
+                    "2026-01-02T00:00:00",
+                )
             )
     finally:
         nightly_runner._run_single_combo = original
@@ -234,8 +259,14 @@ def test_run_single_combo_calls_cleanup_components_in_finally(monkeypatch) -> No
     fake_engine = MagicMock()
     fake_result = MagicMock()
     fake_result.metrics = SimpleNamespace(
-        total_trades=0, win_rate=0.0, total_pnl=0.0, profit_factor=0.0,
-        sharpe_ratio=0.0, sortino_ratio=0.0, max_drawdown=0.0, expectancy=0.0,
+        total_trades=0,
+        win_rate=0.0,
+        total_pnl=0.0,
+        profit_factor=0.0,
+        sharpe_ratio=0.0,
+        sortino_ratio=0.0,
+        max_drawdown=0.0,
+        expectancy=0.0,
         avg_bars_held=0.0,
     )
     fake_engine.run.return_value = fake_result
@@ -257,12 +288,12 @@ def test_run_single_combo_calls_cleanup_components_in_finally(monkeypatch) -> No
         end="2026-01-02T00:00:00",
     )
 
-    assert fake_writer.close.called, (
-        "writer.close() 必须在 finally 里调用，否则 nightly 长跑会堆死连接池"
-    )
-    assert fake_pipeline.shutdown.called, (
-        "pipeline.shutdown() 必须在 finally 里调用，否则线程池/缓存累积"
-    )
+    assert (
+        fake_writer.close.called
+    ), "writer.close() 必须在 finally 里调用，否则 nightly 长跑会堆死连接池"
+    assert (
+        fake_pipeline.shutdown.called
+    ), "pipeline.shutdown() 必须在 finally 里调用，否则线程池/缓存累积"
 
 
 def test_run_single_combo_cleanup_runs_even_when_engine_raises(monkeypatch) -> None:
@@ -296,8 +327,11 @@ def test_run_single_combo_cleanup_runs_even_when_engine_raises(monkeypatch) -> N
 
     with pytest.raises(RuntimeError, match="engine boom"):
         nightly_runner._run_single_combo(
-            symbol="XAUUSD", strategy="trendline", tf="M15",
-            start="2026-01-01T00:00:00", end="2026-01-02T00:00:00",
+            symbol="XAUUSD",
+            strategy="trendline",
+            tf="M15",
+            start="2026-01-01T00:00:00",
+            end="2026-01-02T00:00:00",
         )
     assert fake_writer.close.called, "engine 抛异常时 cleanup 仍必须跑"
     assert fake_pipeline.shutdown.called

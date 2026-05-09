@@ -56,11 +56,19 @@ def _gold_impact_fallback(event_name: str, currency: str) -> Optional[dict[str, 
     for keywords, impact_type in _GOLD_IMPACT_RULES:
         if any(kw in name_lower for kw in keywords):
             direction = _TYPE_TO_IMPACT[impact_type]
-            return {"above_forecast": direction["above_forecast"], "below_forecast": direction["below_forecast"], "bullish_pct": None, "avg_30m_range": None, "sample_count": 0}
+            return {
+                "above_forecast": direction["above_forecast"],
+                "below_forecast": direction["below_forecast"],
+                "bullish_pct": None,
+                "avg_30m_range": None,
+                "sample_count": 0,
+            }
     return None
 
 
-@router.get("/calendar/enriched", response_model=ApiResponse[list[EnrichedCalendarItemView]])
+@router.get(
+    "/calendar/enriched", response_model=ApiResponse[list[EnrichedCalendarItemView]]
+)
 def calendar_enriched(
     symbol: str = Query("XAUUSD"),
     hours: int = Query(48, ge=1, le=168),
@@ -68,8 +76,17 @@ def calendar_enriched(
     service: EconomicCalendarService = Depends(get_economic_calendar_service),
 ):
     now = utc_now()
-    future_events = service.get_events(start_time=now - timedelta(hours=2), end_time=now + timedelta(hours=hours), importance_min=importance_min)
-    recent_released = service.get_events(start_time=now - timedelta(days=7), end_time=now - timedelta(hours=2), importance_min=importance_min, statuses=["released"])
+    future_events = service.get_events(
+        start_time=now - timedelta(hours=2),
+        end_time=now + timedelta(hours=hours),
+        importance_min=importance_min,
+    )
+    recent_released = service.get_events(
+        start_time=now - timedelta(days=7),
+        end_time=now - timedelta(hours=2),
+        importance_min=importance_min,
+        statuses=["released"],
+    )
     seen_uids: set[str] = set()
     events = []
     for event in future_events + recent_released:
@@ -89,7 +106,11 @@ def calendar_enriched(
             "importance": event.importance,
             "status": event.status,
             "scheduled_at": scheduled.isoformat(),
-            "scheduled_at_local": event.scheduled_at_local.isoformat() if event.scheduled_at_local else None,
+            "scheduled_at_local": (
+                event.scheduled_at_local.isoformat()
+                if event.scheduled_at_local
+                else None
+            ),
             "countdown_minutes": round(countdown, 1),
             "forecast": event.forecast,
             "previous": event.previous,
@@ -98,14 +119,18 @@ def calendar_enriched(
         }
         impact = None
         if analyzer is not None:
-            forecast_data = analyzer.get_impact_forecast(event.event_name, symbol=symbol)
+            forecast_data = analyzer.get_impact_forecast(
+                event.event_name, symbol=symbol
+            )
             if forecast_data:
                 bullish_pct = forecast_data.get("directional_bias")
                 surprise_pos = forecast_data.get("avg_post_30m_change", 0) or 0
                 impact = {
                     "above_forecast": "利多" if surprise_pos > 0 else "利空",
                     "below_forecast": "利空" if surprise_pos > 0 else "利多",
-                    "bullish_pct": round(bullish_pct, 2) if bullish_pct is not None else None,
+                    "bullish_pct": (
+                        round(bullish_pct, 2) if bullish_pct is not None else None
+                    ),
                     "avg_30m_range": forecast_data.get("avg_post_30m_range"),
                     "sample_count": forecast_data.get("sample_count", 0),
                     "source": "historical",
@@ -119,18 +144,30 @@ def calendar_enriched(
     results.sort(key=lambda x: x["scheduled_at"])
     return ApiResponse.success_response(
         data=[EnrichedCalendarItemView(**item) for item in results],
-        metadata={"count": len(results), "symbol": symbol, "hours": hours, "importance_min": importance_min},
+        metadata={
+            "count": len(results),
+            "symbol": symbol,
+            "hours": hours,
+            "importance_min": importance_min,
+        },
     )
 
 
-def _get_market_impact_analyzer(service: EconomicCalendarService = Depends(get_economic_calendar_service)):
+def _get_market_impact_analyzer(
+    service: EconomicCalendarService = Depends(get_economic_calendar_service),
+):
     analyzer = getattr(service, "market_impact_analyzer", None)
     if analyzer is None:
-        raise HTTPException(status_code=503, detail="Market impact analyzer not enabled")
+        raise HTTPException(
+            status_code=503, detail="Market impact analyzer not enabled"
+        )
     return analyzer
 
 
-@router.get("/calendar/market-impact/stats", response_model=ApiResponse[list[MarketImpactStatsItemView]])
+@router.get(
+    "/calendar/market-impact/stats",
+    response_model=ApiResponse[list[MarketImpactStatsItemView]],
+)
 def market_impact_stats(
     event_name: Optional[str] = None,
     country: Optional[str] = None,
@@ -140,22 +177,46 @@ def market_impact_stats(
     limit: int = Query(50, ge=1, le=500),
     analyzer=Depends(_get_market_impact_analyzer),
 ):
-    stats = analyzer.get_aggregated_stats(event_name=event_name, country=country, importance_min=importance_min, symbol=symbol, timeframe=timeframe, limit=limit)
+    stats = analyzer.get_aggregated_stats(
+        event_name=event_name,
+        country=country,
+        importance_min=importance_min,
+        symbol=symbol,
+        timeframe=timeframe,
+        limit=limit,
+    )
     return ApiResponse.success_response(
         data=[MarketImpactStatsItemView(**item) for item in stats],
         metadata={"count": len(stats), "symbol": symbol, "timeframe": timeframe},
     )
 
 
-@router.get("/calendar/market-impact/upcoming", response_model=ApiResponse[list[MarketImpactUpcomingItemView]])
-def market_impact_upcoming(symbol: str = Query("XAUUSD"), hours: int = Query(24, ge=1, le=168), service: EconomicCalendarService = Depends(get_economic_calendar_service)):
+@router.get(
+    "/calendar/market-impact/upcoming",
+    response_model=ApiResponse[list[MarketImpactUpcomingItemView]],
+)
+def market_impact_upcoming(
+    symbol: str = Query("XAUUSD"),
+    hours: int = Query(24, ge=1, le=168),
+    service: EconomicCalendarService = Depends(get_economic_calendar_service),
+):
     analyzer = getattr(service, "market_impact_analyzer", None)
     upcoming_events = service.get_high_impact_events(hours=hours)
     results = []
     for event in upcoming_events:
-        item = {"event_uid": event.event_uid, "event_name": event.event_name, "scheduled_at": event.scheduled_at.isoformat(), "country": event.country, "importance": event.importance, "status": event.status, "impact_forecast": None}
+        item = {
+            "event_uid": event.event_uid,
+            "event_name": event.event_name,
+            "scheduled_at": event.scheduled_at.isoformat(),
+            "country": event.country,
+            "importance": event.importance,
+            "status": event.status,
+            "impact_forecast": None,
+        }
         if analyzer is not None:
-            item["impact_forecast"] = analyzer.get_impact_forecast(event.event_name, symbol=symbol)
+            item["impact_forecast"] = analyzer.get_impact_forecast(
+                event.event_name, symbol=symbol
+            )
         results.append(item)
     return ApiResponse.success_response(
         data=[MarketImpactUpcomingItemView(**item) for item in results],
@@ -163,8 +224,12 @@ def market_impact_upcoming(symbol: str = Query("XAUUSD"), hours: int = Query(24,
     )
 
 
-@router.get("/calendar/market-impact/status", response_model=ApiResponse[MarketImpactStatusView])
-def market_impact_status(service: EconomicCalendarService = Depends(get_economic_calendar_service)):
+@router.get(
+    "/calendar/market-impact/status", response_model=ApiResponse[MarketImpactStatusView]
+)
+def market_impact_status(
+    service: EconomicCalendarService = Depends(get_economic_calendar_service),
+):
     analyzer = getattr(service, "market_impact_analyzer", None)
     if analyzer is None:
         return ApiResponse.success_response(data=MarketImpactStatusView(enabled=False))
@@ -172,7 +237,11 @@ def market_impact_status(service: EconomicCalendarService = Depends(get_economic
 
 
 @router.get("/calendar/market-impact/{event_uid}")
-def market_impact_detail(event_uid: str, symbol: str = Query("XAUUSD"), analyzer=Depends(_get_market_impact_analyzer)):
+def market_impact_detail(
+    event_uid: str,
+    symbol: str = Query("XAUUSD"),
+    analyzer=Depends(_get_market_impact_analyzer),
+):
     result = analyzer.get_event_impact(event_uid, symbol)
     if result is None:
         return ApiResponse.success_response(data=None, metadata={"found": False})

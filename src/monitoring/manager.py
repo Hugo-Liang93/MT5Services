@@ -332,9 +332,11 @@ class MonitoringManager:
                                         self.health_monitor.record_metric(
                                             name,
                                             "consumer_stalled",
-                                            1.0
-                                            if status_payload.get("stalled")
-                                            else 0.0,
+                                            (
+                                                1.0
+                                                if status_payload.get("stalled")
+                                                else 0.0
+                                            ),
                                             status_payload,
                                         )
                                     if "consecutive_errors" in status_payload:
@@ -342,9 +344,7 @@ class MonitoringManager:
                                             name,
                                             "consumer_consecutive_errors",
                                             float(
-                                                status_payload.get(
-                                                    "consecutive_errors"
-                                                )
+                                                status_payload.get("consecutive_errors")
                                                 or 0
                                             ),
                                             status_payload,
@@ -371,9 +371,7 @@ class MonitoringManager:
                                             name,
                                             "consumer_lease_takeovers_total",
                                             float(
-                                                status_payload.get(
-                                                    "total_takeovers"
-                                                )
+                                                status_payload.get("total_takeovers")
                                                 or 0
                                             ),
                                             status_payload,

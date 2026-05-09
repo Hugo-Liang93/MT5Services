@@ -17,8 +17,12 @@ router = APIRouter(tags=["market"])
 
 @router.get("/stream")
 async def stream(
-    symbol: Optional[str] = Query(default=None, description="交易品种，可为空则使用默认"),
-    interval: Optional[float] = Query(default=None, gt=0.0, description="SSE 推送间隔（秒）"),
+    symbol: Optional[str] = Query(
+        default=None, description="交易品种，可为空则使用默认"
+    ),
+    interval: Optional[float] = Query(
+        default=None, gt=0.0, description="SSE 推送间隔（秒）"
+    ),
     service: MarketDataService = Depends(get_market_service),
 ):
     defaults = runtime_market_defaults()

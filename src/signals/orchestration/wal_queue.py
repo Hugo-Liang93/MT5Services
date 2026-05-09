@@ -13,11 +13,11 @@ import json
 import logging
 import queue
 import sqlite3
-
-from ..metadata_keys import MetadataKey as MK
 import threading
 import time
 from typing import Any, Optional
+
+from ..metadata_keys import MetadataKey as MK
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,10 @@ class WalSignalQueue:
                     "WalSignalQueue is closed; call reopen() before further use"
                 )
             from src.utils.sqlite_conn import make_sqlite_conn
-            self._conn = make_sqlite_conn(self._db_path, cache_mb=4, busy_timeout_ms=5000)
+
+            self._conn = make_sqlite_conn(
+                self._db_path, cache_mb=4, busy_timeout_ms=5000
+            )
         return self._conn
 
     def put_nowait(

@@ -9,10 +9,7 @@ from src.market.tick_features import (
     TickFeatureConfig,
     TickFeatureSnapshot,
 )
-from src.signals.contracts.capability import (
-    StrategyCapability,
-    normalize_signal_scopes,
-)
+from src.signals.contracts.capability import StrategyCapability, normalize_signal_scopes
 
 
 @dataclass(frozen=True)
@@ -78,7 +75,9 @@ class TickReplayRunner:
     ) -> TickReplayReport:
         ordered = self._ordered_ticks(ticks)
         snapshots = self.build_feature_snapshots(symbol, ordered)
-        valid_tick_count = sum(1 for tick in ordered if self._is_valid_replay_tick(tick))
+        valid_tick_count = sum(
+            1 for tick in ordered if self._is_valid_replay_tick(tick)
+        )
         spreads = [
             float(snapshot.spread_points)
             for snapshot in snapshots
@@ -110,7 +109,10 @@ class TickReplayRunner:
         if isinstance(capability, StrategyCapability):
             return "tick_derived" in capability.valid_scopes
         if isinstance(capability, dict):
-            return "tick_derived" in StrategyCapability.from_contract(capability).valid_scopes
+            return (
+                "tick_derived"
+                in StrategyCapability.from_contract(capability).valid_scopes
+            )
         capability_fn = getattr(strategy, "capability_contract", None)
         if callable(capability_fn):
             return (
@@ -140,7 +142,9 @@ class TickReplayRunner:
 
     @staticmethod
     def _is_valid_replay_tick(tick: Tick) -> bool:
-        return tick.time_msc is not None and tick.bid is not None and tick.ask is not None
+        return (
+            tick.time_msc is not None and tick.bid is not None and tick.ask is not None
+        )
 
     @staticmethod
     def _ratio(numerator: int, denominator: int) -> float:

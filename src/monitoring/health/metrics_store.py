@@ -39,7 +39,10 @@ MetricSample = Tuple[str, float, Optional[str], Optional[str]]
 
 def _make_alert_conn(db_path: str) -> sqlite3.Connection:
     from src.utils.sqlite_conn import make_sqlite_conn
-    return make_sqlite_conn(db_path, cache_mb=_ALERT_CACHE_SIZE_KB // 1024 or 2, busy_timeout_ms=10000)
+
+    return make_sqlite_conn(
+        db_path, cache_mb=_ALERT_CACHE_SIZE_KB // 1024 or 2, busy_timeout_ms=10000
+    )
 
 
 _ALERT_DDL = """
@@ -217,7 +220,15 @@ class MetricsStore:
                 (timestamp, component, metric_name, alert_level, metric_value, threshold, message)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (timestamp, component, metric_name, alert_level, value, threshold, message),
+                (
+                    timestamp,
+                    component,
+                    metric_name,
+                    alert_level,
+                    value,
+                    threshold,
+                    message,
+                ),
             )
         conn.commit()
 
@@ -237,13 +248,20 @@ class MetricsStore:
             SET resolved_at = ?, resolved_by = ?
             WHERE component = ? AND metric_name = ? AND resolved_at IS NULL
             """,
-            (datetime.now(timezone.utc).isoformat(), resolved_by, component, metric_name),
+            (
+                datetime.now(timezone.utc).isoformat(),
+                resolved_by,
+                component,
+                metric_name,
+            ),
         )
         updated = cursor.rowcount > 0
         conn.commit()
         return updated
 
-    def load_recent_alerts(self, cutoff_iso: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def load_recent_alerts(
+        self, cutoff_iso: str, limit: int = 20
+    ) -> List[Dict[str, Any]]:
         if not self._alert_db_path:
             return []
         conn = self._get_alert_conn()

@@ -77,9 +77,7 @@ class ShapeNeighborIndex:
             raise ValueError(f"target_index is not in sequence index: {target_index}")
         target_pos = self._pos_by_target[target_index]
         candidate_positions = [
-            pos
-            for pos, idx in enumerate(self._target_indices)
-            if idx < target_index
+            pos for pos, idx in enumerate(self._target_indices) if idx < target_index
         ]
         if not candidate_positions:
             return ShapeNeighborResult(
@@ -109,7 +107,9 @@ class ShapeNeighborIndex:
         for item in neighbors:
             counts[item.label] = counts.get(item.label, 0) + 1
         mean_return = (
-            float(np.mean([item.best_return for item in neighbors])) if neighbors else 0.0
+            float(np.mean([item.best_return for item in neighbors]))
+            if neighbors
+            else 0.0
         )
         return ShapeNeighborResult(
             target_index=target_index,

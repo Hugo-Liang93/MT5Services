@@ -1,5 +1,5 @@
-from types import SimpleNamespace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,8 +51,14 @@ def test_recovery_canary_policy_validation_blocks_disabled_or_real_order():
         )
     )
 
-    assert "recovery_canary_not_enabled" in recovery_canary._validate_demo_canary_policy(disabled)
-    assert "recovery_canary_cli_requires_dry_run" in recovery_canary._validate_demo_canary_policy(real_order)
+    assert (
+        "recovery_canary_not_enabled"
+        in recovery_canary._validate_demo_canary_policy(disabled)
+    )
+    assert (
+        "recovery_canary_cli_requires_dry_run"
+        in recovery_canary._validate_demo_canary_policy(real_order)
+    )
 
 
 def test_recovery_canary_policy_validation_requires_market_protective_stop():
@@ -84,7 +90,9 @@ def test_recovery_policy_from_args_caps_total_volume_by_risk_limit():
         min_step_interval_ms=0,
     )
     risk = SimpleNamespace(max_volume_per_symbol=0.03, max_volume_per_order=0.02)
-    symbol_info = SimpleNamespace(point=0.01, volume_step=0.01, trade_contract_size=100.0)
+    symbol_info = SimpleNamespace(
+        point=0.01, volume_step=0.01, trade_contract_size=100.0
+    )
 
     policy = recovery_canary._recovery_policy_from_args(args, risk, symbol_info)
 
@@ -106,7 +114,9 @@ def test_recovery_policy_from_args_rejects_volume_above_risk_limit():
         min_step_interval_ms=0,
     )
     risk = SimpleNamespace(max_volume_per_symbol=0.03, max_volume_per_order=0.02)
-    symbol_info = SimpleNamespace(point=0.01, volume_step=0.01, trade_contract_size=100.0)
+    symbol_info = SimpleNamespace(
+        point=0.01, volume_step=0.01, trade_contract_size=100.0
+    )
 
     with pytest.raises(ValueError, match="max_total_volume"):
         recovery_canary._recovery_policy_from_args(args, risk, symbol_info)
@@ -218,7 +228,10 @@ def test_live_cycle_validation_blocks_submit_when_base_policy_not_dry_run():
         )
     )
 
-    assert "recovery_canary_cli_requires_dry_run" in recovery_canary._validate_demo_canary_policy(policy)
+    assert (
+        "recovery_canary_cli_requires_dry_run"
+        in recovery_canary._validate_demo_canary_policy(policy)
+    )
 
 
 def test_quote_helpers_use_tradeable_side_for_live_cycle():
@@ -339,7 +352,7 @@ def test_public_initial_result_serializes_cycle_without_mutating_payload():
         started_at=datetime.fromtimestamp(1_000, tz=timezone.utc),
         updated_at=datetime.fromtimestamp(1_001, tz=timezone.utc),
         last_step_at=datetime.fromtimestamp(1_000, tz=timezone.utc),
-        strategy="tick_martingale_probe",
+        strategy="tick_recovery_probe",
         timeframe="TICK",
         source_signal_id="sig-1",
         metadata={"canary": True},

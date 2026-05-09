@@ -158,12 +158,10 @@ ERROR_ACTION_MAPPING = {
     AIErrorCode.MT5_TIMEOUT: AIErrorAction.RETRY_AFTER_DELAY,
     AIErrorCode.MT5_NOT_INITIALIZED: AIErrorAction.RESTART_SERVICE,
     AIErrorCode.MT5_LOGIN_FAILED: AIErrorAction.CHECK_CREDENTIALS,
-
     # 数据相关
     AIErrorCode.DATA_NOT_AVAILABLE: AIErrorAction.USE_FALLBACK_DATA,
     AIErrorCode.DATA_STALE: AIErrorAction.WAIT_FOR_DATA,
     AIErrorCode.DATA_CACHE_EMPTY: AIErrorAction.WAIT_FOR_DATA,
-
     # 交易相关
     AIErrorCode.INSUFFICIENT_MARGIN: AIErrorAction.REDUCE_VOLUME,
     AIErrorCode.INVALID_VOLUME: AIErrorAction.ADJUST_PRICE,
@@ -188,7 +186,6 @@ ERROR_ACTION_MAPPING = {
     AIErrorCode.TRADE_FREQUENCY_LIMITED: AIErrorAction.WAIT_FOR_RISK_WINDOW,
     AIErrorCode.POSITION_LIMIT_REACHED: AIErrorAction.CLOSE_SOME_POSITIONS,
     AIErrorCode.SESSION_WINDOW_BLOCKED: AIErrorAction.WAIT_FOR_MARKET_OPEN,
-
     # 账户相关
     AIErrorCode.ACCOUNT_NOT_FOUND: AIErrorAction.CHECK_ACCOUNT_STATUS,
     AIErrorCode.ACCOUNT_DISABLED: AIErrorAction.SWITCH_ACCOUNT,
@@ -197,19 +194,16 @@ ERROR_ACTION_MAPPING = {
     AIErrorCode.ACCOUNT_LIMIT_REACHED: AIErrorAction.CLOSE_SOME_POSITIONS,
     AIErrorCode.ACCOUNT_SUSPENDED: AIErrorAction.CONTACT_SUPPORT,
     AIErrorCode.ACCOUNT_NO_PERMISSION: AIErrorAction.CHECK_AUTHORIZATION,
-
     # 系统错误
     AIErrorCode.SERVICE_UNAVAILABLE: AIErrorAction.RETRY_AFTER_DELAY,
     AIErrorCode.RATE_LIMIT_EXCEEDED: AIErrorAction.WAIT_FOR_DATA,
     AIErrorCode.INTERNAL_SERVER_ERROR: AIErrorAction.CONTACT_SUPPORT,
     AIErrorCode.DATABASE_ERROR: AIErrorAction.RESTART_SERVICE,
     AIErrorCode.CONFIGURATION_ERROR: AIErrorAction.RELOAD_CONFIGURATION,
-
     # 网络错误
     AIErrorCode.NETWORK_ERROR: AIErrorAction.CHECK_CONNECTION,
     AIErrorCode.TIMEOUT_ERROR: AIErrorAction.RETRY_AFTER_DELAY,
     AIErrorCode.CONNECTION_REFUSED: AIErrorAction.CHECK_CONNECTION,
-
     # 验证错误
     AIErrorCode.VALIDATION_ERROR: AIErrorAction.VALIDATE_PARAMETERS,
     AIErrorCode.MISSING_REQUIRED_FIELD: AIErrorAction.VALIDATE_PARAMETERS,
@@ -225,7 +219,9 @@ def get_suggested_action(error_code: AIErrorCode) -> str:
 
 
 # 交易相关辅助函数
-def get_trade_error_details(symbol: str, volume: float, side: str, price: float = None) -> dict:
+def get_trade_error_details(
+    symbol: str, volume: float, side: str, price: float = None
+) -> dict:
     """获取交易错误详情。"""
     details = {
         "symbol": symbol,

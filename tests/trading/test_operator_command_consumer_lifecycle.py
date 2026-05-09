@@ -9,6 +9,7 @@
 - heartbeat_fn 调用契约
 - 复合命令分支（set_trade_control + reset_circuit / runtime_mode partial_failure）
 """
+
 from __future__ import annotations
 
 import threading
@@ -240,7 +241,9 @@ def test_execute_reset_circuit_without_executor_raises() -> None:
 def test_execute_close_exposure_without_controller_raises() -> None:
     """close_exposure 时 exposure_closeout_controller=None → RuntimeError。"""
     consumer = _make_consumer(exposure_closeout_controller=None)
-    with pytest.raises(RuntimeError, match="exposure_closeout_controller_not_configured"):
+    with pytest.raises(
+        RuntimeError, match="exposure_closeout_controller_not_configured"
+    ):
         consumer._execute_command(
             {
                 "command_id": "ce-1",
@@ -373,9 +376,7 @@ def test_heartbeat_fn_invoked_with_runtime_identity_and_lease() -> None:
     cmd_service.update_trade_control.return_value = {"auto_entry_enabled": True}
     cmd_service.record_operator_action.return_value = {"operation_id": "audit-h"}
 
-    consumer = _make_consumer(
-        command_service=cmd_service, heartbeat_fn=_heartbeat
-    )
+    consumer = _make_consumer(command_service=cmd_service, heartbeat_fn=_heartbeat)
     consumer._lease_seconds = 30  # 已在 init 中默认，这里显式标记
 
     consumer._process_command(
@@ -439,8 +440,11 @@ def test_worker_stops_mid_batch_when_stop_event_set(monkeypatch) -> None:
         # 一次返回 3 条；第一次进 worker 后第一条处理完 stop_event 就被 set
         return {
             "claimed": [
-                {"command_id": f"cmd-{i}", "command_type": "set_trade_control",
-                 "payload": {"trace_id": f"t-{i}"}}
+                {
+                    "command_id": f"cmd-{i}",
+                    "command_type": "set_trade_control",
+                    "payload": {"trace_id": f"t-{i}"},
+                }
                 for i in range(3)
             ],
             "dead_lettered": [],
@@ -480,12 +484,10 @@ def test_consumer_survives_transient_claim_fn_exception() -> None:
             time.sleep(0.05)
             if call_count[0] >= 3:
                 break
-        assert consumer.is_running(), (
-            f"claim_fn 瞬时异常不能打死 worker 线程；call_count={call_count[0]}"
-        )
-        assert call_count[0] >= 3, (
-            f"线程必须 retry，至少 3 次调用；got {call_count[0]}"
-        )
+        assert (
+            consumer.is_running()
+        ), f"claim_fn 瞬时异常不能打死 worker 线程；call_count={call_count[0]}"
+        assert call_count[0] >= 3, f"线程必须 retry，至少 3 次调用；got {call_count[0]}"
     finally:
         consumer.stop(timeout=2.0)
 

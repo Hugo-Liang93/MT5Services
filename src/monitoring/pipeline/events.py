@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-
 PIPELINE_BAR_CLOSED = "bar_closed"
 PIPELINE_INDICATOR_COMPUTED = "indicator_computed"
 PIPELINE_SNAPSHOT_PUBLISHED = "snapshot_published"
@@ -124,7 +123,11 @@ def pipeline_stage_presence(
     summary_key: str,
 ) -> bool:
     definition = next(
-        (item for item in PIPELINE_STAGE_DEFINITIONS if item.summary_key == summary_key),
+        (
+            item
+            for item in PIPELINE_STAGE_DEFINITIONS
+            if item.summary_key == summary_key
+        ),
         None,
     )
     if definition is None:

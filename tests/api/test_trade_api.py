@@ -853,7 +853,9 @@ class _TradeTraceReadModel:
     def trace_by_action_id(self, action_id: str):
         return self._trace_by_execution_identifier("action_id", action_id)
 
-    def _trace_by_execution_identifier(self, identifier_name: str, identifier_value: str):
+    def _trace_by_execution_identifier(
+        self, identifier_name: str, identifier_value: str
+    ):
         return {
             "signal_id": "sig_1",
             "trace_id": "trace_1",
@@ -908,9 +910,19 @@ class _TradeTraceReadModel:
         from_time = kwargs.get("from_time")
         to_time = kwargs.get("to_time")
         default_window_applied = False
-        if from_time is None and to_time is None and not any(
-            kwargs.get(key)
-            for key in ("trace_id", "signal_id", "intent_id", "command_id", "action_id")
+        if (
+            from_time is None
+            and to_time is None
+            and not any(
+                kwargs.get(key)
+                for key in (
+                    "trace_id",
+                    "signal_id",
+                    "intent_id",
+                    "command_id",
+                    "action_id",
+                )
+            )
         ):
             from_time = "2026-01-01T00:00:00+00:00"
             default_window_applied = True
@@ -1063,8 +1075,13 @@ def test_trade_dispatch_uses_unified_dispatcher() -> None:
     assert response.success is True
     assert response.data["result"]["ticket"] == 1
     assert response.data["admission_report"]["decision"] == "allow"
-    assert service.last_dispatch[1]["trace_id"] == response.data["admission_report"]["trace_id"]
-    assert response.data["result"]["payload"]["trace_id"] == response.metadata["trace_id"]
+    assert (
+        service.last_dispatch[1]["trace_id"]
+        == response.data["admission_report"]["trace_id"]
+    )
+    assert (
+        response.data["result"]["payload"]["trace_id"] == response.metadata["trace_id"]
+    )
 
 
 def test_trade_precheck_returns_admission_report() -> None:

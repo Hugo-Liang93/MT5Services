@@ -18,10 +18,10 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from src.clients.economic_calendar import (
-    EconomicCalendarEvent,
     EconomicCalendarError,
-    _BaseHttpClient,
+    EconomicCalendarEvent,
     _as_text,
+    _BaseHttpClient,
     _event_in_date_range,
 )
 
@@ -138,15 +138,23 @@ class Jin10CalendarClient(_BaseHttpClient):
     def _fetch_day(self, day: date, endpoint: str) -> List[Dict[str, Any]]:
         """获取单日数据（/get/data 或 /get/event）。"""
         url = f"{_BASE_URL}{endpoint}"
-        response = self._request_json(url, {
-            "date": day.strftime("%Y-%m-%d"),
-            "category": "cj",
-        })
+        response = self._request_json(
+            url,
+            {
+                "date": day.strftime("%Y-%m-%d"),
+                "category": "cj",
+            },
+        )
         if isinstance(response, dict):
             data = response.get("data")
             if isinstance(data, list):
                 return data
-            logger.debug("Jin10 %s unexpected data type for %s: %s", endpoint, day, type(data).__name__)
+            logger.debug(
+                "Jin10 %s unexpected data type for %s: %s",
+                endpoint,
+                day,
+                type(data).__name__,
+            )
             return []
         if isinstance(response, list):
             return response
@@ -161,9 +169,7 @@ class Jin10CalendarClient(_BaseHttpClient):
         if not self.is_configured():
             return []
 
-        country_filter = (
-            {c.strip().lower() for c in countries} if countries else None
-        )
+        country_filter = {c.strip().lower() for c in countries} if countries else None
 
         events: List[EconomicCalendarEvent] = []
         current = start_date
@@ -185,7 +191,9 @@ class Jin10CalendarClient(_BaseHttpClient):
                 events.extend(
                     self._normalize_event(item, country_filter, current)
                     for item in items
-                    if self._should_include_event(item, country_filter, start_date, end_date, current)
+                    if self._should_include_event(
+                        item, country_filter, start_date, end_date, current
+                    )
                 )
             except EconomicCalendarError:
                 logger.warning("Jin10 /get/event failed for %s", current)

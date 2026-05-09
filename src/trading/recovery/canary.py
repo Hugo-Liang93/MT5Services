@@ -4,8 +4,14 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
-from src.backtesting.tick_replay.recovery import RecoveryReplayFill, TickRecoveryReplayRunner
-from src.backtesting.tick_replay.recovery_canary import RecoveryCanaryGate, RecoveryCanaryGatePolicy
+from src.backtesting.tick_replay.recovery import (
+    RecoveryReplayFill,
+    TickRecoveryReplayRunner,
+)
+from src.backtesting.tick_replay.recovery_canary import (
+    RecoveryCanaryGate,
+    RecoveryCanaryGatePolicy,
+)
 from src.clients.mt5_market import Tick
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.recovery.controller import BoundedRecoveryController
@@ -38,7 +44,7 @@ def execute_recovery_canary(
     source_signal_id: str,
     state_store: Any,
     trading_port: Any,
-    strategy: str = "tick_martingale_probe",
+    strategy: str = "tick_recovery_probe",
     timeframe: str = "TICK",
 ) -> dict[str, Any]:
     """Run a bounded recovery demo canary through replay, gate, state, and audit.
@@ -105,7 +111,9 @@ def execute_recovery_canary(
         replay=replay_payload,
         gate=gate_payload,
     )
-    execution = RecoveryExecutionAdapter(trading_port=trading_port).execute_scaling_intent(
+    execution = RecoveryExecutionAdapter(
+        trading_port=trading_port
+    ).execute_scaling_intent(
         recovery_policy=recovery_policy,
         cycle=cycle,
         intent=intent,
@@ -137,7 +145,7 @@ def open_initial_recovery_cycle(
     source_signal_id: str,
     state_store: Any,
     trading_port: Any,
-    strategy: str = "tick_martingale_probe",
+    strategy: str = "tick_recovery_probe",
     timeframe: str = "TICK",
     extra_metadata: Mapping[str, Any] | None = None,
     status_reason: str | None = None,
@@ -173,7 +181,9 @@ def open_initial_recovery_cycle(
             "account_alias": account_alias,
             "account_key": account_key,
         }
-    except Exception as exc:  # noqa: BLE001 - trading port failures are domain blocks here.
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - trading port failures are domain blocks here.
         return {
             "status": "blocked",
             "reason": str(exc) or type(exc).__name__,
@@ -198,6 +208,30 @@ def open_initial_recovery_cycle(
             "account_alias": account_alias,
             "account_key": account_key,
         }
+    # T4 chaos fix: broker 端非异常失败（margin not enough / requote / 拒单）
+    # 必须归类为 trading_port_failure，而不是当成 submitted 静默推进。
+    result_status = str((result or {}).get("status") or "").lower()
+    accepted = (result or {}).get("accepted")
+    if result_status in {"failed", "rejected", "error"} or accepted is False:
+        return {
+            "status": "blocked",
+            "reason": str(
+                (result or {}).get("error_message")
+                or (result or {}).get("message")
+                or result_status
+                or "trading_port_dispatch_failed"
+            ),
+            "category": "trading_port_failure",
+            "payload": payload,
+            "result": result,
+            "error_message": str(
+                (result or {}).get("error_message")
+                or (result or {}).get("message")
+                or ""
+            ),
+            "account_alias": account_alias,
+            "account_key": account_key,
+        }
     fill_price = _fill_price_from_result(result, fallback=entry_price)
     cycle = RecoveryCycleState(
         cycle_id=cycle_id,
@@ -219,7 +253,9 @@ def open_initial_recovery_cycle(
         metadata={
             "canary": True,
             "execution_scope": "recovery_initial",
-            "initial_result": result if isinstance(result, dict) else {"result": result},
+            "initial_result": (
+                result if isinstance(result, dict) else {"result": result}
+            ),
             **dict(extra_metadata or {}),
         },
     )
@@ -286,7 +322,9 @@ def evaluate_current_recovery_step(
         created_at=tick.time,
     )
     assert plan.position_scaling_intent is not None
-    execution = RecoveryExecutionAdapter(trading_port=trading_port).execute_scaling_intent(
+    execution = RecoveryExecutionAdapter(
+        trading_port=trading_port
+    ).execute_scaling_intent(
         recovery_policy=recovery_policy,
         cycle=cycle,
         intent=plan.position_scaling_intent,
@@ -688,7 +726,9 @@ def _ticket_from_nested_payload(payload: Any) -> int | None:
     return None
 
 
-def _step_index_from_current_step_result(current_step_result: dict[str, Any]) -> int | None:
+def _step_index_from_current_step_result(
+    current_step_result: dict[str, Any]
+) -> int | None:
     decision = current_step_result.get("decision")
     if isinstance(decision, dict):
         try:
@@ -734,22 +774,39 @@ def _cleanup_cycle_for_close(
         return fallback
     try:
         return RecoveryCycleState(
-            cycle_id=str(payload.get("cycle_id") or (fallback.cycle_id if fallback else "")),
-            account_key=str(payload.get("account_key") or (fallback.account_key if fallback else "")),
+            cycle_id=str(
+                payload.get("cycle_id") or (fallback.cycle_id if fallback else "")
+            ),
+            account_key=str(
+                payload.get("account_key") or (fallback.account_key if fallback else "")
+            ),
             symbol=str(payload.get("symbol") or (fallback.symbol if fallback else "")),
-            direction=str(payload.get("direction") or (fallback.direction if fallback else "")),
+            direction=str(
+                payload.get("direction") or (fallback.direction if fallback else "")
+            ),
             status=str(payload.get("status") or "open"),
             base_volume=float(payload.get("base_volume")),
             total_volume=float(payload.get("total_volume")),
             step_count=int(payload.get("step_count")),
             average_entry_price=float(payload.get("average_entry_price")),
             last_entry_price=float(payload.get("last_entry_price")),
-            started_at=_datetime_from_payload(payload.get("started_at"), fallback.started_at if fallback else None),
-            updated_at=_datetime_from_payload(payload.get("updated_at"), fallback.updated_at if fallback else None),
-            last_step_at=_datetime_from_payload(payload.get("last_step_at"), fallback.last_step_at if fallback else None),
-            strategy=str(payload.get("strategy") or (fallback.strategy if fallback else "")),
-            timeframe=str(payload.get("timeframe") or (fallback.timeframe if fallback else "")),
-            source_signal_id=payload.get("source_signal_id") or (fallback.source_signal_id if fallback else None),
+            started_at=_datetime_from_payload(
+                payload.get("started_at"), fallback.started_at if fallback else None
+            ),
+            updated_at=_datetime_from_payload(
+                payload.get("updated_at"), fallback.updated_at if fallback else None
+            ),
+            last_step_at=_datetime_from_payload(
+                payload.get("last_step_at"), fallback.last_step_at if fallback else None
+            ),
+            strategy=str(
+                payload.get("strategy") or (fallback.strategy if fallback else "")
+            ),
+            timeframe=str(
+                payload.get("timeframe") or (fallback.timeframe if fallback else "")
+            ),
+            source_signal_id=payload.get("source_signal_id")
+            or (fallback.source_signal_id if fallback else None),
             metadata=dict(payload.get("metadata") or {}),
         )
     except Exception:  # noqa: BLE001 - cleanup should still attempt closure.
@@ -850,7 +907,9 @@ def _read_positions(position_reader: Any, *, symbol: str | None) -> list[Any]:
         return list(position_reader.get_positions(symbol=symbol))
     if callable(position_reader):
         return list(position_reader(symbol=symbol))
-    raise TypeError("position_reader must expose get_positions(symbol=...) or be callable")
+    raise TypeError(
+        "position_reader must expose get_positions(symbol=...) or be callable"
+    )
 
 
 def _matching_position_by_ticket(positions: Iterable[Any], ticket: int) -> Any | None:
@@ -1125,7 +1184,9 @@ def _replay_payload(report: Any) -> dict[str, Any]:
         "tradable_tick_count": report.tradable_tick_count,
         "tick_coverage": report.tick_coverage,
         "fill_count": len(report.fills),
-        "recovery_fill_count": sum(1 for fill in report.fills if fill.role == "recovery"),
+        "recovery_fill_count": sum(
+            1 for fill in report.fills if fill.role == "recovery"
+        ),
         "event_count": len(report.events),
         "blocked_count": report.blocked_count,
         "hold_count": report.hold_count,

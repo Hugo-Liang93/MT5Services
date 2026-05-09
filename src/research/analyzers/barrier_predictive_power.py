@@ -189,8 +189,8 @@ def analyze_barrier_predictive_power(
             if _is_dimensionless(ind, fld)
         ]
 
-    train_indices = list(matrix.train_slice()) if use_train_only else list(
-        range(matrix.n_bars)
+    train_indices = (
+        list(matrix.train_slice()) if use_train_only else list(range(matrix.n_bars))
     )
 
     # Phase 1: 逐组合计算 raw results

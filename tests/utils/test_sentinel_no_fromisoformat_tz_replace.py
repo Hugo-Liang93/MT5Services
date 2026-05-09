@@ -6,6 +6,7 @@
 
 本 sentinel 用 AST 而非纯 grep，避免 comment / docstring 假阳性。
 """
+
 from __future__ import annotations
 
 import ast

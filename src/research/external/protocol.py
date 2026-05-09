@@ -9,6 +9,7 @@ Extension contract:
 `runtime_checkable` lets `isinstance(obj, ExternalDataSource)` validate
 implementations at runtime — convenient for dynamic source discovery.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -41,9 +42,7 @@ class ExternalDataSource(Protocol):
 
     name: str
 
-    def fetch_daily(
-        self, symbol: str, *, start: date, end: date
-    ) -> List[DailyBar]: ...
+    def fetch_daily(self, symbol: str, *, start: date, end: date) -> List[DailyBar]: ...
 
     def supports_symbol(self, symbol: str) -> bool: ...
 
