@@ -107,7 +107,7 @@ def _run_single_combo(
         sl_atr=sl_atr, tp_atr=tp_atr, time_bars=time_bars, adx_floor=adx_floor
     )
     try:
-        # 清 component_factory 缓存确保策略实例重建（与 aggression_scan 一致）
+        # 清 component_factory 缓存确保策略实例重建
         from src.backtesting import component_factory as cf
 
         for attr in ("_cached_signal_config", "_cached_components"):

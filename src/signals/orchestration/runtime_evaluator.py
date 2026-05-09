@@ -63,6 +63,18 @@ def evaluate_strategies(
         else:
             scoped_indicators = indicators
 
+        # T9 wiring: 把 SignalRuntime 缓存的最新 tick feature snapshot 注入到
+        # ctx.indicators["tick_features"]，让 PA._post_confidence_modifier 等 hook
+        # 在 confirmed 评估时可读顺向压力（pressure delta）做 confidence 修正。
+        # tick_features 不在 capability.needed_indicators 中——属于增强上下文，缺失不阻断。
+        if scope == "confirmed":
+            tick_features_view = runtime.latest_tick_features(symbol)
+            if tick_features_view is not None:
+                scoped_indicators = {
+                    **scoped_indicators,
+                    "tick_features": tick_features_view,
+                }
+
         regime_metadata.pop(MK.PRE_COMPUTED_AFFINITY, None)
 
         with shard_lock:

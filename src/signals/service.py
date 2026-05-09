@@ -692,7 +692,8 @@ class SignalModule:
             try:
                 return SoftRegimeResult.from_dict(precomputed)
             except Exception:
-                logger.debug("Invalid precomputed soft regime payload", exc_info=True)
+                # CLAUDE.md §12: debug+exc_info 反模式 → warning
+                logger.warning("Invalid precomputed soft regime payload", exc_info=True)
         if not self._soft_regime_enabled:
             return None
         # Standalone 模式（无 runtime 预计算）才自行检测
@@ -700,7 +701,7 @@ class SignalModule:
             try:
                 return self._regime_detector.detect_soft(indicators)
             except Exception:
-                logger.debug("Failed to compute soft regime", exc_info=True)
+                logger.warning("Failed to compute soft regime", exc_info=True)
         return None
 
     @staticmethod

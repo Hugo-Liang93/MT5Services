@@ -496,7 +496,8 @@ class BacktestEngine:
                 config=MarketStructureConfig(lookback_bars=200),
             )
         except Exception:
-            logger.debug(
+            # CLAUDE.md §12: debug+exc_info 反模式 → warning
+            logger.warning(
                 "MarketStructureAnalyzer not available for backtest", exc_info=True
             )
 
@@ -511,7 +512,9 @@ class BacktestEngine:
         try:
             self._chandelier_config = build_chandelier_config(_get_sc())
         except Exception:
-            logger.debug("Using default chandelier config for backtest", exc_info=True)
+            logger.warning(
+                "Using default chandelier config for backtest", exc_info=True
+            )
             self._chandelier_config = _CC(regime_aware=True)
 
         # Intrabar 子循环上下文（双 TF 联合回放）
@@ -961,7 +964,10 @@ class BacktestEngine:
                                 source="trade",
                             )
                         except Exception:
-                            pass
+                            # CLAUDE.md §12: silent swallow (`pass`) 是反模式
+                            logger.warning(
+                                "trade outcome recording failed", exc_info=True
+                            )
 
             # 5.1 检查 Pending Entry 是否可填单（每根 bar 都需要检查）
             if self._pending_entry_enabled and indicators and regime is not None:

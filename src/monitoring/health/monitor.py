@@ -43,7 +43,7 @@ class HealthMonitor:
     """
 
     def __init__(
-        self, db_path: str = "health_monitor.db", ring_size: int = 2400
+        self, db_path: str = "health_monitor.db", ring_size: int = 17280
     ) -> None:
         # db_path 现在仅用于 alert_history SQLite
         # 文件名改为 health_alerts.db 以反映实际用途

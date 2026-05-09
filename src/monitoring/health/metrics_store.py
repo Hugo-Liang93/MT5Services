@@ -25,8 +25,11 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # ── 默认参数 ─────────────────────────────────────────────────────────────────
-# 每 key 保留条数：2400 × 5 s ≈ 3.3 h（覆盖 generate_report(hours=3)）
-_DEFAULT_RING_SIZE = 2400
+# 每 key 保留条数：17280 × 5 s = 24 h（覆盖 generate_report(hours=24)，Known Issue #4）
+# 上一版 2400 仅覆盖 ~3.3h，导致 24h 报告窗口前期数据为空。每 key ~2.5MB（150B × 17280），
+# 50 个 metric key 总计 ~125MB——可接受（HealthMonitor 是单进程内存常驻）。
+# 如需更大容量或更细粒度聚合，可拆 ring_5s / ring_1min 双层。
+_DEFAULT_RING_SIZE = 17280
 
 # alert_history SQLite cache_size (很小，告警频率极低)
 _ALERT_CACHE_SIZE_KB = 2048  # 2 MB
