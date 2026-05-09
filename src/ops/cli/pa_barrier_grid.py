@@ -34,7 +34,7 @@ import sys
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -65,8 +65,14 @@ def _patch_pa(
     tp_atr: float,
     time_bars: int,
     adx_floor: float,
+    exit_mode: str = "barrier",
+    aggression: float = 0.50,
 ) -> Dict[str, Any]:
-    """Monkey-patch PA 类变量，返回原始值字典（用于 finally 还原）。"""
+    """Monkey-patch PA 类变量，返回原始值字典（用于 finally 还原）。
+
+    exit_mode='chandelier' 时 sl/tp/tb 被忽略（ExitSpec.CHANDELIER 由 aggression 驱动），
+    但仍保留参数完整性以便 grid 报告统一展示。
+    """
     import importlib
 
     module = importlib.import_module(_PA_CLASS_PATH[0])
@@ -76,11 +82,15 @@ def _patch_pa(
         "_tp_atr": cls._tp_atr,
         "_time_bars": cls._time_bars,
         "_adx_floor": cls._adx_floor,
+        "_exit_mode": cls._exit_mode,
+        "_aggression": cls._aggression,
     }
     cls._sl_atr = sl_atr
     cls._tp_atr = tp_atr
     cls._time_bars = time_bars
     cls._adx_floor = adx_floor
+    cls._exit_mode = exit_mode
+    cls._aggression = aggression
     return originals
 
 
@@ -102,9 +112,16 @@ def _run_single_combo(
     tp_atr: float,
     time_bars: int,
     adx_floor: float,
+    exit_mode: str = "barrier",
+    aggression: float = 0.50,
 ) -> Dict[str, Any]:
     originals = _patch_pa(
-        sl_atr=sl_atr, tp_atr=tp_atr, time_bars=time_bars, adx_floor=adx_floor
+        sl_atr=sl_atr,
+        tp_atr=tp_atr,
+        time_bars=time_bars,
+        adx_floor=adx_floor,
+        exit_mode=exit_mode,
+        aggression=aggression,
     )
     try:
         # 清 component_factory 缓存确保策略实例重建
@@ -119,14 +136,17 @@ def _run_single_combo(
         # PA 当前 deployment status=candidate（PF 0.29 / DD 99% 待重设计），
         # 默认 backtest_runner 会被 deployment gate 排除。本 CLI 是研究路径，
         # 通过 research_disabled gate + audit_reason 显式绕过 ADR-009。
+        audit_parts = (
+            f"pa_grid_scan:exit={exit_mode},sl={sl_atr},tp={tp_atr}"
+            f",tb={time_bars},adx={adx_floor}"
+        )
+        if exit_mode == "chandelier":
+            audit_parts = f"pa_grid_scan:exit=chandelier,α={aggression},adx={adx_floor}"
         data = _run_single(
             tf,
             start,
             end,
-            research_mode_audit_reason=(
-                f"pa_barrier_grid_scan:sl={sl_atr}"
-                f",tp={tp_atr},tb={time_bars},adx={adx_floor}"
-            ),
+            research_mode_audit_reason=audit_parts,
             strategy_names=["structured_price_action"],
         )
         return data
@@ -189,6 +209,17 @@ def main() -> None:
         help="ADX floor 候选（float），默认 8/12/16",
     )
     parser.add_argument(
+        "--exit-mode",
+        choices=["barrier", "chandelier", "both"],
+        default="barrier",
+        help="出场模式：barrier (默认 SL/TP/Time) / chandelier (ATR trailing α) / both (各扫一遍)",
+    )
+    parser.add_argument(
+        "--aggression",
+        default="0.30,0.50,0.70",
+        help="Chandelier α 候选（exit-mode=chandelier|both 时启用），默认 0.30/0.50/0.70",
+    )
+    parser.add_argument(
         "--top",
         type=int,
         default=10,
@@ -213,13 +244,25 @@ def main() -> None:
     tp_values = _parse_floats(args.tp)
     time_bars_values = _parse_ints(args.time_bars)
     adx_floor_values = _parse_floats(args.adx_floor)
+    aggression_values = _parse_floats(args.aggression)
 
-    combinations = list(
-        itertools.product(sl_values, tp_values, time_bars_values, adx_floor_values)
-    )
+    # 构造组合：每个 mode 一个独立空间
+    # BARRIER mode: (sl, tp, tb, adx, exit="barrier", aggression=ignored)
+    # CHANDELIER mode: (sl=ignored, tp=ignored, tb=ignored, adx, exit="chandelier", aggression)
+    combinations: List[Tuple[float, float, int, float, str, float]] = []
+    if args.exit_mode in ("barrier", "both"):
+        for sl, tp, tb, adx in itertools.product(
+            sl_values, tp_values, time_bars_values, adx_floor_values
+        ):
+            combinations.append((sl, tp, tb, adx, "barrier", 0.50))
+    if args.exit_mode in ("chandelier", "both"):
+        for adx, alpha in itertools.product(adx_floor_values, aggression_values):
+            # CHANDELIER 不用 sl/tp/tb，但保留为占位符以统一报告
+            combinations.append((0.0, 0.0, 0, adx, "chandelier", alpha))
+
     total = len(combinations)
     if total == 0:
-        print("空参数空间，请检查 --sl/--tp/--time-bars/--adx-floor。")
+        print("空参数空间，请检查 --sl/--tp/--time-bars/--adx-floor/--aggression。")
         sys.exit(1)
     if total > args.max_combinations:
         print(
@@ -228,19 +271,19 @@ def main() -> None:
         )
         sys.exit(1)
 
-    print(f"\n{'='*88}")
+    print(f"\n{'='*92}")
     print(
-        f"PA BARRIER grid: tf={args.tf} {args.start}~{args.end} "
-        f"({total} combinations)"
+        f"PA grid: tf={args.tf} {args.start}~{args.end} "
+        f"({total} combinations, exit_mode={args.exit_mode})"
     )
     print(
         f"sl={sl_values} | tp={tp_values} | time_bars={time_bars_values} | "
-        f"adx_floor={adx_floor_values}"
+        f"adx_floor={adx_floor_values} | aggression={aggression_values}"
     )
-    print(f"{'='*88}\n")
+    print(f"{'='*92}\n")
 
     header = (
-        f"{'sl':>5} {'tp':>5} {'tb':>4} {'adx':>5} "
+        f"{'mode':>10} {'sl':>5} {'tp':>5} {'tb':>4} {'adx':>5} {'α':>5} "
         f"{'trades':>7} {'WR':>7} {'PnL':>10} {'PF':>6} "
         f"{'Sharpe':>8} {'MaxDD':>7} {'Gate':>22}"
     )
@@ -248,31 +291,40 @@ def main() -> None:
     print("-" * len(header))
 
     results: List[Dict[str, Any]] = []
-    for sl_atr, tp_atr, time_bars, adx_floor in combinations:
+    for sl_atr, tp_atr, time_bars, adx_floor, exit_mode, aggression in combinations:
         try:
+            # CHANDELIER mode: sl/tp/tb 不影响 ExitSpec，但仍传入以便复用 _patch_pa
+            sl_use = sl_atr if exit_mode == "barrier" else 1.5
+            tp_use = tp_atr if exit_mode == "barrier" else 2.5
+            tb_use = time_bars if exit_mode == "barrier" else 20
             data = _run_single_combo(
                 tf=args.tf,
                 start=args.start,
                 end=args.end,
-                sl_atr=sl_atr,
-                tp_atr=tp_atr,
-                time_bars=time_bars,
+                sl_atr=sl_use,
+                tp_atr=tp_use,
+                time_bars=tb_use,
                 adx_floor=adx_floor,
+                exit_mode=exit_mode,
+                aggression=aggression,
             )
             summary = _summarize(data)
             summary.update(
                 {
+                    "exit_mode": exit_mode,
                     "sl_atr": sl_atr,
                     "tp_atr": tp_atr,
                     "time_bars": time_bars,
                     "adx_floor": adx_floor,
+                    "aggression": aggression,
                 }
             )
             summary["gate"] = _evaluate_promotion_gate(summary)
             results.append(summary)
             print(
+                f"{exit_mode:>10} "
                 f"{sl_atr:>5.2f} {tp_atr:>5.2f} {time_bars:>4d} "
-                f"{adx_floor:>5.1f} "
+                f"{adx_floor:>5.1f} {aggression:>5.2f} "
                 f"{summary['total_trades']:>7d} "
                 f"{summary['win_rate_pct']:>6.1f}% "
                 f"{summary['pnl']:>+10.2f} "
@@ -283,8 +335,9 @@ def main() -> None:
             )
         except Exception as exc:
             print(
-                f"{sl_atr:>5.2f} {tp_atr:>5.2f} {time_bars:>4d} "
-                f"{adx_floor:>5.1f} FAILED: {exc}"
+                f"{exit_mode:>10} {sl_atr:>5.2f} {tp_atr:>5.2f} "
+                f"{time_bars:>4d} {adx_floor:>5.1f} {aggression:>5.2f} "
+                f"FAILED: {exc}"
             )
 
     if not results:
