@@ -38,16 +38,7 @@ class MarketRepository:
         if invalid_count > 0:
             logger.warning("Dropped %s invalid tick rows", invalid_count)
 
-        normalized = []
-        for row in valid_rows:
-            if len(row) >= 5:
-                normalized.append((row[0], row[1], row[2], row[3], row[4]))
-                continue
-
-            time_value = datetime.fromisoformat(str(row[3]).replace("Z", "+00:00"))
-            normalized.append(
-                (row[0], row[1], row[2], row[3], int(time_value.timestamp() * 1000))
-            )
+        normalized = [tuple(row[:9]) for row in valid_rows]
 
         self._writer._batch(INSERT_TICKS_SQL, normalized, page_size=page_size)
 
@@ -201,11 +192,11 @@ class MarketRepository:
         self,
         symbol: str,
         limit: int,
-    ) -> List[Tuple[str, float, float, datetime, Optional[int]]]:
+    ) -> List[Tuple[str, float, Optional[float], Optional[float], Optional[float], float, datetime, Optional[int], Optional[int]]]:
         sql = (
-            "SELECT symbol, price, volume, time, time_msc "
+            "SELECT symbol, price, bid, ask, last, volume, time, time_msc, flags "
             "FROM ("
-            "    SELECT symbol, price, volume, time, time_msc "
+            "    SELECT symbol, price, bid, ask, last, volume, time, time_msc, flags "
             "    FROM ticks WHERE symbol=%s "
             f"    ORDER BY {TICK_ORDER_SQL} DESC, time DESC LIMIT %s"
             ") recent "
@@ -221,8 +212,11 @@ class MarketRepository:
         start_time: Optional[datetime],
         end_time: Optional[datetime],
         limit: int,
-    ) -> List[Tuple[str, float, float, datetime, Optional[int]]]:
-        sql = "SELECT symbol, price, volume, time, time_msc FROM ticks WHERE symbol=%s"
+    ) -> List[Tuple[str, float, Optional[float], Optional[float], Optional[float], float, datetime, Optional[int], Optional[int]]]:
+        sql = (
+            "SELECT symbol, price, bid, ask, last, volume, time, time_msc, flags "
+            "FROM ticks WHERE symbol=%s"
+        )
         params: List = [symbol]
         if start_time is not None:
             sql += " AND time >= %s"

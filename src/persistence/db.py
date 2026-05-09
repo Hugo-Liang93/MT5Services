@@ -605,6 +605,18 @@ class TimescaleWriter:
     def fetch_trade_command_audits(self, **kwargs):
         return self.trade_command_repo.fetch_trade_command_audits(**kwargs)
 
+    def count_successful_trade_commands_since(self, **kwargs) -> int:
+        return self.trade_command_repo.count_successful_trade_commands_since(**kwargs)
+
+    def count_trade_frequency_reservations_since(self, **kwargs) -> int:
+        return self.trade_command_repo.count_trade_frequency_reservations_since(**kwargs)
+
+    def reserve_trade_frequency_quota(self, **kwargs) -> str:
+        return self.trade_command_repo.reserve_trade_frequency_quota(**kwargs)
+
+    def finalize_trade_frequency_reservation(self, **kwargs) -> None:
+        self.trade_command_repo.finalize_trade_frequency_reservation(**kwargs)
+
     def query_trade_command_audits(self, **kwargs):
         return self.trade_command_repo.query_trade_command_audits(**kwargs)
 
@@ -692,6 +704,12 @@ class TimescaleWriter:
 
     def fetch_position_runtime_states(self, **kwargs):
         return self.trading_state_repo.fetch_position_runtime_states(**kwargs)
+
+    def write_recovery_cycle_states(self, rows, page_size: int = 200) -> None:
+        self.trading_state_repo.write_recovery_cycle_states(rows, page_size=page_size)
+
+    def fetch_recovery_cycle_states(self, **kwargs):
+        return self.trading_state_repo.fetch_recovery_cycle_states(**kwargs)
 
     def write_trade_control_states(self, rows, page_size: int = 50) -> None:
         self.trading_state_repo.write_trade_control_states(rows, page_size=page_size)

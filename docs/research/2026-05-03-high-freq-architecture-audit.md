@@ -5,6 +5,11 @@
 （1+ trades/day 起步）。本文盘点当前框架对高频交易的支撑度、关键 gap、与
 **为高频策略落地必须先解决的基础设施先决条件**。
 
+> 2026-05-06 状态：本文中的 M1/M5 `structured_micro_momentum`
+> 方案已撤销，当前普通策略池恢复为 PA-only。高频方向以
+> `tick-derived` 基建与 bounded recovery / martingale canary 验证为准；
+> 当前事实源见 `docs/codebase-review.md` 的 `0zd/0ze/0zf`。
+
 ## 2026-05-04 Goal v1 决策更新
 
 本轮实现把"高频"收敛为个人可实盘验证的 M1/M5 日内高频，不做 tick scalping：

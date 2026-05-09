@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 
 import pytest
 
+from src.backtesting.engine import BacktestDeploymentGate, BacktestDeploymentGateMode
 from src.signals.contracts.deployment import (
     StrategyDeployment,
     StrategyDeploymentStatus,
@@ -112,6 +113,56 @@ class TestBacktestEngineDeploymentGate:
         ]
         assert sorted(allowed) == ["active_s", "demo_s"]
         assert "candidate_s" not in allowed
+
+    def test_empty_snapshot_cannot_disable_gate(self) -> None:
+        with pytest.raises(ValueError, match="non-empty strategy deployments"):
+            BacktestDeploymentGate.from_snapshot(
+                {},
+                audit_reason="unit test",
+            )
+
+    def test_research_disabled_requires_audit_reason(self) -> None:
+        with pytest.raises(ValueError, match="audit_reason"):
+            BacktestDeploymentGate(
+                mode=BacktestDeploymentGateMode.RESEARCH_DISABLED,
+                deployments={},
+            )
+
+    def test_research_disabled_is_explicit_bypass(self) -> None:
+        gate = BacktestDeploymentGate.research_disabled("unit test")
+
+        assert gate.mode is BacktestDeploymentGateMode.RESEARCH_DISABLED
+        assert not gate.is_enabled
+        assert gate.require_deployment("any_strategy") is None
+
+    def test_snapshot_requires_contract_for_requested_strategy(self) -> None:
+        gate = BacktestDeploymentGate.from_snapshot(
+            {
+                "active_s": StrategyDeployment(
+                    name="active_s", status=StrategyDeploymentStatus.ACTIVE
+                )
+            },
+            audit_reason="unit test",
+        )
+
+        with pytest.raises(ValueError, match="missing explicit contract"):
+            gate.require_deployment("missing_s")
+
+    def test_signal_config_load_failure_does_not_disable_gate(
+        self, monkeypatch
+    ) -> None:
+        from src.backtesting.engine import runner
+
+        def boom():
+            raise RuntimeError("signal config broken")
+
+        monkeypatch.setattr(
+            "src.backtesting.component_factory._load_signal_config_snapshot",
+            boom,
+        )
+
+        with pytest.raises(RuntimeError, match="deployment gate"):
+            runner._load_deployment_gate_from_signal_config()
 
 
 class TestDeploymentContractSemanticsStayStable:

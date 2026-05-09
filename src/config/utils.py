@@ -311,4 +311,10 @@ class ConfigValidator:
         ohlc_interval = float(intervals.get("ohlc_interval", 30.0))
         if ohlc_interval < 1.0:
             raise ValueError(f"OHLC interval too small: {ohlc_interval}")
+        for tf, interval in dict(intervals.get("ohlc_intervals", {}) or {}).items():
+            tf_interval = float(interval)
+            if tf_interval < 1.0:
+                raise ValueError(
+                    f"OHLC interval for {tf} too small: {tf_interval}"
+                )
         return True

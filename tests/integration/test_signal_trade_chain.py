@@ -12,6 +12,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
@@ -19,12 +20,15 @@ import pytest
 
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext, SignalDecision, SignalEvent
+from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.orchestration.policy import SignalPolicy
 from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 from src.signals.evaluation.indicators_helpers import extract_close_price
 from src.signals.service import SignalModule
 from src.signals.strategies.adapters import IndicatorSource
 from src.signals.strategies.base import SignalStrategy, StrategyCategory
+from src.app_runtime.factories import build_entry_policy_registry
+from src.config.models.entry_policy import EntryPolicyConfig
 from src.trading.execution.executor import ExecutorConfig, TradeExecutor
 
 
@@ -78,7 +82,16 @@ class StubTrendBuyStrategy:
             direction="buy",
             confidence=0.80,
             reason="stub_trend_buy",
-            metadata={"close": close, "atr": atr},
+            metadata={
+                "close": close,
+                "atr": atr,
+                MK.ENTRY_INTENT: {
+                    "strategy_name": self.name,
+                    "timeframe": context.timeframe,
+                    "direction": "buy",
+                    "pattern_type": "none",
+                },
+            },
         )
 
 
@@ -106,6 +119,14 @@ class StubIntrabarStrategy:
                 direction="buy",
                 confidence=0.75,
                 reason=f"rsi={rsi:.1f}<30",
+                metadata={
+                    MK.ENTRY_INTENT: {
+                        "strategy_name": self.name,
+                        "timeframe": context.timeframe,
+                        "direction": "buy",
+                        "pattern_type": "none",
+                    }
+                },
             )
         return SignalDecision(
             strategy=self.name,
@@ -201,6 +222,21 @@ class DummyIndicatorSource:
     def list_indicators(self):
         return [{"name": k} for k in self._payload]
 
+    def get_recent_bars(self, symbol, timeframe, *, end_time=None, limit=5):
+        close = extract_close_price(self._payload) or 3000.0
+        base_time = end_time or datetime.now(timezone.utc)
+        return [
+            {
+                "open": close - 0.5,
+                "high": close + 1.0,
+                "low": close - 1.0,
+                "close": close,
+                "volume": 1000.0,
+                "time": base_time - timedelta(minutes=max(limit - index, 1)),
+            }
+            for index in range(max(1, int(limit)))
+        ]
+
 
 class TradingModuleCapture:
     """捕获所有 dispatch_operation 调用的假 TradingModule。
@@ -282,6 +318,20 @@ def _build_executor(
     max_consecutive_failures: int = 3,
 ) -> TradeExecutor:
     from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
+    entry_policy_registry = build_entry_policy_registry(
+        EntryPolicyConfig(
+            enabled_policies=["market"],
+            default_policy="market",
+            strategy_mapping={
+                "stub_trend_buy": "market",
+                "stub_intrabar": "market",
+            },
+            strategy_tf_mapping={},
+            policy_params={},
+            policy_tf_params={},
+            fill_semantics_tie_break="limit_first",
+        )
+    )
 
     return TradeExecutor(
         trading_module=trading_module,
@@ -297,6 +347,9 @@ def _build_executor(
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         account_balance_getter=lambda: 10000.0,
         runtime_identity=_default_runtime_identity(),
+        pending_entry_manager=SimpleNamespace(
+            entry_policy_registry=entry_policy_registry
+        ),
     )
 
 

@@ -13,6 +13,7 @@ from src.signals.service import SignalModule
 from src.signals.strategies.catalog import clone_registered_strategies
 
 from ..data.loader import CachedDataLoader, HistoricalDataLoader
+from ..engine.deployment_gate import BacktestDeploymentGate
 from ..engine.runner import BacktestEngine
 from ..models import (
     BacktestConfig,
@@ -44,6 +45,7 @@ class ParameterOptimizer:
         signal_module_factory: Callable[[Dict[str, Any]], SignalModule],
         regime_detector: Optional[MarketRegimeDetector] = None,
         sort_metric: str = "sharpe_ratio",
+        deployment_gate: Optional[BacktestDeploymentGate] = None,
     ) -> None:
         self._base_config = base_config
         self._param_space = param_space
@@ -52,6 +54,7 @@ class ParameterOptimizer:
         self._signal_module_factory = signal_module_factory
         self._regime_detector = regime_detector or MarketRegimeDetector()
         self._sort_metric = sort_metric
+        self._deployment_gate = deployment_gate
 
     def run(
         self,
@@ -108,6 +111,7 @@ class ParameterOptimizer:
                 signal_module=temp_module,
                 indicator_pipeline=self._pipeline,
                 regime_detector=self._regime_detector,
+                deployment_gate=self._deployment_gate,
             )
             all_bars = warmup_bars + test_bars
             precomputed = temp_engine._precompute_all_indicators(
@@ -165,6 +169,7 @@ class ParameterOptimizer:
                 indicator_pipeline=self._pipeline,
                 regime_detector=self._regime_detector,
                 precomputed_indicators=precomputed,
+                deployment_gate=self._deployment_gate,
             )
             result = engine.run()
             results.append(result)
@@ -343,6 +348,7 @@ class ParameterOptimizer:
                 signal_module=temp_module,
                 indicator_pipeline=self._pipeline,
                 regime_detector=self._regime_detector,
+                deployment_gate=self._deployment_gate,
             )
             all_bars = warmup_bars + test_bars
             precomputed = temp_engine._precompute_all_indicators(
@@ -361,6 +367,7 @@ class ParameterOptimizer:
             indicator_pipeline=self._pipeline,
             regime_detector=self._regime_detector,
             precomputed_indicators=precomputed,
+            deployment_gate=self._deployment_gate,
         )
         base_result = base_engine.run()
         base_sharpe = base_result.metrics.sharpe_ratio
@@ -396,6 +403,7 @@ class ParameterOptimizer:
                     indicator_pipeline=self._pipeline,
                     regime_detector=self._regime_detector,
                     precomputed_indicators=precomputed,
+                    deployment_gate=self._deployment_gate,
                 )
                 result = engine.run()
                 perturbed_sharpes.append(result.metrics.sharpe_ratio)

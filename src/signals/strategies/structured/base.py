@@ -161,6 +161,7 @@ class StructuredStrategyBase:
     required_indicators: Tuple[str, ...] = ()
     htf_required_indicators: Dict[str, str] = {}
     preferred_scopes: Tuple[str, ...] = ("confirmed",)
+    market_data_requirements: Tuple[str, ...] = ()
     regime_affinity: Dict[RegimeType, float] = {}
     promoted_indicator_lineage: Tuple[str, ...] = ()
     research_provenance_refs: Tuple[str, ...] = ()

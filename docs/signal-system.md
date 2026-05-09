@@ -37,10 +37,9 @@ src/signals/
 │   └── wal_queue.py           # WAL 持久化信号队列
 ├── strategies/
 │   ├── base.py                # SignalStrategy Protocol + TimeframeScaler + get_tf_param()
-│   ├── catalog.py             # build_named_strategy_catalog() (当前注册 structured_micro_momentum + structured_price_action)
+│   ├── catalog.py             # build_named_strategy_catalog() (当前只注册 structured_price_action)
 │   ├── structured/            # 结构化策略 (Why/When/Where 三层 + _entry_spec 入场规格)
 │   │   ├── base.py            # StructuredStrategyBase
-│   │   ├── micro_momentum.py  # M1/M5 confirmed-bar 高频原型
 │   │   ├── price_action_m15.py
 │   │   ├── mined_rule.py
 │   │   ├── mined_rule_loader.py
@@ -195,17 +194,18 @@ def evaluate(self, context: SignalContext) -> SignalDecision:
 | 均值回归 | 0.20–0.30 | 1.00 | 0.30–0.40 | 0.60 |
 | 突破/波动率 | 0.30–0.90 | 0.15–0.55 | 1.00 | 0.45–0.65 |
 
-### 3.4 当前 M1/M5 高频主线
+### 3.4 当前普通策略池边界
 
-`structured_micro_momentum` 是当前 M1/M5 日内高频原型：
+当前 `signals` 普通策略池是 PA-only：
 
-- 输入：`bar_stats20`、`price_struct20`、`atr14`、`boll20`、`keltner20`、`adx14`、`volume_ratio20`
-- scope：仅 `confirmed`，即 M1/M5 收盘 bar 触发
-- 输出：标准 `SignalDecision` + `ENTRY_INTENT` + `exit_spec`，入场由 `entry_policy.ini` 映射到 `market`
-- deployment：`demo_validation`，`locked_timeframes=M1,M5`，不具备 live 执行资格
-- tick：不进入交易触发链路，仅作为后续 spread/slippage 与 tick-derived feature 数据资产
+- 注册策略：`structured_price_action`
+- deployment：`candidate`
+- 允许时间框架：`M15,M30`
+- demo/live 账户默认不绑定普通自动策略
 
-目标频率门槛是 `>= 1 trade/day`，目标区间 `3-10 trades/day`；PF 先过 `1.0` 才继续 demo，对 demo 晋级 `active_guarded` 的目标是 `>= 1.2`。
+`martingale / bounded recovery` 不作为普通 `SignalStrategy` 注册，也不通过 `strategy_timeframes` 或 `account_bindings` 启动；它属于 `src/trading/recovery/` 的交易基建验证路径，由 `src.ops.cli.recovery_canary` 显式触发。这样可以用马丁验证订单、风控、状态恢复、trace、监控与 MT5 执行链路，而不把它误认为 alpha 策略。
+
+M1/M5 confirmed-bar 高频策略当前没有正式注册实例。后续如需重新引入，必须先补回策略源码、deployment、entry policy、回测/forward 证据和 demo 绑定，不允许通过 local 覆盖引用已删除策略名。
 
 ### 3.5 新增步骤（结构化策略）
 
@@ -248,7 +248,7 @@ intrabar 指标集合 = 所有满足以下条件的指标并集：
     → indicator manager 的 intrabar pipeline 仅计算该集合中的指标
 ```
 
-**当前自动推导结果**：空集合。`structured_micro_momentum` 与 `structured_price_action` 都是 confirmed-only 策略，`config/signal.ini [intrabar_trading].enabled_strategies` 也保持为空。intrabar 仅作为后续增强支线，不能替代 M1/M5 confirmed 主线。
+**当前自动推导结果**：空集合。`structured_price_action` 是 confirmed-only 策略，`config/signal.ini [intrabar_trading].enabled_strategies` 也保持为空。intrabar 仅作为后续增强支线，不替代 tick-derived 或 recovery 验证链路。
 
 ### 3.8 指标语义分析（intrabar 适用性判断依据）
 
@@ -284,11 +284,11 @@ intrabar 指标集合 = 所有满足以下条件的指标并集：
 ```ini
 # 全局默认（所有 TF 兜底）
 [strategy_params]
-structured_micro_momentum__min_volume_ratio = 1.15
+structured_price_action__min_confidence = 0.60
 
 # M15 特化
 [strategy_params.M15]
-structured_micro_momentum__min_volume_ratio = 1.25
+structured_price_action__min_confidence = 0.65
 ```
 
 **键格式**：双下划线 `__` 分隔策略名和参数名。策略中通过 `get_tf_param(self, "overbought", context.timeframe, default)` 查表。

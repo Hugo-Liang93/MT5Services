@@ -9,6 +9,7 @@ from src.app_runtime.factories import (
     build_entry_policy_registry,
 )
 from src.config.models.entry_policy import EntryPolicyConfig
+from src.trading.entry_policy import EntryPolicyMappingError
 
 
 def _make_config(**overrides) -> EntryPolicyConfig:
@@ -35,7 +36,13 @@ class TestBuildEntryPolicyRegistry:
         with pytest.raises(UnknownEntryPolicyError, match="phantom"):
             build_entry_policy_registry(cfg)
 
-    def test_resolve_returns_market_policy(self):
+    def test_resolve_requires_explicit_mapping(self):
         registry = build_entry_policy_registry(_make_config())
-        policy = registry.resolve("any_strategy", "M15")
-        assert policy.name == "market"
+        with pytest.raises(EntryPolicyMappingError, match="no entry policy mapping"):
+            registry.resolve("any_strategy", "M15")
+
+    def test_explicit_strategy_mapping_resolves_market_policy(self):
+        registry = build_entry_policy_registry(
+            _make_config(strategy_mapping={"any_strategy": "market"})
+        )
+        assert registry.resolve("any_strategy", "M15").name == "market"

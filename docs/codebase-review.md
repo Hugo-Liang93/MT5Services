@@ -1,13 +1,801 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-05-04
+> 最近更新：2026-05-08
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
 
 ---
 
+## 0zj. 2026-05-08 Recovery cleanup 幂等退出与 broker 先关仓归因
+
+### 背景
+
+真实 demo 观察窗口跑出一个竞态：cycle 达到 recovery target 时，runner 根据 position
+snapshot 看到 submitted tickets 仍在场并发起 `close_position`；但 broker/保护止损已经先把仓位关闭，
+导致 close command 返回 `Position not found`。旧语义会先记录 cleanup failed，下一拍再以
+`submitted_exposure_absent` 关闭 cycle，掩盖了真实 outcome。
+
+### 职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `DemoBoundedRecoveryRunner._close_submitted_live_positions` | submitted ticket、position snapshot、close result | recovery runner | 把 `Position not found/already closed` 解释为该 leg `already_closed`，整体 cleanup 可关闭 | 不改变普通人工 close_position 语义 |
+| `RecoveryCycleState.metadata.cleanup_result` | close_result summary | recovery cycle state | `closed_tickets/already_closed_tickets/failed_tickets` | 不存整段 command audit payload |
+| `RuntimeReadModel.recovery_cycle_summary_payload` | cycle metadata + position runtime | 无状态投影 | `cleanup_status/cleanup_reason/already_closed_tickets/failed_cleanup_tickets` | 不从 runner 私有状态反查 |
+
+### 收口
+
+- recovery cleanup 现在把 `Position not found` 视为“已无敞口”的幂等结果：
+  - 单 leg 结果：`already_closed`
+  - 全部 leg 已无敞口：`cleanup_positions_already_absent`
+  - cycle 仍按原始 exit decision 写入 `resident_recovery_target_reached_submitted`
+- `/v1/trade/state.recovery_cycles.items[]` 新增：
+  - `cleanup_status`
+  - `cleanup_reason`
+  - `cleanup_closed_tickets`
+  - `already_closed_tickets`
+  - `failed_cleanup_tickets`
+- 通用 trading application 的 `close_position` 没有改成“找不到也成功”，避免影响人工平仓和普通策略平仓。
+
+### 验证
+
+- 新增 `test_runner_treats_position_not_found_during_cleanup_as_already_closed` 复现真实 demo 竞态。
+- `python -m pytest tests\trading\recovery\test_recovery_runner.py -q`
+  - 33 passed。
+- `python -m pytest tests\readmodels\test_runtime.py tests\api\test_trade_api.py -q`
+  - 95 passed。
+
+---
+
+## 0zi. 2026-05-08 Recovery cycle 退出链路可审查投影
+
+### 背景
+
+真实 demo 马丁验证已经证明 initial / step / close 可以推进，但 `/v1/trade/state`
+只能看到 runner 当前状态与 position 列表，不能直接回答“一个 cycle 为什么退出、哪几条腿参与、
+是否还有残留敞口”。这会让后续跑数小时 demo 时继续依赖人工拼日志和 ticket。
+
+### 职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `TradingStateStore.list_recovery_cycle_states` | recovery cycle state 表 | recovery domain / persistence | cycle 行级事实 | 不关联 position、不解释退出原因 |
+| `TradingStateStore.list_position_runtime_states` | position runtime state 表 | position runtime / persistence | position 行级事实 | 不反推 cycle 汇总 |
+| `RuntimeReadModel.recovery_cycle_summary_payload` | cycle rows + public position rows | 无状态投影 | `/v1/trade/state.recovery_cycles`，含 leg、exit_reason、close_sources、residual tickets | 不下单、不改 cycle、不读私有 runner 字段 |
+| API view model | readmodel payload | 无状态 schema | 显式 `RecoveryCycleStateListView` 合同 | 不依赖 `extra=allow` 隐式字段 |
+
+### 收口
+
+- `/v1/trade/state` 新增 `recovery_cycles`：
+  - `status_counts`
+  - `exit_reason_counts`
+  - `items[].exit_reason`
+  - `items[].submitted_tickets`
+  - `items[].close_sources`
+  - `items[].open_position_count/open_position_tickets`
+  - `items[].legs[]`，按 `initial -> step` 排序并暴露 ticket、volume、entry/close、close_source。
+- cycle 与 position 的关联只使用正式持久化字段：
+  - position `metadata.recovery_cycle_id`
+  - position `signal_id/comment` 中的 `recovery:{cycle_id}:initial/step`
+  - 不读取 runner 私有属性，不把命令审计查询塞进 trade state 聚合。
+- 若 cycle 查询端口不可用或查询失败，readmodel 返回结构化 `source_status`，不让 API 崩溃。
+
+### 验证
+
+- 新增读模型测试覆盖 closed recovery cycle 的 initial/step leg、`target_reached`
+  退出原因、`history_deals/close_position` 关闭来源、submitted tickets 与无残留 open ticket。
+
+---
+
+## 0zh. 2026-05-07 常驻 recovery runner 成本感知与双向方向合同
+
+### 触发
+
+真实 demo 跑马丁后暴露两个业务问题：初始方向固定 BUY，且 `recovery_target_points`
+只按裸价格距离判断，未扣除点差、滑点预算和佣金预算。结果是 tick-derived runner 虽然链路能推进，
+但交易合同本身不具备实盘可解释性。
+
+### 职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `src.trading.recovery.entry_policies.RecoveryDirectionPolicy` | `RecoveryPolicy` + public `TickFeatureSnapshot` | 无状态 | `buy/sell/skip` 方向决策，支持 `fixed/auto` | 不下单、不读 market cache |
+| `RecoveryCostGate` | recovery policy + tick feature spread/bid/ask | 无状态 | spread 上限、成本预算、最小净利润门槛 | 不修改风控硬限制 |
+| `RecoveryExitModel` | cycle state + bid/ask snapshot | 无状态 | 按净点数达到目标才 `close_cycle` | 不用裸 target price 代替成本口径 |
+| `RecoveryDecisionAnalytics` | runner 决策记录 | runner 内存只读投影 | action/reason/direction/cost/净退出统计与最近决策 | 不参与交易判断、不写数据库 |
+| `BoundedRecoveryController` | cycle state + market snapshot | recovery domain state machine | 继续负责加仓状态机；退出判断委托给正式 exit model | 不拥有方向或成本策略 |
+| `DemoBoundedRecoveryRunner` | tick feature snapshot + durable cycle state | runner runtime state | 编排方向、成本、dispatch retry、state record、status | 不自算 tick feature；不绕过 trading port / pre-trade |
+
+### 收口
+
+- 新增 `direction_mode=auto` 后，runner 可基于 `price_change_points` 与 `buy/sell_pressure`
+  选择 BUY 或 SELL；信号弱、压力冲突或缺失时返回结构化 hold，不会为了“继续跑”强行下单。
+- 新增 `max_entry_spread_points/slippage_budget_points/commission_points/min_net_profit_points`
+  成本合同；spread 过宽或目标净值不足时在 recovery 域阻断初始入场。
+- cycle 退出由 `RecoveryExitModel` 按 `net_profit_points = favorable_points - slippage - commission`
+  判断，避免“价格到了但扣成本后仍无效”的退出。
+- runner `status()` 新增 `decision_analytics`，可以直接查看 `direction_policy_reason_counts`、
+  `cost_gate_reason_counts`、`cost_gate_allowed_counts`、`net_exit` 与 `recent_decisions`，
+  用于区分“策略不该交易”“参数太严/太松”“成本环境不可交易”。
+- `config/risk.ini` 默认仍关闭常驻 runner；`demo-main/risk.local.ini` 也保持
+  `enabled=false`，只预置 auto direction / cost 参数，等待下一轮显式重启与小额度真实 demo 验证。
+
+### 验证
+
+- `python -m pytest tests\trading\recovery tests\config\test_risk_config.py tests\app_runtime\test_recovery_runtime_layer.py tests\app_runtime\test_tick_derived_wiring.py tests\app_runtime\test_runtime_monitoring_registration.py tests\readmodels\test_runtime.py tests\api\test_monitoring_ready.py -q`
+  - 116 passed。
+- `python -m pytest tests\trading\recovery\test_recovery_decision_analytics.py tests\trading\recovery\test_recovery_runner.py::test_runner_auto_direction_holds_when_tick_features_are_not_actionable tests\trading\recovery\test_recovery_runner.py::test_runner_cost_gate_holds_initial_when_spread_is_too_wide tests\trading\recovery\test_recovery_runner.py::test_runner_closes_dry_run_cycle_when_target_is_reached -q`
+  - 5 passed；覆盖方向拒绝、成本拒绝、净退出统计进入 runner status。
+- `python -m pytest tests\readmodels\test_runtime.py tests\api\test_monitoring_ready.py tests\app_runtime\test_recovery_runtime_layer.py -q`
+  - 42 passed；确认 `/v1/trade/state.recovery_runner` 透传新增 analytics 字段不破坏 ready/readmodel。
+- `python -m compileall src\trading\recovery src\config tests\trading\recovery tests\config\test_risk_config.py`
+  - exit 0。
+- 当前 demo 服务未重启也未恢复下单；`/v1/trade/state.trade_control` 仍为
+  `auto_entry_enabled=false`、`close_only_mode=true`，`recovery_runner.enabled=false/running=false`。
+  `/v1/account/positions?symbol=XAUUSD` 返回 `count=0`。
+
+### 剩余业务判断
+
+| 项 | 当前判断 | 下一步 |
+|---|---|---|
+| 真实 demo 马丁 | 当前代码合同已补齐，但运行中服务尚未加载本轮代码，且 runner 仍关闭 | 下一步先重启 demo-main 验证 ready，再用极小额度、低频 quota 开启 runner |
+| 策略有效性 | 方向与成本只是工程准入，不等于 alpha 有效 | 需要记录 auto direction 决策分布、spread 拒绝率、净点数退出率，再决定是否继续优化马丁参数 |
+| 风控放开 | 可以为了验证频次适度放开 demo quota，但不能取消 `demo_only`、ticket cleanup、cost gate、data fail-closed | 若真实 demo 恢复，应保留 close-only 快速回退与 max_cycles_per_day 限制 |
+
+---
+
+## 0zg. 2026-05-06 常驻 tick-derived bounded recovery runner 接入 demo 验证链路
+
+### 触发
+
+手工 recovery canary 已验证交易执行、trace、cleanup 与风控合同，但它仍是一次性 CLI。
+要用马丁验证“高频 tick 路线是否能持续推进”，需要一个常驻、可监控、可 ready
+判定的应用服务，而不是把马丁伪装成普通 `SignalStrategy` 或靠人工反复触发 CLI。
+
+### 职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `TickFeatureEngine` / `TickFeatureBus` | market service 的 tick batch 事件 | tick feature runtime | `TickFeatureSnapshot` 正式事件出口，可多消费者订阅 | 不把 feature 消费者耦合到 market service 私有 cache |
+| `DemoBoundedRecoveryRunner` | public `TickFeatureSnapshot` + durable recovery state | `TradingStateStore.recovery_cycle_states` | demo-only dry-run recovery cycle 推进、`status()` health snapshot、guarded trading-port dry-run audit | 不进入普通 signal runtime；不真实下单；不自算 tick feature |
+| `build_recovery_runtime_layer()` | `RiskConfig.recovery_runtime_runner` + container public ports | app runtime | 启用时创建 runner，并强制接入共享 tick feature runtime | 不在 executor / 无市场数据实例静默启用 |
+| `RuntimeReadModel.recovery_runner_summary()` | runner `status()` | readmodel projection | `/v1/trade/state.recovery_runner` 可审查 active cycle、processed snapshots、stalled/error | 不读取 runner 私有字段 |
+| `/v1/monitoring/health/ready` | readmodel recovery runner summary | ready probe | 启用 runner 后 `running=false` 或 `stalled=true` 会让 ready 变 503 | 不把线程存活等同于 recovery 链路可交易 |
+
+### 移除 / 收口
+
+- 马丁验证不再依赖普通策略绑定或 confirmed/intrabar 信号队列。
+- tick feature runtime 抽为共享 builder phase，由 signal runtime 和 recovery runner 通过正式 listener 订阅。
+- tick feature 点值与点差阈值进入 `config/app.ini` 的正式合同：默认外汇 `point_size=0.00001`，XAUUSD 通过 `[tick_feature_point_size] XAUUSD=0.01` 覆盖，避免黄金点差被误判为 `spread_wide`。
+- `RuntimeReadModel.tick_feature_health_summary()` 现在会把启用的 recovery runner 品种纳入 required tick-feature health；不再出现 runner 实际依赖 tick feature、但 `/v1/trade/state.tradability.tick_feature_health=not_required` 的观测缺口。
+- MT5 `copy_ticks_from` 在当前 demo broker 返回的 tick market time 停留在 2026-04-27；tick feature runtime 已通过正式 `QuoteEventBus` 接入实时 quote 事件。quote 事件只作为 tick-feature 输入源，不写入 ticks 表，也不改变原始 tick 持久化语义。
+- demo-main 本机 `risk.local.ini` 新增 `[recovery_runtime_runner] enabled=true dry_run=true demo_only=true`，共享 `config/risk.ini` 默认仍关闭。
+
+### 验证
+
+- `python -m pytest tests\trading\recovery tests\app_runtime\test_recovery_runtime_layer.py tests\app_runtime\test_tick_derived_wiring.py tests\app_runtime\test_runtime_monitoring_registration.py tests\app_runtime\test_runtime_cleanup.py tests\readmodels\test_runtime.py tests\config\test_risk_config.py tests\api\test_monitoring_ready.py -q`
+  - 93 passed。
+- `python -m pytest tests\market\test_tick_feature_engine.py tests\config\test_config_centralization.py tests\readmodels\test_runtime.py -q`
+  - 43 passed；覆盖 XAUUSD symbol point-size override、recovery runner required tick-feature health 与集中配置读取。
+- demo-main 重启后 `/v1/monitoring/health/ready` 返回 `ready`，且 checks 包含并通过 `tick_feature_health` 与 `recovery_runner`。`/v1/trade/state.recovery_runner` 显示 `processed_snapshots` 推进，`decision_counts.open_initial=1/open_step=1/close_cycle=1`，`last_execution_status=dry_run`，无 MT5 持仓/挂单残留。
+
+### 剩余业务判断
+
+| 项 | 当前判断 | 下一步 |
+|---|---|---|
+| 真实 demo 下单 | 常驻 runner 第一阶段只允许 dry-run；这能验证 tick feature、cycle state、execution audit 与 monitoring，但不会产生真实订单 | 若要真实 demo runner，下一个设计步应新增显式 `submit_initial_order/submit_recovery_order` 审批合同、session quota reservation、cleanup verifier，再放开 |
+| 高频能力 | 当前能持续消费 tick-derived feature snapshot；不是 M1/M5 收盘信号路线 | 继续用 `/v1/trade/state.recovery_runner`、`ready.details.recovery_runner`、tick feature health 与 trace 审计观察是否 stale/backlog/error |
+
+---
+
+## 0zf. 2026-05-06 PA-only 策略池收口：移除误入 demo 路由的 micro momentum
+
+### 触发
+
+demo recovery canary 复核时发现本机有效路由仍包含 `demo_main:structured_micro_momentum`。这与当前“除 PA 外普通策略已清空，用 bounded recovery / martingale 验证交易基建”的业务目标冲突；`structured_micro_momentum` 是 M1/M5 confirmed-bar prototype，不是 PA，也不是 recovery/martingale。
+
+### 职责边界
+
+| 模块 | 当前职责 | 本次收口 |
+|---|---|---|
+| `src.signals.strategies.catalog` | 普通 signal 策略目录 | 仅注册 `structured_price_action`；不再暴露 `StructuredMicroMomentum` |
+| `config/signal.ini` / `signal.local.ini` | 策略部署、账户绑定、本机覆盖 | 删除 micro momentum deployment/TF/params；`demo_main` 普通策略绑定为空；本机 `auto_trade_enabled=false` |
+| `config/entry_policy.ini` | 普通策略入场策略映射 | 删除 `structured_micro_momentum = market`，避免已删除策略仍有入场合同 |
+| `src.trading.broker.comment_codec` | 已注册策略 broker comment alias | 只保留 PA alias；已删除策略不占当前 alias 表 |
+| `src.trading.recovery` / `src.ops.cli.recovery_canary` | bounded recovery / martingale 验证 | 作为交易基建 canary 显式触发，不伪装成普通 signal 策略 |
+
+### 设计结论
+
+- `structured_micro_momentum` 已从当前普通策略池移除；后续如果要重新做 M1/M5 confirmed-bar 策略，必须作为新策略重新走源码、部署合同、entry policy、回测、demo 绑定与文档验收。
+- 马丁验证不应进入 `strategy_timeframes/account_bindings`，否则会把资金管理周期误建模成 alpha 策略。正确路径是 recovery controller + canary + trace + risk guard。
+- demo 服务重启后应看到普通自动策略为空；这不是服务空转，而是刻意防止非 PA 残留策略自动下单。交易基建验证继续通过 recovery canary 执行。
+
+### 验证
+
+- `python -m pytest tests\config\test_signal_config.py tests\signals\test_signal_module.py tests\app_runtime\test_entry_policy_phase.py tests\ops\test_live_preflight.py tests\trading\test_admission_service.py tests\trading\test_state_store.py -q`
+  - 76 passed；确认策略目录、默认 signal config、entry policy、preflight/admission/state store 不再正向依赖 `structured_micro_momentum`。
+- `python -m pytest tests\trading\recovery tests\ops\test_recovery_canary_cli.py tests\persistence\test_trade_command_audit_repo.py tests\trading\runtime\test_trade_frequency.py -q`
+  - 56 passed；确认 recovery/martingale canary、dry-run 审计与交易限频仍可用。
+- `python -m compileall src\signals\strategies src\trading\broker\comment_codec.py src\ops\cli\recovery_canary.py src\trading\recovery tests\signals\test_signal_module.py tests\config\test_signal_config.py tests\ops\test_live_preflight.py tests\trading\test_admission_service.py tests\trading\test_state_store.py`
+  - exit 0。
+- `python -m src.ops.cli.live_preflight --environment demo --auto-launch-terminal`
+  - 22 OK / 1 WARN / 0 FAIL / 3 DIFF；`Effective strategy routing` 为 `auto_trade_enabled=false; execution routing not required`。
+- demo-main 已重启到 PID 12424；`/v1/monitoring/health/ready` 返回 `ready`，`/v1/signals/runtime/status` 返回 `target_count=0`、`configured_strategies=[]`、`scheduled_strategies=[]`、`executor_enabled=false`。
+- `python -m src.ops.cli.recovery_canary --environment demo --instance demo-main --auto-launch-terminal --live-cycle --max-steps 1 --step-distance-points 1 --recovery-target-points 5`
+  - 返回 `status=dry_run`；初始 `0.01` 与 recovery step `0.02` 风控均 allow，`guard.allowed=true`，`projected_total_volume=0.03`，`dry_run_cycle_finalization.status=closed`。
+- demo MT5 复核：`/v1/positions?symbol=XAUUSD` 与 `/v1/orders?symbol=XAUUSD` 均为 `count=0`；DB 中 open `tick_martingale_probe` recovery cycle 数为 0。
+
+---
+
+## 0zd. 2026-05-05/06 Tick-derived 交易路线：正式主链基建已落地，生产策略仍需 replay + demo canary
+
+### 触发
+
+确认后续高频方向不是 M1/M5 confirmed-bar，也不是每 tick 直接下单，而是 `tick-derived`：由 tick/quote 生成短窗口特征快照，策略消费特征快照后走现有 execution-intent 执行链。为避免把 tick 路线补丁式塞进 intrabar，本轮先完成设计审查并写入 spec，随后按正式职责边界落地基建。
+
+正式设计文档：`docs/superpowers/specs/2026-05-05-tick-derived-trading-route-design.md`。
+实施计划：`docs/superpowers/plans/2026-05-05-tick-derived-trading-route.md`。
+
+### 架构结论
+
+当前已具备 tick-derived 基建主链：
+
+`MT5 ticks -> MarketDataService.extend_ticks -> TickBatchEvent -> TickFeatureEngine -> TickFeatureSnapshot -> SignalRuntime tick_derived -> execution intent -> admission -> risk -> executor`
+
+这代表系统可以承载 tick-derived 策略的工程链路，但仍不能宣称“已有可上线 tick 策略”。生产策略启用必须额外满足：同策略、同 symbol、同 session profile 的 tick replay 报告通过；demo canary 中 `tick_feature_health`、trace、成交侧价格和 spread 成本可解释。
+
+### 已完成职责变化
+
+| 模块 | 状态拥有者职责 | 本轮收口 |
+|---|---|---|
+| `src.clients.mt5_market.Tick` | MT5 原始 tick 字段 | 保留 `bid/ask/last/volume/time/time_msc/flags`，`price` 只作为派生属性 |
+| `src.persistence.schema.ticks` / `MarketRepository` | 持久化 tick 合同 | `ticks` 表新增 `bid/ask/last/flags`，insert/read 使用 9 字段合同；旧 4 字段写入测试已迁移，不保留兼容 tuple |
+| `MarketDataService` / `TickBatchEventBus` | 原始 tick cache 与公开事件端口 | `extend_ticks()` 在更新 cache 后发布不可变 `TickBatchEvent`，feature 层不读取私有 cache |
+| `src.market.tick_features` | tick rolling window、feature snapshot、feature health | 新增 `TickFeatureCalculator/Engine/Bus/HealthStore`；live/replay 共用计算器 |
+| `SignalRuntime` | scope-specific 信号调度 | `tick_derived` 成为 confirmed/intrabar 之外的一等 scope，独立 queue、drop、processed、failed、last_snapshot 状态 |
+| `RuntimeReadModel` / `TradeAdmissionService` / `TradeExecutor` | 交易准入健康事实消费 | `tick_feature_health` 与 `market_data_health` 分离；只对 `scope=tick_derived` 的意图 fail-closed；缺 bid/ask 的 `quote_side_missing` 直接 blocking |
+| `src.backtesting.tick_replay` | tick replay 数据加载、bid/ask 执行模拟、覆盖报告 | 支持按 `time_msc` 重放，buy market 用下一 tick ask、sell market 用下一 tick bid，limit 与 SL/TP 按侧价判断，同毫秒 SL/TP 冲突取不利方向；覆盖率只统计具备 bid/ask 的可成交 tick |
+| `BackgroundIngestor` | MT5 fetch timeout/circuit | backfill OHLC 已接入同一 `_call_mt5_with_timeout()`，不再绕过采集熔断 |
+
+### 目标职责边界
+
+| 模块 | 状态拥有者职责 | 不做 |
+|---|---|---|
+| `BackgroundIngestor` | MT5 fetch、raw lane health | 不算 tick 特征、不评估策略 |
+| `MarketDataService` | 原始 tick/quote cache + tick batch 公开事件端口 | 不暴露私有 cache 给策略 |
+| `TickFeatureEngine` | rolling tick window、`TickFeatureSnapshot`、feature health | 不下单、不持有策略状态 |
+| `TickFeatureSnapshotBus` | 有界 feature snapshot 广播 | 不持久化业务判断 |
+| `SignalRuntime` | `tick_derived` scope 队列、评估、状态统计 | 不复用 intrabar 语义 |
+| `TradeExecutor` | 统一执行和 pre-trade fail-closed | 不知道 tick feature 内部计算 |
+| `TickReplayEngine` | tick/quote 顺序回放、保守 bid/ask 执行模拟 | 不连 MT5、不用 wall-clock、不用 OHLC 顺序假设 |
+
+### 验收口径
+
+- 已满足：tick-derived 策略只消费 `TickFeatureSnapshot`，不读 `MarketDataService` 私有 cache。
+- 已满足：`TickFeatureCalculator` 在 live/replay 共用。
+- 已满足：`tick_feature_health` 能进入 ready、tradability、admission 和 executor pre-trade，并只阻断 tick-derived 意图。
+- 已满足：Replay 能用 tick 顺序和 bid/ask 模拟 market/limit 入场、SL/TP，且同毫秒冲突按不利方向。
+- 已满足：last-only / price-only tick 不会被标记为可交易健康，也不会计入 tick replay 可成交覆盖率。
+- 已满足：tick-derived burst 有独立 SignalRuntime queue/backpressure，不复用 intrabar。
+- 待策略落地时补齐：trace/readmodel 需继续确保单笔信号能定位触发交易的 tick feature window 和 snapshot metadata。
+
+### 验证
+
+- 完整目标回归：`tests\clients\test_mt5_market_ticks.py`、`tests\persistence\test_market_tick_schema.py`、`tests\data\test_data_layer.py`、`tests\core\test_data_integrity_fixes.py` 指定 tick 用例、`tests\integration\test_system_pipeline_flow.py` 指定采集链路用例、`tests\ingestion\test_ingestor_mt5_timeout.py`、`tests\market\test_tick_event_bus.py`、`tests\market\test_tick_feature_calculator.py`、`tests\market\test_tick_feature_engine.py`、`tests\signals\test_tick_derived_runtime.py`、`tests\signals\test_signal_runtime.py`、`tests\app_runtime\test_tick_derived_wiring.py`、`tests\readmodels\test_tick_feature_health.py`、`tests\trading\test_tick_feature_pretrade.py`、`tests\api\test_monitoring_ready.py`、`tests\backtesting\test_tick_replay.py`
+  - 97 passed（含旧 tick 合同迁移、bid/ask 缺失阻断、replay coverage、公开 health projection 回归）。
+- `python -m pytest tests\backtesting\test_tick_replay.py -q`
+  - 8 passed。
+
+### 未决项
+
+- 旧历史 tick 因缺 bid/ask，不能直接作为严肃 replay 数据源；需选择排除旧数据或与 quote history 组合使用。
+- 第一版节奏固定为 `5s window / 1s rolling`，后续是否加入 1s/3s/10s 多窗口必须等 replay 基线稳定后再扩展。
+- 还没有新增生产 tick-derived 策略；任何策略上线前必须先补策略级 replay、demo canary 和 trace metadata 验收。
+
+---
+
+## 0ze. 2026-05-06 Bounded Recovery / Martingale 架构验证：资金管理状态机独立于策略域
+
+### 触发
+
+用户希望先升级架构，并用马丁类高频策略验证当前 tick-derived 主链是否能承载高频资金管理节奏。审查结论是：马丁不能作为普通策略反复发 `buy/sell` 信号处理，否则会把方向判断、资金递增、风险上限和恢复周期状态混在 `signals` 域里，后续 live/demo 无法审计“为什么这一次加仓是第几层、由哪个周期触发、是否超过总手数上限”。
+
+### 本轮职责收口
+
+| 模块 | 状态拥有者职责 | 本轮变化 |
+|---|---|---|
+| `src.signals.orchestration` | tick-derived 信号事件发布 | 修复 `tick_derived` actionable decision 的发布语义：`tick_derived_buy/sell` 会发布正式 `SignalEvent`，不再只完成内部评估 |
+| `ExecutionIntentPublisher` | 可执行信号到账户 intent 的路由 | `tick_derived_*` 纳入正式 actionable scope，能进入 `execution_intents`；仍受 deployment + account binding 约束 |
+| `src.trading.recovery` | bounded recovery / martingale 资金管理状态机 | 新增 `RecoveryPolicy`、`RecoveryCycleState`、`RecoveryMarketSnapshot`、`RecoveryDecision` 与 `BoundedRecoveryController`；只做纯决策，不依赖 MT5/DB/executor |
+| `src.backtesting.tick_replay.recovery` | tick 级 path-dependent recovery 验证 | 新增 `TickRecoveryReplayRunner`，用 bid/ask tick 重放初始仓、恢复加仓、目标平仓、缺 bid/ask 阻断、总手数/层数上限；报告区分 `tick_count`、`tradable_tick_count` 与 `tick_coverage` |
+| `RecoveryCanaryGate` | replay 报告到 demo canary 的正式准入 | 用 replay 覆盖率、闭环结果、blocked ratio、policy hard cap 与 canary dry-run 状态输出 allow/block reasons；禁止直接从 replay 进入真实下单 |
+| `src.persistence.schema.recovery_cycle_states` / `TradingStateRepository` | recovery cycle 持久化事实 | 新增账户级 `recovery_cycle_states` 表与 repository 读写，主键为 `(account_key, cycle_id)`，不允许多账户状态串写 |
+| `TradingStateStore` | 交易运行状态公开端口 | 新增 `record_recovery_cycle_state()`、`list_recovery_cycle_states()`、`load_open_recovery_cycle()`；强制 `account_key`，状态恢复不读取私有 DB/模块细节 |
+| `RecoveryExecutionPlan` / `PositionScalingIntent` | recovery 决策到执行前合同 | `open_step` 才生成正式扩仓意图；`hold/block/close_cycle` 不生成执行意图，避免策略用普通信号模拟马丁加仓 |
+| `RecoveryPreTradeGuard` | recovery 扩仓执行前硬门禁 | 在 executor 消费前重复校验 policy enabled、账户/周期/方向一致、下一层索引、单次手数、总手数、最大层数；不依赖 MT5 或 executor 私有状态 |
+| `TradingFlowTraceReadModel` | 交易生命周期投影 | 通过 `source_signal_id` 聚合 `recovery_cycle_states`，在 facts、identifiers、summary、timeline 中展示 recovery cycle，不再只能从普通 signal/order/position 推断 |
+| `RecoveryExecutionAdapter` | recovery intent 到交易端口的正式适配 | 只消费 `PositionScalingIntent`，先跑 `RecoveryPreTradeGuard`，再按 `RecoveryExecutionCanaryPolicy` 决定是否调用 `dispatch_operation("trade")`；生成 `recovery:*:step:*` request/action id 与 recovery metadata |
+| `TradeExecutor.execute_recovery_scaling_intent()` | executor 显式 recovery 消费入口 | 不改 `process_event()` 普通信号路径；只有调用专用入口才会消费 recovery scaling intent |
+| `risk.ini[recovery_execution_canary]` / `RiskConfig.recovery_execution_canary` | recovery 下单 canary 开关 | 默认 `enabled=false`、`dry_run=true`；实例级 local 必须显式开启才能进入 demo/live canary；market canary 必须显式配置 `protective_stop_points`，adapter 由此生成保护性 SL；直接 dict 输入也按显式布尔解析，避免 `"false"` 被非空字符串误判为开启 |
+| `TradingFlowTraceReadModel` / `TradeCommandAuditRepository` | recovery trace 审计关联 | `source_signal_id` / `trace_id` 现在能同时关联 recovery cycle 与 `execute_trade` 审计，避免 `by-trace` 只看到审计、`by-signal` 只看到 cycle |
+| `src.trading.recovery.canary` / `src.ops.cli.recovery_canary` | demo recovery canary 编排入口 | 新增 demo-only 编排服务与 CLI：MT5 ticks → replay → gate → recovery cycle state → `RecoveryExecutionAdapter` → trade command audit；默认只允许 `dry_run=true`，真实 demo 下单必须通过 `--live-cycle --submit-initial-order` 或额外 `--submit-recovery-order` 显式打开，并自动清理全部 canary ticket |
+| `src.monitoring.health.checks` | market data lane stale 监控指标 | `market_data_lane_stale` 改为 required/critical lane 聚合事实；optional tick stale 保留为 `market_data_stale_count` warning，不再把 monitoring overall 错拉到 critical |
+
+### 业务判断
+
+- 当前架构可以开始承载“有上限的 recovery/martingale 验证”，但不支持、也不应支持无限马丁。
+- 第一阶段仍不接入常驻 demo/live 自动下单。原因是 recovery cycle 是资金管理域，需要先证明：tick 顺序、spread 成本、最大层数、最大单次手数、最大总手数、最小层间隔、目标恢复价都可解释；真实 demo 验证只能通过显式 canary CLI 单次执行。
+- recovery cycle 持久化、scaling intent 合同、trace 投影、recovery hard cap、replay-to-canary gate、executor 显式入口与 canary 配置已补齐，可以作为 demo canary 前置基建；下一步仍必须做实例级 canary 编排与真实 demo 记录，不能让策略通过普通 signal 连续发单模拟马丁。
+
+### 验收口径
+
+- 已满足：tick-derived actionable 信号能发布并进入 execution intent publisher。
+- 已满足：bounded recovery controller 在缺 bid/ask、超过层数、超过总手数、冷却未到时返回结构化 `block/hold`，不返回普通市价单兜底。
+- 已满足：tick replay 能验证 path-dependent 加仓与目标平仓，成交侧价格使用 bid/ask。
+- 已满足：recovery replay 报告能暴露 bid/ask 可成交 tick 覆盖率，`RecoveryCanaryGate` 能把 replay 结果转成 dry-run canary 准入判断。
+- 已满足：`recovery_cycle_states` 按 `account_key + cycle_id` 持久化，`TradingStateStore` 提供正式读写端口。
+- 已满足：已定义 `PositionScalingIntent` / `RecoveryExecutionPlan`，只有带 `entry_price` 的 `open_step` 能产生扩仓意图。
+- 已满足：`RecoveryPreTradeGuard` 在执行前重复执行 recovery 硬上限，不信任上游 controller 单点判断。
+- 已满足：trade trace 能按 `source_signal_id` 投影 recovery cycle，展示 `recovery_cycle_ids`、状态计数和 `recovery.*` timeline 节点。
+- 已满足：`RecoveryExecutionAdapter` 会生成正式 trade payload，经 `TradingModule.dispatch_operation("trade")` 进入 `execute_trade` 审计，request payload 保留 recovery scope/cycle/step/source signal。
+- 已满足：market recovery canary 缺 `protective_stop_points` 会结构化拒绝；配置后 payload 携带保护性 SL，满足 `market_order_protection=sl`。
+- 已满足：`TradeExecutor` 提供 `execute_recovery_scaling_intent()` 专用入口，普通 `process_event()` 不识别 recovery，避免把资金管理混进信号分支。
+- 已满足：`risk.ini[recovery_execution_canary]` 默认关闭且 dry-run，运行时需显式配置才能启用。
+- 已满足：runbook 已补 recovery canary 步骤、dry-run 审计、trace 验收和 `active_guarded` 前置门槛。
+- 已验证：demo 环境预检通过；demo DB schema 已执行 `init_schema()` 补齐 `recovery_cycle_states`；诊断 dry-run 产生 `precheck_trade` 与 `execute_trade` 审计，其中 `execute_trade` 审计为 `recovery:demo-recovery-canary-1778002990:step:1`，并可用 `by-trace/by-signal` 同时反查 recovery cycle 与 trade audit。
+- 已修正：根目录 `risk.local.ini` 曾让 demo-main 有效风控变成 `max_volume_per_order=0.1 / max_volume_per_symbol=0.3`；本机 `config/instances/demo-main/risk.local.ini` 已显式覆盖为 `0.02 / 0.03`、`data_unavailable_policy=fail_closed`，并仅开启 recovery dry-run canary。
+- 已修正：默认 `RecoveryCanaryGatePolicy.max_blocked_ratio=0.05` 过去会把达到硬上限后的 `max_steps_reached` 计入坏数据 blocked ratio；现在 `max_steps_reached / max_next_volume_exceeded / max_total_volume_exceeded` 只计入 ignored blocked details，坏数据 blocked ratio 仍保持严格。
+- 已验证：`python -m src.ops.cli.recovery_canary --environment demo --auto-launch-terminal --start 2026-05-05T13:04:58+00:00 --tick-limit 5000 --min-tick-count 50 --min-tick-coverage 0.95 --step-distance-points 10 --recovery-target-points 5 --max-steps 1` 返回 `status=dry_run`；replay `tick_coverage=1.0`、`closed=true`、`max_total_volume=0.03`；执行 payload 为 `0.02` lot buy，带保护性 SL，`execution_scope=recovery_scaling`。
+- 已验证：dry-run 产生的 `trade_frequency_reservation_id=f22adca858bc41f4a6e6c6173ce2d9ad` 最终状态为 `released`，不会计入 active/committed 限频额度。
+- 已验证：`trace_by_trace_id("demo-recovery-canary-1778027737615-signal")` 可反查 `operation_ids=["recovery:demo-recovery-canary-1778027737615:step:1"]` 与 `recovery_cycle_ids=["demo-recovery-canary-1778027737615"]`。
+- 已验证：`--live-cycle` 入口已补齐“当前 quote 建初始 recovery cycle → 当前 tick 扩仓评估”的真实 canary 路径。默认仍为初始仓 dry-run；只有显式传 `--submit-initial-order` 时才提交 demo 初始仓，扩仓继续保持 dry-run。
+- 已验证：demo 真实初始仓 canary 已提交 XAUUSD buy `0.01`，ticket `297390803`，fill `4624.34`，随后通过交易模块 operator close 成功；复核 MT5 后 XAUUSD 持仓/挂单均为空。
+- 已验证：`--submit-initial-order` 现在默认自动清理初始 demo 仓，只有显式 `--keep-initial-open` 才保留仓位；cleanup 成功会记录 `recovery_cycle_states.status=closed`，并用 `action_id=recovery:<cycle_id>:close_initial` 进入 operator close 审计。
+- 已验证：demo 自动清理 canary 已提交 XAUUSD buy `0.01`，ticket `297441786`，fill `4634.76`，随后 CLI 自动 close 成功；复核 MT5 后 XAUUSD 持仓/挂单均为空，cycle `demo-recovery-canary-1778033631433` 状态为 `closed/canary_initial_cleanup_closed`。
+- 已修正：`--live-cycle --submit-recovery-order` 可在 demo 显式提交一笔受控 recovery 扩仓；该路径要求同时提交 initial、禁止 `--keep-initial-open`、强制 `--max-steps 1`，并把初始手数/扩仓手数/总暴露限制在 `0.01/0.02/0.03`。恢复单提交成功后，canary 会先记录 `canary_recovery_step_submitted` 的 step 状态，再通过 `close_initial` 与 `close_step_1` 自动清理全部 canary ticket，最后记录 `canary_recovery_cycle_cleanup_closed`。
+- 已修正：trade trace 查询现在匹配 `request_payload/response_payload.request_context.trace_id`，因此 `trace_by_trace_id("demo-recovery-canary-1778033631433-signal")` 可同时反查 `initial`、`step:1`、`close_initial` 三个 operation，并在 timeline 中展示 `trade.close_position` 与 `recovery.closed`。
+- 已修正：`TradingFlowTraceReadModel` 现在把 `last_stage=recovery.closed` 推导为 `summary.status=completed`；真实 demo recovery canary `demo-recovery-canary-1778075189332-signal` 已验证 `execute_trade=2`、`close_position=2`、`recovery_cycle_status_counts.closed=1`、order tickets `299063944/299063962`，trace summary 为 `completed/recovery.closed`。
+- 已修正：optional `tick:XAUUSD` lane 因 broker tick market time 停留在历史值会保持 `stale=true`，但该 lane `required=false/severity=warning`；监控现在只把它计入 advisory `market_data_stale_count=warning`，`market_data_lane_stale.latest=0/status=healthy`，overall 从 `critical` 降为 `warning`。
+- 已修正：真实初始仓 cleanup 若返回失败，CLI 会通过 TradingModule 公开 `get_positions()` 端口二次只读核对 ticket；若 ticket 仍在或核对失败，会输出顶层 `critical_alerts`，并把 recovery cycle 写成 `blocked`，`metadata.cleanup_alert` 保留 `cycle_id/source_signal_id/ticket/symbol/account_key`，避免清仓失败被普通 CLI 失败码吞掉。
+- 已修正：`RecoveryExecutionAdapter` 与 `open_initial_recovery_cycle()` 现在把 `PreTradeRiskBlockedError` 以及 dry-run 返回体内的 `precheck.executable=false` 统一收口成结构化 `pre_trade_risk` block，不再 traceback，也不再在初始 dry-run 被风控阻断时记录假的 recovery cycle。
+- 已修正：交易限频持久化统计过去会把 `dry_run=true` 的 `execute_trade` 审计计入 `max_trades_per_hour`，导致 canary 自己污染小时额度；现在 `TradeCommandAuditRepository.count_successful_trade_commands_since()` 与 quota reservation 锁内计数都排除 dry-run 审计，真实交易额度只由真实提交和 active/committed reservation 消耗。
+
+### 验证
+
+- `python -m pytest tests\trading\test_execution_intents.py::test_execution_intent_publisher_routes_tick_derived_signal tests\signals\test_tick_derived_runtime.py::test_tick_derived_actionable_decision_publishes_signal_event tests\trading\recovery\test_bounded_recovery_controller.py tests\backtesting\test_tick_replay_recovery.py -q`
+  - 7 passed。
+- `python -m pytest tests\trading\test_execution_intents.py tests\signals\test_tick_derived_runtime.py tests\trading\test_tick_feature_pretrade.py tests\backtesting\test_tick_replay.py tests\backtesting\test_tick_replay_recovery.py tests\trading\recovery\test_bounded_recovery_controller.py tests\trading\recovery\test_recovery_execution_plan.py tests\trading\recovery\test_recovery_state_store.py tests\persistence\test_recovery_cycle_state_repo.py -q`
+  - 54 passed。
+- `python -m pytest tests\readmodels\test_trade_trace.py tests\trading\recovery tests\persistence\test_recovery_cycle_state_repo.py -q`
+  - 28 passed。
+- `python -m pytest tests\trading\test_execution_intents.py tests\signals\test_tick_derived_runtime.py tests\trading\test_tick_feature_pretrade.py tests\backtesting\test_tick_replay.py tests\backtesting\test_tick_replay_recovery.py -q`
+  - 42 passed。
+- `python -m pytest tests\trading\recovery tests\config\test_risk_config.py tests\trading\test_executor_async.py tests\trading\test_signal_executor.py -q`
+  - 79 passed。
+- `python -m pytest tests\trading\test_execution_intents.py tests\signals\test_tick_derived_runtime.py tests\trading\test_tick_feature_pretrade.py tests\backtesting\test_tick_replay.py tests\backtesting\test_tick_replay_recovery.py tests\readmodels\test_trade_trace.py tests\persistence\test_recovery_cycle_state_repo.py -q`
+  - 56 passed。
+- `python -m compileall src\trading\recovery src\trading\execution\executor.py src\config\risk.py src\config\models\runtime.py src\config\centralized.py tests\trading\recovery tests\config\test_risk_config.py`
+  - exit 0。
+- `python -m pytest tests\trading\recovery tests\config\test_risk_config.py tests\trading\test_executor_async.py tests\trading\test_signal_executor.py tests\trading\test_execution_intents.py tests\signals\test_tick_derived_runtime.py tests\trading\test_tick_feature_pretrade.py tests\backtesting\test_tick_replay.py tests\backtesting\test_tick_replay_recovery.py tests\readmodels\test_trade_trace.py tests\persistence\test_recovery_cycle_state_repo.py -q`
+  - 136 passed。
+- `python -m compileall src\backtesting\tick_replay src\trading\recovery src\trading\execution\executor.py src\config\risk.py src\config\models\runtime.py src\config\centralized.py tests\backtesting\test_tick_replay_recovery.py tests\trading\recovery tests\config\test_risk_config.py`
+  - exit 0。
+- `python -m pytest tests\trading\recovery tests\config\test_risk_config.py tests\trading\test_executor_async.py tests\trading\test_signal_executor.py tests\trading\test_execution_intents.py tests\signals\test_tick_derived_runtime.py tests\trading\test_tick_feature_pretrade.py tests\backtesting\test_tick_replay.py tests\backtesting\test_tick_replay_recovery.py tests\readmodels\test_trade_trace.py tests\persistence\test_recovery_cycle_state_repo.py -q`
+  - 139 passed。
+- `python -m pytest tests\clients\test_mt5_market_ticks.py tests\trading\recovery tests\config\test_risk_config.py tests\readmodels\test_trade_trace.py tests\backtesting\test_tick_replay_recovery.py tests\trading\test_executor_async.py tests\trading\test_signal_executor.py tests\trading\test_execution_intents.py tests\signals\test_tick_derived_runtime.py tests\trading\test_tick_feature_pretrade.py tests\backtesting\test_tick_replay.py tests\persistence\test_recovery_cycle_state_repo.py -q`
+  - 144 passed。
+- `python -m compileall src\clients\base.py src\clients\mt5_market.py src\trading\recovery src\config\risk.py src\config\models\runtime.py src\persistence\repositories\trade_repo.py src\readmodels\trade_trace.py tests\clients\test_mt5_market_ticks.py tests\trading\recovery tests\config\test_risk_config.py tests\readmodels\test_trade_trace.py`
+  - exit 0。
+- `git diff --check`
+  - exit 0；仅有既有 CRLF/LF 换行提示，无 whitespace error。
+- `python -m src.ops.cli.live_preflight --environment demo`
+  - 修复前结果：22 OK / 1 WARN / 0 FAIL / 3 DIFF；MT5 demo session 与 DB 可用，但有效路由仍是 `demo_main:structured_micro_momentum`，不是 recovery/martingale。该配置漂移已在 `0zf` 收口。
+- `python -m pytest tests\backtesting\test_tick_replay_recovery.py::test_recovery_canary_gate_ignores_expected_exposure_cap_blocks_in_ratio -q`
+  - 1 passed；锁定 hard-cap block 不污染坏数据 blocked ratio。
+- `python -m pytest tests\trading\recovery\test_recovery_canary_service.py tests\ops\test_recovery_canary_cli.py -q`
+  - 7 passed。
+- `python -m pytest tests\clients\test_mt5_market_ticks.py tests\trading\recovery tests\config\test_risk_config.py tests\readmodels\test_trade_trace.py tests\backtesting\test_tick_replay_recovery.py tests\trading\test_executor_async.py tests\trading\test_signal_executor.py tests\trading\test_execution_intents.py tests\signals\test_tick_derived_runtime.py tests\trading\test_tick_feature_pretrade.py tests\backtesting\test_tick_replay.py tests\persistence\test_recovery_cycle_state_repo.py tests\ops\test_recovery_canary_cli.py -q`
+  - 最新扩展回归包含 `tests\persistence\test_trade_command_audit_repo.py` 与 `tests\trading\runtime\test_trade_frequency.py` 后为 168 passed。
+- `python -m pytest tests\trading\recovery tests\ops\test_recovery_canary_cli.py tests\persistence\test_trade_command_audit_repo.py -q`
+  - 覆盖 live-cycle canary、pre-trade block 结构化返回、dry-run block 不写 recovery cycle、dry-run 审计不计入交易限频。
+- `python -m src.ops.cli.recovery_canary --environment demo --instance demo-main --auto-launch-terminal --live-cycle --max-steps 1 --step-distance-points 1 --recovery-target-points 5`
+  - 返回 `status=dry_run`；初始 `0.01` lot dry-run，当前 tick 触发 `0.02` lot recovery scaling dry-run，`guard.allowed=true`，`projected_total_volume=0.03`。
+- `python -m compileall src\backtesting\tick_replay\recovery_canary.py src\trading\recovery src\ops\cli\recovery_canary.py src\clients\base.py src\clients\mt5_market.py src\config\risk.py src\config\models\runtime.py src\persistence\repositories\trade_repo.py src\readmodels\trade_trace.py tests\backtesting\test_tick_replay_recovery.py tests\trading\recovery tests\ops\test_recovery_canary_cli.py`
+  - exit 0。
+- `python -m pytest tests\readmodels\test_trade_trace.py::test_trade_trace_projection_marks_closed_recovery_cycle_completed -q`
+  - RED: 修复前 closed recovery cycle 被推导为 `in_progress`；GREEN: 1 passed。
+- `python -m pytest tests\monitoring\test_health_check_report.py::test_check_queue_stats_does_not_raise_optional_tick_stale_to_critical -q`
+  - RED: 修复前 optional tick stale 触发 `market_data_lane_stale=critical`；GREEN: 1 passed。
+- `python -m pytest tests\monitoring\test_health_check_report.py tests\api\test_monitoring_ready.py tests\api\test_monitoring_health_summary.py tests\readmodels\test_trade_trace.py tests\trading\recovery tests\ops\test_recovery_canary_cli.py tests\persistence\test_trade_command_audit_repo.py tests\trading\runtime\test_trade_frequency.py -q`
+  - 109 passed。
+- demo-main 重启到新代码后复核：`/v1/monitoring/health/ready` 返回 ready；queues `critical=0/full=0`；events `pending=0/failed=0`；`/v1/trade/state` 为 `tradable=true`，XAUUSD active positions/orders 均为 0；signal runtime `healthy/running=true/target_count=0/executor_enabled=false`；`/v1/trade/trace/by-trace/demo-recovery-canary-1778075189332-signal` 返回 `status=completed`、`last_stage=recovery.closed`、`execute_trade=2`、`close_position=2`。
+- demo-main 监控复核：optional `tick:XAUUSD` 仍 `stale=true/required=false/severity=warning`，但 `market_data_lane_stale.latest=0/status=healthy`，`active_alerts` 只剩 `market_data_stale_count` warning，`overall_status=warning`，不再是 critical。
+
+---
+
+## 0zc. 2026-05-05 市场数据依赖合同：tick 从固定 warning 收口为策略声明式 fail-closed
+
+### 触发
+
+demo canary 后确认 MT5 tick 历史接口可能返回陈旧市场时间，但当前 M1/M5 日内主线仍是 quote/OHLC confirmed-bar 驱动。若把所有 tick stale 都升级为 ready 阻断，会误杀现有主线；但未来一旦新增 tick-level 或 tick-derived 入场策略，tick 陈旧又必须 fail-closed。本轮关闭 §0zb 的 tick freshness 未决项：不再靠全局固定口径，而是引入策略能力到 ingestor 健康的正式依赖合同。
+
+### 职责变化
+
+| 模块 | 输入 / 事实源 | 状态拥有者 | 输出 / 合同 | 本轮移除的问题 |
+|---|---|---|---|---|
+| `StrategyCapability` | 策略类属性 `market_data_requirements` | 策略能力合同 | `market_data_requirements=["tick"|"quote"|"ohlc"]` 进入 runtime/backtest 共享能力快照 | 不再由 ready 或 ingestor 猜策略是否需要 tick |
+| `SignalRuntime.required_market_data_lanes()` | 已调度 targets + capability contract | SignalRuntime | 展开为具体 lane key，例如 `tick:XAUUSD`、`ohlc:XAUUSD:M1` | app_runtime 不读取 runtime 私有 target index |
+| `build_signal_layer()` | runtime 公开 required lanes 端口 | 装配层只接线 | 调用 `BackgroundIngestor.set_required_market_data_lanes()` | 不在装配层硬编码 intrabar/tick 关系 |
+| `register_signal_hot_reload()` | signal.ini 热更新后的 runtime policy | 热更新回调只编排 | policy 更新后重新调用同一 required lane 接线口 | 不让启动装配与热更新形成两套 market data dependency 语义 |
+| `BackgroundIngestor.health_snapshot()` | quote/tick/OHLC lane 成功时间、市场时间、required lanes | ingestor health snapshot | `dependency_contract.required_lanes`、lane `required`、`critical_missing_count`、required lane stale/missing → `status=critical` | tick 不再永久只是 warning，也不全局硬阻断 |
+
+### 业务判断
+
+- 当前可以支持 quote/OHLC 驱动的较高频 confirmed-bar 策略；tick 历史陈旧时保持 warning，不阻断 M1/M5 OHLC 主线。
+- 新增 tick 级策略时，策略必须显式声明 `market_data_requirements=("tick",)`；runtime 只对实际已调度 symbol 展开依赖，ready/admission 才能按真实业务依赖 fail-closed。
+- 本轮没有新增兼容兜底：市场数据依赖从策略能力合同进入 runtime，再由 ingestor 统一持有健康事实，调用方向单一。
+
+### 验证
+
+- RED 已确认：
+  - `required_tick_lane` 测试在修复前因 `BackgroundIngestor` 缺少 `set_required_market_data_lanes()` 失败。
+  - runtime 接线测试在修复前因缺少 `required_market_data_lanes()` / `_wire_required_market_data_lanes()` 失败。
+  - hot reload 测试在修复前因 `register_signal_hot_reload()` 不接受 `ingestor` 且不会刷新 dependency contract 失败。
+- GREEN 已通过：
+  - `python -m pytest tests\ingestion\test_ingestor_mt5_timeout.py tests\signals\test_signal_runtime.py tests\signals\test_signal_module.py tests\app_runtime\test_intrabar_runtime_contract.py tests\api\test_monitoring_ready.py tests\monitoring\test_health_check_report.py`
+  - 90 passed。
+  - `python -m pytest tests\app_runtime\test_signal_hot_reload.py -q`
+
+### 未决项
+
+- 当前默认策略未声明 tick 依赖，这是符合现有 confirmed-bar 主线的状态。后续新增 tick scalping / order-flow 策略时，必须在策略类声明 `market_data_requirements=("tick",)` 并补 canary。
+- `ohlc` 也已支持作为依赖类型，但现有 ready 仍主要靠 OHLC stale critical；若后续要让某些低频策略在 warmup 阶段也 fail-closed，可逐步把对应策略声明 `market_data_requirements=("ohlc",)`。
+
+---
+
+## 0zb. 2026-05-05 Demo 下单 canary：precheck 合同与 trace 查询闭环
+
+### 触发
+
+demo-main ready 后执行最小手数 canary，`/v1/trade/precheck` 首次因 `TradeRequest.dry_run` 默认字段透传到 `TradingService.precheck_trade()` 报错。修复后真实 demo 下单与 operator close 成功，但验证发现 `by-command` / `by-action` trace 查询只查 pipeline events，无法定位刚完成的交易审计。
+
+### 职责变化
+
+| 模块 | 输入 / 事实源 | 状态拥有者 | 输出 / 合同 | 本轮移除的问题 |
+|---|---|---|---|---|
+| `TradeAdmissionService` | API/dispatch payload | admission service | 只向 `precheck_trade()` 传递正式 precheck 入参，执行/trace 字段保留在报告层 | 不再把 `dry_run/request_id` 等执行字段透传到 precheck |
+| `TradeRepository` | `trade_command_audits`、`operator_commands` | persistence repository | 按 `action_id` / `command_id` 查询交易审计，并反查 operator command | 不再只能从 pipeline events 查执行标识 |
+| `TradingFlowTraceReadModel` | pipeline events、command audits、operator command link | readmodel | `trace_by_action_id()` / `trace_by_command_id()` 聚合审计事实 | 不再出现 close 已成功但 trace endpoint 显示 found=false |
+
+### 业务判断
+
+- 对 demo/live canary，precheck 是下单前硬门禁，不能因为 API schema 与 service 签名不一致而不可用。
+- 对日内交易，operator close 的 command/action id 是排障第一入口；如果 trace 无法从这些 id 反查 ticket 与审计，交易员只能翻日志，不能接受。
+- 本轮没有给 `TradingService.precheck_trade()` 增加兼容参数，而是在 admission 边界做正式 payload 投影，保持服务合同清晰。
+
+### 运行验证
+
+- `/v1/trade/precheck` 带 `dry_run/request_id` 不再报 `unexpected keyword argument 'dry_run'`。
+- 不带 SL 的市价单被硬风控按 `market_order_protection=sl` 阻断；带 SL 后 admission `decision=allow`。
+- demo 真实 canary：XAUUSD 0.01 buy，ticket `296256614`，SL `4563.46`，MT5 retcode `10009 Request executed`。
+- operator close 队列接受 command `b4b2604cbfcb41e485ab87a711f25d07`，action `3e2a794d302643ba8a2bbc0f9415d11f`；审计 `close_position` 成功，耗时约 `266ms`。
+- `/v1/positions?symbol=XAUUSD` 返回 `count=0`；`/v1/trade/state` 中 managed/unmanaged/pending 与 account risk open positions 均为 `0`。
+- 重启后 `/v1/trade/trace/by-command/b4b2604cbfcb41e485ab87a711f25d07` 与 `/v1/trade/trace/by-action/3e2a794d302643ba8a2bbc0f9415d11f` 均能返回 close trace `close_position_357086390`、ticket `296256614`、command/action id。
+
+### 验证
+
+- GREEN 已通过：
+  - `tests/trading/test_admission_service.py::test_precheck_payload_uses_formal_command_contract`
+  - `tests/api/test_trade_api.py::test_trade_precheck_ignores_execution_only_request_fields`
+  - `tests/readmodels/test_trade_trace.py::test_trade_trace_projection_resolves_action_and_command_from_command_audits`
+
+### 未决项
+
+- ready 中 `tick:XAUUSD.last_market_time` 仍可明显落后但状态为 healthy；后续应把 tick lane 的市场时间 freshness 纳入健康判定，而不是只看采集成功时间。
+- API/trace 返回中的部分中文事件名在 PowerShell JSON 展示中出现编码转义/乱码，需单独确认是展示层编码还是持久化内容。
+
+---
+
+## 0za. 2026-05-05 MT5 预热入口：preflight 显式 auto-launch terminal 合同
+
+### 触发
+
+demo canary 排障时发现，人工用 `Start-Process terminal64.exe` 打开 MT5 GUI 会绕过项目配置系统：GUI 启动本身不会读取 `config/instances/demo-main/mt5.local.ini`，容易停在登录界面，造成“明明 local 有密码却还要登录”的误判。
+
+### 职责变化
+
+| 模块 | 输入 / 事实源 | 状态拥有者 | 输出 / 合同 | 本轮移除的问题 |
+|---|---|---|---|---|
+| `src.ops.cli.live_preflight` | `--environment`、`--auto-launch-terminal`、实例 MT5 local 配置 | ops CLI | 默认严格检查已运行 terminal；显式 auto-launch 时允许 MT5 Python API 用 local 凭据拉起 terminal 并登录 | 不再需要人工裸启动 terminal GUI |
+| `MT5BaseClient.inspect_session_state()` | `require_terminal_process`、`attempt_initialize/login` | MT5 client session probe | preflight 通过参数选择是否要求 terminal 进程预先存在 | 不再把“预热 terminal”和“只读严格预检”混成隐式行为 |
+| `docs/runbooks` / `docs/design` | 新预热入口 | 运维文档 | demo/live canary 明确使用 `live_preflight --auto-launch-terminal` 或正式 instance 入口 | 不再把 `Start-Process terminal64.exe` 当作正式流程 |
+
+### 业务判断
+
+- 默认 preflight 仍保持无副作用严格模式，适合 live 上线前确认“依赖已经就绪”。
+- demo canary 或本机凭据验证需要预热 terminal 时，必须显式声明 `--auto-launch-terminal`；该模式仍不启动 MT5Services 服务、不下单，只建立 MT5 session。
+- 凭据的唯一正式来源仍是实例 `mt5.local.ini`；终端 GUI 自身的登录弹窗不是配置事实源。
+
+### 验证
+
+- RED 已确认：新增测试在修复前因 `_check_mt5_instance()` 与 `_check_mt5()` 不接受 `auto_launch_terminal` 参数失败。
+- GREEN 已通过：`tests/ops/test_live_preflight.py` 中 strict 默认模式、auto-launch 模式与 topology group 参数传递测试。
+
+### 未决项
+
+- `--auto-launch-terminal` 会启动/连接外部 MT5 terminal，属于有副作用的运维动作；live 环境仍应先明确窗口期和目标实例，不应把它设为默认。
+
+---
+
+## 0y. 2026-05-05 Demo canary：启动状态恢复与启动摘要口径校正
+
+### 触发
+
+本轮继续推进 demo-main 系统级 canary。demo MT5 终端预热后，`live_preflight --environment demo` 通过，服务可进入 ready，但运行验证暴露两个控制面问题：`/v1/trade/state` 仍显示历史遗留 `open` 仓位，而 MT5 当前账户实际无持仓；同时日志先输出 `Runtime mode applied: mode=full`，随后 `startup_summary` 却记录 `mode=error`。
+
+### 职责变化
+
+| 模块 | 输入 / 事实源 | 状态拥有者 | 输出 / 合同 | 本轮移除的问题 |
+|---|---|---|---|---|
+| `TradingStateRecovery` | MT5 当前持仓、`TradingStateStore` 中仍为 open 的 position runtime state | trading state recovery | 启动时把 MT5 已不存在的本地 open position 标记为 `closed`，`close_source=mt5_missing` | 不再让 stale 本地仓位长期污染 `/v1/trade/state` |
+| `TradingStateStore` | position runtime state record | trading state store | `mark_position_missing()` 写入正式 closed state 与审计 metadata | 不再由 runtime 直接拼状态写入细节 |
+| `runtime_controls` | position manager 首轮同步结果、trading state recovery | app runtime lifecycle | 启动阶段记录 `Position runtime state recovery` 摘要 | 不再只同步 active positions 而忽略本地遗留 open state |
+| `AppRuntime._log_startup_summary()` | `RuntimeModeController.current_mode` 公开属性 | runtime mode controller | `startup_summary.mode` 与 `runtime_mode.snapshot().current_mode` 一致 | 不再调用旧方法合同导致误报 `mode=error` |
+
+### 业务判断
+
+- 对日内交易员，`/v1/trade/state` 是判断“能否继续开仓、是否有残留仓位”的高优先级入口。若 MT5 事实源已无仓位但本地仍显示 open，会直接误导风险判断和 canary 验收。
+- 对高低频共存链路，启动摘要是排障第一屏。`mode=error` 这种假错误会掩盖真实 ready 口径，也会让后续自动化巡检误判启动状态。
+- 本轮没有新增兼容分支：持仓缺失统一收口到 `TradingStateRecovery -> TradingStateStore`，启动摘要只读取 `RuntimeModeController` 的正式公开属性。
+
+### 运行验证
+
+- demo 预检：`python -m src.ops.cli.live_preflight --environment demo` 返回 `0 FAIL`；`Still on DEMO` 为 demo canary 预期 WARN。
+- demo-main 重启后日志显示：`Position runtime state recovery: {'live': 0, 'open_states': 2, 'closed_missing': 2}`；再次重启后为 `open_states=0`。
+- `/v1/trade/state` 显示 `account_open=0`、`managed_positions.status_counts.closed=20`、`tradability.status=tradable`。
+- 启动日志显示 `Runtime mode applied: mode=full reason=startup` 后，`startup_summary ... mode=full`，与 `/v1/trade/state.runtime_mode.current_mode=full` 一致。
+- `/v1/monitoring/health/ready` 返回 ready，MT5 circuit 关闭，M1/M5/H1/H4/D1 OHLC lane 均未 stale，indicator event queue 无 pending/failed。
+
+### 验证
+
+- RED 已确认：
+  - `test_trading_state_recovery_closes_open_position_states_missing_from_mt5` 在修复前因缺少 `reconcile_position_runtime_states()` 失败。
+  - `test_trading_state_store_marks_missing_position_state_closed` 在修复前因缺少 `mark_position_missing()` 失败。
+  - `test_startup_summary_emits_identity_and_mode` 在改成真实 `current_mode` 属性合同后复现 `mode=error`。
+- GREEN 已通过：
+  - `tests/trading/test_state_recovery.py`
+  - `tests/trading/test_state_store.py`
+  - `tests/app_runtime/test_startup_summary.py`
+
+### 未决项
+
+- 本轮验证没有手工或真实交易下单；系统链路已 ready，但当前策略是否会产生新 execution intent 仍取决于策略部署、account binding、信号阈值和市场状态。
+- live 环境仍应保持“无 live-eligible 策略不交易”的门禁。后续若要做 live canary，必须先显式 promote 策略并重跑 preflight，而不能复用 demo canary 结论。
+
+---
+
+## 0x. 2026-05-05 运行态 canary：trace 目录宽查询收口为近期窗口
+
+### 触发
+
+按 live-main 做系统级运行验证时，`/v1/monitoring/health/ready`、市场数据 freshness 与队列均正常，但 `/v1/trade/traces?page_size=5` 发生超时。根因不是服务未 ready，而是 trace 目录默认查询在没有 `from_time` 和 execution 标识过滤时，会对 `pipeline_trace_events` 全历史做聚合；高频链路下这会把“排障入口”变成新的运行时压力源。
+
+### 职责变化
+
+| 模块 | 输入 / 事实源 | 状态拥有者 | 输出 / 合同 | 本轮移除的问题 |
+|---|---|---|---|---|
+| `TradingFlowTraceReadModel` | trace 列表查询条件、当前 UTC 时间、`pipeline_trace_events` | readmodel 聚合层 | 宽列表默认应用 6 小时近期窗口；精确 `trace_id / signal_id / intent_id / command_id / action_id` 查询不加默认窗口 | 不再让无条件列表扫描全历史 |
+| `api.trade_routes.trace` | readmodel 返回的实际窗口 | FastAPI 适配层 | `/v1/trade/traces` metadata 暴露 `from / to / default_window_applied` | 运维不再误以为列表返回的是无界全量 |
+| `docs/runbooks` / `docs/design` | 新 trace 目录合同 | 运维文档 | canary 与排障优先用 `by-*` 精确反查；宽列表只用于近期巡检 | 不再把宽列表当历史审计工具 |
+
+### 业务判断
+
+- 日内交易员真正排单时通常已经有 `trace_id / intent_id / command_id / action_id`，这些精确反查不能被默认时间窗隐藏，所以本轮只限制“无精确标识、无时间条件”的目录宽查询。
+- 对较高频 M1/M5，trace 事件量会随策略数、过滤阶段和执行消费节点线性放大；默认 6 小时窗口足够覆盖当日巡检与 canary 观察，同时避免全历史聚合拖慢控制面。
+- 历史审计仍应显式传 `from_time / to_time` 或使用 `by-*` 标识入口；这比 API 默默扫全表更可审查，也符合 readmodel 只做投影、不做后台分析任务的职责边界。
+
+### 运行验证
+
+- 修复前：live-main ready 正常，但 `/v1/trade/traces?page_size=5` 在 10 秒和 60 秒超时。
+- 修复后：同一 live-main 重启后 `/v1/trade/traces?page_size=5` 约 0.56 秒返回，`metadata.default_window_applied=true`，6 小时窗口内 `total=9370`。
+- 同轮验证还确认：MT5 circuit 关闭、`abandoned_call_count=0`、M1/M5/H1/H4/D1 OHLC lane 均未 stale，队列无堆积。
+
+### 验证
+
+- RED 已确认：`TradingFlowTraceReadModel.list_traces()` 宽查询测试在修复前仍传 `from_time=None`；API metadata 测试在修复前缺 `default_window_applied`。
+- GREEN 已通过：
+  - `tests/readmodels/test_trade_trace.py`
+  - `tests/persistence/test_pipeline_trace_repo.py`
+  - `tests/api/test_trade_api.py` trace 相关定向切片
+  - `python -m compileall src`
+
+### 未决项
+
+- 6 小时窗口是控制面默认值，不是高频历史分析窗口。若后续需要跨日 trace 检索，应独立建设分页/归档型查询或物化摘要，而不是重新放宽运行时目录接口。
+- 本轮运行验证是在 live-main “无 live-eligible 策略”的系统链路验证下完成，没有进行真实交易 canary；demo canary 仍受本机 demo MT5 终端未运行阻塞。
+
+---
+
+## 0w. 2026-05-05 交易 trace 可审查投影：execution 标识反查与列表过滤
+
+### 触发
+
+继续评估高低频共存的运行验收后发现，ready/monitoring 已能证明“线程与消费推进正常”，但交易员排障仍缺一个高价值闭环：拿到 `intent_id / command_id / action_id` 后，不能从公开 API 直接反查同一条信号到执行链路，只能绕回日志或裸 pipeline 事件。
+
+### 职责变化
+
+| 模块 | 输入 / 事实源 | 状态拥有者 | 输出 / 合同 | 本轮移除的问题 |
+|---|---|---|---|---|
+| `TradingFlowTraceReadModel` | `pipeline_trace_events`、signal events、command audits、pending/position state、outcomes | readmodel 聚合层 | `trace_by_intent_id()` / `trace_by_command_id()` / `trace_by_action_id()`，并在 `identifiers` 暴露 `intent_ids / command_ids / action_ids / account_keys / account_aliases` | 不再只能从 `signal_id` 或 `trace_id` 查完整链 |
+| `PipelineTraceRepository` | `pipeline_trace_events` 正式列 | TimescaleDB | `fetch_pipeline_trace_filtered()` 与 `query_trace_summaries()` 支持 execution 标识 SQL 过滤 | 不再由上层拉宽集合后筛选 |
+| `api.trade_routes.trace` | readmodel 正式端口 | FastAPI | `/v1/trade/trace/by-intent/{intent_id}`、`/v1/trade/trace/by-command/{command_id}`、`/v1/trade/trace/by-action/{action_id}`；`/v1/trade/traces` 支持 `intent_id / command_id / action_id` 查询 | 不新增第二套执行状态 API |
+| `docs/runbooks` / `docs/design` | 新 trace 合同 | 运维文档 | canary 和排障优先按业务标识反查 trace | 不再让 runbook 只依赖日志判读 |
+
+### 业务判断
+
+- 对日内交易员，`intent_id / command_id / action_id` 往往来自 UI 操作、队列消费、审计或告警；现在这些标识可以直接回到同一条业务因果链，定位“信号是否生成、准入是否阻断、intent 是否被 claim、command 是否完成”。
+- 对较高频链路，单笔事件量更高，排障必须优先使用结构化 trace 反查，而不是按日志全文搜索；本轮把查询下沉到 SQL 层，避免高频窗口下读模型无谓扫描。
+- 本轮没有新增状态拥有者：所有入口仍复用 `pipeline_trace_events` + 现有 readmodel，符合“单一事实源、单一投影职责”的模块化要求。
+
+### 验证
+
+- RED 已确认：新增测试在修复前分别因缺 `trace_by_intent_id()`、缺 API 导出、repo 不接受 execution 标识、列表投影不接受 execution 标识而失败。
+- GREEN 已通过：
+  - `tests/readmodels/test_trade_trace.py`
+  - `tests/persistence/test_pipeline_trace_repo.py`
+  - `tests/api/test_trade_api.py` trace 相关定向切片
+
+### 未决项
+
+- 当前 trace 已能按 execution 标识反查链路，但还不是实时 UI 专用的事件检索服务；若前端需要毫秒级滚动流，仍应复用 `/v1/trade/state/stream` 的正式 pipeline 事件源，而不是新增平行查询表。
+- `trace_by_*` 依赖 pipeline 事件正确携带标识；若某个新执行入口没有写入 `intent_id / command_id / action_id`，应修写入端合同，而不是在 readmodel 中猜测补字段。
+
+---
+
+## 0v. 2026-05-05 运行稳定控制面：采集健康、消费推进与 ready 合同收口
+
+### 触发
+
+继续审查 §0u 后发现 ready 与 monitoring 仍可能出现“线程存活但链路不可交易”的假绿：MT5 circuit/stale 未进入公开快照、执行/操作 consumer 无统一 progress health、MonitoringManager 未注册 consumer、队列监控只看 depth、runbook ready 口径落后。
+
+### 职责变化
+
+| 模块 | 输入 / 事实源 | 状态拥有者 | 输出 / 合同 | 本轮移除的问题 |
+|---|---|---|---|---|
+| `ingestion.BackgroundIngestor` | MT5 quote/tick/OHLC 成功与异常、symbol backoff、OHLC TF interval | ingestor health snapshot | `health_snapshot()` / `queue_stats().market_data_health` 暴露 circuit、abandoned calls、lane freshness、critical stale | 不再只暴露队列线程存活 |
+| `trading.runtime.progress_health` | poll/claim/complete 时间、in-flight、连续错误 | shared progress health helper | intent/operator consumer 同一 `stalled / stall_reasons` 合同 | 不再让两个 consumer 各自拼不完整状态 |
+| `api.monitoring.health.ready` | ingestor/consumer 公开 health snapshot | ready probe | main 阻断 MT5 circuit/M1-M5 stale；executor 阻断 consumer stalled | 不再把 `is_running()` 等价为可交易 |
+| `monitoring.manager` / `health.checks` | `queue_stats().market_data_health` 与 consumer `status()` | HealthMonitor | `mt5_circuit_open`、`market_data_lane_stale`、`consumer_stalled`、`consumer_consecutive_errors` 等指标 | 不再只记录 queue depth/runtime_status heartbeat |
+| `signals.service` / `signals.orchestration.runtime_evaluator` | 策略 decision metadata + context metadata | SignalModule / SignalRuntime 发布边界 | `ENTRY_INTENT`、`RECENT_BARS`、spread/bar_time 等正式进入最终 `SignalEvent.metadata` | 显式 EntryPolicy 后不再因 metadata 丢失而结构化拒单 |
+| `docs/runbooks` / `docs/design` | 新 ready 合同 | 运维文档 | 启动巡检与故障判读按 main/executor 分口径 | 不再按旧 pending/position/risk 三项判定 executor ready |
+
+### 业务判断
+
+- 当前 confirmed-bar 较高频（M1/M5）链路已有可观测的 stale 判定：M1/M5 OHLC lane 超过动态阈值会让 main ready 503，并进入 health metrics。
+- 低频 TF 不复用 M1 阈值：stale 阈值按每个 TF 的采集 interval 动态计算，避免 H1/H4/D1 被高频口径误报。
+- executor 现在必须证明“能消费并推进”：只要 poll 停滞、连续异常或 in-flight 卡住，即使线程还活着也不能 ready。
+- 显式 EntryPolicy 合同下，策略 metadata 是执行链硬依赖；本轮把策略输出与上下文 metadata 合并到 `SignalEvent`，避免通过恢复 default market 兜底来掩盖上游合同断裂。
+
+### 验证
+
+- RED 已确认：新增测试在修复前分别因缺 `market_data_health`、缺 consumer `health_snapshot()`、ready 不读取 stalled、MonitoringManager 未注册 consumer、queue stats 不落市场健康指标而失败。
+- GREEN 已通过：
+  - `tests/ingestion/test_ingestor_mt5_timeout.py`
+  - `tests/trading/test_execution_intents.py::test_execution_intent_consumer_health_snapshot_reports_stalled_progress`
+  - `tests/trading/test_operator_command_consumer_lifecycle.py::test_operator_command_consumer_health_snapshot_reports_stalled_progress`
+  - `tests/api/test_monitoring_ready.py`
+  - `tests/monitoring/test_health_check_report.py::test_check_queue_stats_records_market_data_health_metrics`
+  - `tests/monitoring/test_monitoring_manager_mode_gate.py::test_status_probe_records_consumer_progress_health_metrics`
+  - `tests/app_runtime/test_runtime_monitoring_registration.py`
+- 全量回归已通过：`3347 passed, 6 skipped`。
+
+### 未决项
+
+- MT5 Python API 的线程级 timeout 仍不能强杀底层冻结调用；若实盘出现长期 circuit open，应升级为进程级 market-data worker 与 supervisor 重建。
+- `consumer_stalled` 当前是健康阻断事实，尚未细分“DB claim 不可用 / complete 不可用 / broker 执行慢”的告警子类型；后续可在 trace/readmodel 中增加更细的状态投影。
+- tick-to-order 仍未上线；quote/tick lane freshness 已可观测，但不能替代正式 tick 策略触发合同。
+
+---
+
+## 0u. 2026-05-05 架构硬化二轮：live 门禁、MT5 采集隔离与限频 reservation
+
+### 触发
+
+继续审查 §0t 后发现 5 个剩余合同风险：live preflight 未强制 hard-risk fail-closed、MT5 timeout 后仍可能耗尽采集线程池、交易限频只看事后成功审计、非市价 EntryPolicy 在 pending manager 缺失时仍会降级 market、Intrabar 激活语义未完全收口。
+
+### 职责变化
+
+| 模块 | 输入 / 事实源 | 状态拥有者 | 输出 / 合同 | 本轮移除的问题 |
+|---|---|---|---|---|
+| `ops.live_preflight` | 实例级有效 `RiskConfig` | `PreflightRiskPolicy` + hard-risk contract | live 必须 `data_unavailable_policy=fail_closed` 才能过门禁 | 不再允许默认 `warn_only` 配置进入 live |
+| `ingestion.BackgroundIngestor` | MT5 OHLC/quote/tick 调用 | ingestor MT5 call circuit | OHLC close 检测优先于 quote/tick；abandoned MT5 calls 填满 worker 后 circuit open | 不再在 MT5 底层卡死时继续排队制造超时 |
+| `risk.service` / `trading.runtime.trade_frequency` | 成功审计 + quota reservation | `TradeFrequencyProvider` | 放行前申请 account_key 窗口 reservation，成功/失败后 finalize | 不再只靠 broker 成功后审计计数限频 |
+| `persistence.trade_frequency_reservations` | account_key、reserved_at、expires_at | TimescaleDB reservation ledger | DB advisory lock 下原子 reserve；count 包含 active/committed reservation | 多请求并发不再能在审计落库前同时穿透限频 |
+| `trading.execution.decision_engine` | `EntrySpecGroup` + executor 依赖 | `ExecutionDecision` | 非 market group 缺 pending manager 结构化拒单 | 不再把 limit/stop/OCO 意图降级成市价单 |
+| `signals.orchestration.intrabar_contract` | `signal.ini[intrabar_trading]` | shared contract helper | account runtime 与 startup summary 使用同一 active 语义 | 不再直接读取原始 enabled/list 字段形成双轨语义 |
+
+### 业务判断
+
+- 当前架构可支撑 M1/M5 confirmed-bar 日内策略：OHLC close 检测已优先，M1/M5 不再被全局 30s 轮询或 quote/tick 卡死直接拖住。
+- 当前架构仍不宣称支持 tick scalping：tick 数据仍是数据资产与健康/滑点输入，不是正式 tick-to-order 策略触发合同。
+- live 较高频的关键约束已经从“事后审计”前移到“下单前 reservation”；quota 已满会无条件阻断，只有 reservation 事实源不可用才按 `data_unavailable_policy` 处理。
+
+### 验证
+
+- RED 已确认：新增测试在修复前分别因缺少门禁、缺少 cycle/circuit、缺少 reservation、缺少 pending-manager reason、缺少 intrabar helper 而失败。
+- GREEN 已通过：
+  - `tests/ops/test_live_preflight.py`
+  - `tests/ingestion/test_ingestor_mt5_timeout.py`
+  - `tests/core/test_pretrade_risk_service.py`
+  - `tests/trading/runtime/test_trade_frequency.py`
+  - `tests/trading/test_signal_executor.py::test_trade_executor_rejects_pending_entry_when_pending_manager_unavailable`
+  - `tests/app_runtime/test_intrabar_runtime_contract.py`
+- 回归已通过：
+  - `tests/risk/test_risk_rules.py`
+  - `tests/persistence/test_trade_command_audit_repo.py`
+  - `tests/trading/test_trading_module.py`
+  - `tests/config/test_risk_config.py`
+  - `tests/api/test_monitoring_ready.py`
+  - `tests/backtesting/test_deployment_consistency.py`
+  - `tests/backtesting/test_engine.py`
+  - `tests/backtesting/test_optimizations.py`
+  - `tests/trading/test_executor_async.py`
+
+### 未决项
+
+- MT5 Python API 卡死线程仍无法被 Python 线程强杀；当前通过 circuit 避免继续排队，若实盘发现终端长期冻结，应升级到进程级 MT5 worker / supervisor 重启模型。
+- `trade_frequency_reservations` 需要在目标库启动迁移后确认 DDL 已应用；未建表时 provider 会按风控数据不可用策略阻断或告警。
+- tick-to-order 若要上线，需要新增独立延迟预算、策略 capability、回测仿真与执行验收，不应复用 confirmed-bar 链路隐式下单。
+
+---
+
+## 0t. 2026-05-05 架构硬化：执行合同、硬风控与回测部署门禁
+
+### 触发
+
+架构审查继续收口“策略清理后先完善基建”的高价值风险点：默认市价兜底、硬风控事实源不可用放行、限频进程内状态、ready 探针漏执行消费链路、MT5 quote/tick 卡死采集、intrabar 配置语义不一致、回测 deployment gate 裸 dict 绕过、live preflight 阈值硬编码。
+
+### 职责变化
+
+| 模块 | 输入 / 事实源 | 状态拥有者 | 输出 / 合同 | 本轮移除的问题 |
+|---|---|---|---|---|
+| `trading.entry_policy` | `entry_policy.ini` strategy/TF mapping | `EntryPolicyRegistry` | 未映射直接 `EntryPolicyMappingError`，执行链结构化拒单 | 不再从 default market 静默兜底 |
+| `risk.rules` / `risk.service` | 账户快照、日亏损、保证金、持久化执行审计 | `RiskConfig` + `TradeFrequencyProvider` | `data_unavailable_policy=fail_closed` 时硬拒单；限频按 account_key 聚合 | 不再依赖进程内列表作为 live 限频事实源 |
+| `monitoring/health/ready` | runtime consumer 公开端口 | app runtime | executor ready 必须覆盖 intent/operator consumer 存活 | 不再只看 position/pending/risk manager |
+| `ingestion.Ingestor` | MT5 OHLC/quote/tick 调用 | ingestor executor timeout boundary | 所有 MT5 market call 有统一 timeout | quote/tick 不再能单点卡死采集循环 |
+| `signals.orchestration.intrabar_contract` | `signal.ini[intrabar_trading]` | shared intrabar contract helper | `enabled_strategies` 空列表 = intrabar trading disabled | 不再 trigger/validation/coordinator 三套语义 |
+| `backtesting.engine.deployment_gate` | signal_config deployment 或显式 snapshot | `BacktestDeploymentGate` | config/snapshot 必须非空；research bypass 必须 `research_disabled(reason)` | 不再用 `{}` 表示关闭 gate |
+| `config.risk` / `live_preflight` | `[preflight_risk_policy]` | `PreflightRiskPolicy` | live preflight 阈值由配置模型驱动 | 不再在 CLI 中硬编码 live 风控门槛 |
+
+### 验证
+
+- `tests/trading/entry_policy/test_registry.py`
+- `tests/trading/test_signal_executor.py -k entry_policy_mapping_missing`
+- `tests/risk/test_risk_rules.py`
+- `tests/core/test_pretrade_risk_service.py`
+- `tests/persistence/test_trade_command_audit_repo.py`
+- `tests/trading/runtime/test_trade_frequency.py`
+- `tests/api/test_monitoring_ready.py`
+- `tests/ingestion/test_ingestor_mt5_timeout.py`
+- `tests/app_runtime/test_intrabar_runtime_contract.py`
+- `tests/backtesting/test_deployment_consistency.py`
+- `tests/backtesting/test_engine.py`
+- `tests/backtesting/test_optimizations.py`
+- `tests/ops/test_live_preflight.py`
+- `tests/config/test_risk_config.py`
+
+### 未决项
+
+- 当前较高频支持仍是 M1/M5 confirmed-bar 主线，不是 tick scalping；若要进入 tick-to-order，需要新增正式 intrabar 策略合同、延迟预算和执行仿真验收。
+- live 策略重新绑定前仍必须完成策略级 deployment、entry policy、account binding、risk profile、preflight 和 demo 对账，不能只靠全局开关启用。
+- preflight 风控门槛已经配置化，但账户规模变化仍需同步调整正式 risk 上限、deployment 合同与 runbook，而不是单独放宽 preflight policy。
+
+---
+
 ## 0s. 2026-05-04 M1/M5 日内高频 Goal v1：confirmed-bar 主线
+
+> 历史记录：本节方案已在 `0zf` 回滚。当前普通策略池为 PA-only；`structured_micro_momentum` 不再注册、不再部署、不再绑定 demo 账户。
 
 ### 触发
 
@@ -6741,183 +7529,183 @@ python -m src.ops.cli.mining_runner --environment live --tf H1,M30,M15 \
 
 补充更新（2026-04-17）：Telegram 通知模块 Phase 1
 
-- **HealthMonitor 新增 `set_alert_listener` 外部订阅端口，仅在 warning/critical 转换为 active_alerts 时同步回调，listener 异常被 try/except 隔离（不污染 monitor 自身状态）；NullHealthMonitor 同步实现为 no-op 保持接口兼容**  
+- **HealthMonitor 新增 `set_alert_listener` 外部订阅端口，仅在 warning/critical 转换为 active_alerts 时同步回调，listener 异常被 try/except 隔离（不污染 monitor 自身状态）；NullHealthMonitor 同步实现为 no-op 保持接口兼容**
   `record_metric()` 路径原本只把告警写入 `self.active_alerts` 与 SQLite 历史表，没有对外通知机制。本轮最小侵入加入 `_alert_listener: Optional[Callable]` + `set_alert_listener()` 方法（约 15 行），在告警升级点同步调用 listener，由通知模块负责将 alert dict 映射成 NotificationEvent 并分发。listener 异常被捕获后仅记日志，不回退 active_alerts 的写入。该改动只扩展公开端口、不更改 monitor 内部告警判定逻辑，符合 ADR-006（不读私有属性、只通过公开 setter 接入）。
 
-- **AppContainer 新增 `notification_module` 字段（Optional[NotificationModule]）；AppRuntime 在启动尾段 `_start_notifications()`，关闭顺序中先于 monitoring/ingestor 拆除以确保 bus/health listener 及时解绑，防止僵尸回调**  
+- **AppContainer 新增 `notification_module` 字段（Optional[NotificationModule]）；AppRuntime 在启动尾段 `_start_notifications()`，关闭顺序中先于 monitoring/ingestor 拆除以确保 bus/health listener 及时解绑，防止僵尸回调**
   `builder_phases/notifications.py` 作为独立 Phase 5.5 在 read_models 之后、studio 之前执行。工厂 `create_notification_module()` 会在缺少 `bot_token` 或 `default_chat_id` 时返回 `None`，`NotificationModule` 不被构建，container 字段保留为 `None`，运行时路径全量跳过通知链路——不会影响未配置推送的实例。`NotificationModule.stop()` 只停 worker + 解 listener，`close()` 额外关闭 outbox SQLite 句柄；运行时 toggle 调 `stop/start` 即可在线切换而不丢失 outbox 内容。
 
-- **`src/notifications/` 引入 6 层开关控制但不改任何业务模块：物理（无 token → 不构建）/ 全局（[runtime] enabled）/ 运行时（`/v1/admin/notifications/toggle` API）/ 事件级（[events] `<name>` = off）/ 实例级（[event_filters] suppress_info_on_instances）/ 最终防刷（dedup TTL + rate limit）**  
+- **`src/notifications/` 引入 6 层开关控制但不改任何业务模块：物理（无 token → 不构建）/ 全局（[runtime] enabled）/ 运行时（`/v1/admin/notifications/toggle` API）/ 事件级（[events] `<name>` = off）/ 实例级（[event_filters] suppress_info_on_instances）/ 最终防刷（dedup TTL + rate limit）**
   模块自身遵守 L2 持久化（SQLite outbox + DLQ 崩溃恢复）与 ADR-005（worker 线程 join 超时后保留引用），与 StorageWriter 的线程模式对齐。详见 `docs/design/notifications.md`。
 
 补充更新（2026-04-13）：
 
-- **本地单账户执行适配路径已并入同一 terminal 结果发射职责，不再由 queue worker 悄悄吞掉正式结果**  
-  上一轮虽然把 execution intent 主链的 terminal 事件所有权收口到了 `ExecutionIntentConsumer`，但 `TradeExecutor._exec_worker()` 仍只是调用 `process_event()` 后直接丢弃返回值。这意味着单账户/本地测试场景下通过 `on_signal_event()`、`on_intrabar_trade_signal()` 进入的事件，虽然会被真正执行或跳过，却不会留下统一的 `execution_succeeded / execution_skipped / execution_failed` 终态，形成“主链干净、本地路径失真”的残留双轨。现已把“执行结果解释 + terminal pipeline 事件发射”抽到 `src.trading.execution.eventing` 的共享端口中，由 `ExecutionIntentConsumer` 与本地 queue worker 共用；执行器继续只负责返回正式结果，queue/consumer 这类交付层再根据结果发 terminal 事件，职责边界恢复一致。  
+- **本地单账户执行适配路径已并入同一 terminal 结果发射职责，不再由 queue worker 悄悄吞掉正式结果**
+  上一轮虽然把 execution intent 主链的 terminal 事件所有权收口到了 `ExecutionIntentConsumer`，但 `TradeExecutor._exec_worker()` 仍只是调用 `process_event()` 后直接丢弃返回值。这意味着单账户/本地测试场景下通过 `on_signal_event()`、`on_intrabar_trade_signal()` 进入的事件，虽然会被真正执行或跳过，却不会留下统一的 `execution_succeeded / execution_skipped / execution_failed` 终态，形成“主链干净、本地路径失真”的残留双轨。现已把“执行结果解释 + terminal pipeline 事件发射”抽到 `src.trading.execution.eventing` 的共享端口中，由 `ExecutionIntentConsumer` 与本地 queue worker 共用；执行器继续只负责返回正式结果，queue/consumer 这类交付层再根据结果发 terminal 事件，职责边界恢复一致。
 
-- **`duplicate_signal_id` 已回到统一 reject 合同，不再保留一条只记 skip 计数、不写完整阻断事实的历史旁路**  
-  `pre_trade_checks.run_pre_trade_filters()` 之前对 `signal_id` 幂等冲突使用的是 `_notify_skip_helper()` 直接返回，这让它不同于其他 pre-trade reject：不会稳定生成 `execution_blocked + admission_report_appended` 这组阶段性事实。现已改为与其他 reject 一样统一走 `reject_signal()`，因此 duplicate guard 与 quote stale、position limit、governance reject 等同属一套正式拒绝合同，trace 与 admission 视图不再为这条历史残留分支做例外解释。  
+- **`duplicate_signal_id` 已回到统一 reject 合同，不再保留一条只记 skip 计数、不写完整阻断事实的历史旁路**
+  `pre_trade_checks.run_pre_trade_filters()` 之前对 `signal_id` 幂等冲突使用的是 `_notify_skip_helper()` 直接返回，这让它不同于其他 pre-trade reject：不会稳定生成 `execution_blocked + admission_report_appended` 这组阶段性事实。现已改为与其他 reject 一样统一走 `reject_signal()`，因此 duplicate guard 与 quote stale、position limit、governance reject 等同属一套正式拒绝合同，trace 与 admission 视图不再为这条历史残留分支做例外解释。
 
-- **execution intent 主链的 terminal 事件所有权已收口到 `ExecutionIntentConsumer`，不再靠执行器本地和 consumer 双方各发一遍**  
-  上一轮虽然把 `auto_trade_disabled` 等跳过路径补成了结构化结果，但更深一层的问题仍在：`pre_trade_checks.reject_signal()`、`execute_market_order()`、`submit_pending_entry()` 这些执行器内部 helper 还会直接发 `execution_skipped / execution_failed`，随后 `ExecutionIntentConsumer` 又会根据 `process_event()` 的返回值再补一条 terminal 事件，导致同一条 intent 在 trace 里可能同时出现“本地 failed/skipped”和“consumer 再次 failed/skipped”的重复终态。现已按职责边界重构为单一所有权：执行器内部只保留阶段性事实（如 `execution_blocked`、`execution_submitted`、admission report），并统一返回正式 `completed / skipped / failed` 结果；真正的 terminal pipeline 事件只由 `ExecutionIntentConsumer` 发一次。这样 execution intent 的生命周期与 trace 终态重新对齐，不再依赖额外 suppress 标记或兼容字段。  
+- **execution intent 主链的 terminal 事件所有权已收口到 `ExecutionIntentConsumer`，不再靠执行器本地和 consumer 双方各发一遍**
+  上一轮虽然把 `auto_trade_disabled` 等跳过路径补成了结构化结果，但更深一层的问题仍在：`pre_trade_checks.reject_signal()`、`execute_market_order()`、`submit_pending_entry()` 这些执行器内部 helper 还会直接发 `execution_skipped / execution_failed`，随后 `ExecutionIntentConsumer` 又会根据 `process_event()` 的返回值再补一条 terminal 事件，导致同一条 intent 在 trace 里可能同时出现“本地 failed/skipped”和“consumer 再次 failed/skipped”的重复终态。现已按职责边界重构为单一所有权：执行器内部只保留阶段性事实（如 `execution_blocked`、`execution_submitted`、admission report），并统一返回正式 `completed / skipped / failed` 结果；真正的 terminal pipeline 事件只由 `ExecutionIntentConsumer` 发一次。这样 execution intent 的生命周期与 trace 终态重新对齐，不再依赖额外 suppress 标记或兼容字段。
 
-- **confirmed/disabled 跳过分支已统一返回结构化 skipped result，live trace 不再只剩 `reason=null`**  
-  之前虽然 `intrabar` 的大部分门禁已经开始返回 `status/reason/category/details`，但 `confirmed` 路径里仍有几类关键分支直接 `return None`：例如 `auto_trade_enabled=false`、confirmed 预交易过滤链拒绝、trade params 不可计算、spread-to-stop 超限，以及 intrabar 仓位被 confirmed 验证/保持不动。这会让 `ExecutionIntentConsumer` 只能按“结果为空”粗略落成 `execution_skipped`，summary reason 继续显示为 `unknown/null`。现已把这些分支统一收口为正式 skipped result；对本地未经过 `reject_signal()` 的 `auto_trade_disabled / intrabar_position_*` 场景，还补了统一的 execution log + skip 计数更新，但不重复发第二条 pipeline skip 事件。这样当前 live 配置仍处于 `auto_trade_enabled=false` 时，confirmed 与 intrabar canary 也能在 `/v1/trade/traces` 里稳定看到正式 skip reason。  
+- **confirmed/disabled 跳过分支已统一返回结构化 skipped result，live trace 不再只剩 `reason=null`**
+  之前虽然 `intrabar` 的大部分门禁已经开始返回 `status/reason/category/details`，但 `confirmed` 路径里仍有几类关键分支直接 `return None`：例如 `auto_trade_enabled=false`、confirmed 预交易过滤链拒绝、trade params 不可计算、spread-to-stop 超限，以及 intrabar 仓位被 confirmed 验证/保持不动。这会让 `ExecutionIntentConsumer` 只能按“结果为空”粗略落成 `execution_skipped`，summary reason 继续显示为 `unknown/null`。现已把这些分支统一收口为正式 skipped result；对本地未经过 `reject_signal()` 的 `auto_trade_disabled / intrabar_position_*` 场景，还补了统一的 execution log + skip 计数更新，但不重复发第二条 pipeline skip 事件。这样当前 live 配置仍处于 `auto_trade_enabled=false` 时，confirmed 与 intrabar canary 也能在 `/v1/trade/traces` 里稳定看到正式 skip reason。
 
-- **`execution_skipped` 现在会保留正式 skip reason，不再被 intent consumer 覆盖成 `unknown`**  
-  之前 `ExecutionIntentConsumer` 只按“`result is None` / 非空”粗略判定 `completed|skipped`，并在 trace 中追加一条不带原因的 `execution_skipped`。这会把执行侧已经明确知道的 `trade_params_unavailable`、`intrabar_gate_blocked` 等事实抹平成 `reason=unknown`，降低 `/v1/trade/traces` 与 gate audit 的可审计性。现已把 skipped 结果收口为正式结构：执行器会在 intrabar 关键跳过分支返回 `status/reason/category/details`，consumer 会把这些字段透传到 pipeline event 顶层与 `result` 内，读模型也同步补了嵌套 reason 提取，确保 trace summary、gate audit 和 intent completion 看到的是同一套 skip reason。  
+- **`execution_skipped` 现在会保留正式 skip reason，不再被 intent consumer 覆盖成 `unknown`**
+  之前 `ExecutionIntentConsumer` 只按“`result is None` / 非空”粗略判定 `completed|skipped`，并在 trace 中追加一条不带原因的 `execution_skipped`。这会把执行侧已经明确知道的 `trade_params_unavailable`、`intrabar_gate_blocked` 等事实抹平成 `reason=unknown`，降低 `/v1/trade/traces` 与 gate audit 的可审计性。现已把 skipped 结果收口为正式结构：执行器会在 intrabar 关键跳过分支返回 `status/reason/category/details`，consumer 会把这些字段透传到 pipeline event 顶层与 `result` 内，读模型也同步补了嵌套 reason 提取，确保 trace summary、gate audit 和 intent completion 看到的是同一套 skip reason。
 
-- **snapshot trace 的 fallback 已前移到指标发布层，`SignalRuntime` 不再在真实主链上自起 detached filter trace**  
-  之前当 `SignalRuntime._on_snapshot()` 拿不到 `snapshot_source.get_current_trace_id()` 时，会直接生成新的 `uuid4` 写入 `signal_trace_id`。由于这一步发生在 `snapshot_published` 之后，最终会在目录里留下只有 `signal_filter_decided(filtered_pass)` 的 detached trace，看起来像“只有过滤事件、没有上游 bar/indicator/snapshot”。现已把 fallback trace ownership 收口到 `UnifiedIndicatorManager.publish_snapshot()`：如果指标发布时没有上游 trace，就在那里一次性分配 trace 并同时用于 `snapshot_published` 与 listeners；真实运行时因此至少会形成 `snapshot_published -> signal_filter_decided -> ...` 的同 trace 链，而不是继续由 signals 层临时补一个只有下游事件的新 trace。  
+- **snapshot trace 的 fallback 已前移到指标发布层，`SignalRuntime` 不再在真实主链上自起 detached filter trace**
+  之前当 `SignalRuntime._on_snapshot()` 拿不到 `snapshot_source.get_current_trace_id()` 时，会直接生成新的 `uuid4` 写入 `signal_trace_id`。由于这一步发生在 `snapshot_published` 之后，最终会在目录里留下只有 `signal_filter_decided(filtered_pass)` 的 detached trace，看起来像“只有过滤事件、没有上游 bar/indicator/snapshot”。现已把 fallback trace ownership 收口到 `UnifiedIndicatorManager.publish_snapshot()`：如果指标发布时没有上游 trace，就在那里一次性分配 trace 并同时用于 `snapshot_published` 与 listeners；真实运行时因此至少会形成 `snapshot_published -> signal_filter_decided -> ...` 的同 trace 链，而不是继续由 signals 层临时补一个只有下游事件的新 trace。
 
-- **文档漂移已继续清理到“单策略 + execution intents + worker 执行”口径**  
-  `signal-system.md`、`signals-dataflow-overview.md`、`intrabar-data-flow.md`、`README.md`、`architecture.md`、`adr.md`、`pending-entry.md` 已同步去掉或降级旧的 `TradeExecutor.on_intrabar_trade_signal()` / `voting_group` / direct listener 叙述，统一改回当前事实：`confirmed` 与 `intrabar_armed` 都经 `ExecutionIntentPublisher` 写入 `execution_intents`，再由 `ExecutionIntentConsumer -> TradeExecutor` 执行；vote/consensus 已退役，仅在少量历史说明处保留为“已移除语义”。  
+- **文档漂移已继续清理到“单策略 + execution intents + worker 执行”口径**
+  `signal-system.md`、`signals-dataflow-overview.md`、`intrabar-data-flow.md`、`README.md`、`architecture.md`、`adr.md`、`pending-entry.md` 已同步去掉或降级旧的 `TradeExecutor.on_intrabar_trade_signal()` / `voting_group` / direct listener 叙述，统一改回当前事实：`confirmed` 与 `intrabar_armed` 都经 `ExecutionIntentPublisher` 写入 `execution_intents`，再由 `ExecutionIntentConsumer -> TradeExecutor` 执行；vote/consensus 已退役，仅在少量历史说明处保留为“已移除语义”。
 
-- **`intrabar_armed_*` 已正式并入 `execution_intents` 主链，不再依赖本地 `TradeExecutor` 直连 listener**  
-  此前 `confirmed` 已经统一走 `main -> ExecutionIntentPublisher -> execution_intents -> ExecutionIntentConsumer -> TradeExecutor`，但 `intrabar_armed_*` 仍只在装配了本地 `trade_executor` 的 runtime 上通过 `signal_runtime.add_signal_listener(trade_executor.on_intrabar_trade_signal)` 直接触发。这导致单账户场景可以盘中执行，而 `live-main + live-exec-*` 双实例场景下 `intrabar` 无法进入 worker 链。现已把 `ExecutionIntentPublisher` 扩展为同时接受 `confirmed_*` 与 `intrabar_armed_*` 两类可执行信号，并移除本地 intrabar 直连 listener，让 `confirmed / intrabar` 两条交易入口统一收口到 execution intent 交付面，避免继续保留一条 live 双实例下不可见的旁路。  
+- **`intrabar_armed_*` 已正式并入 `execution_intents` 主链，不再依赖本地 `TradeExecutor` 直连 listener**
+  此前 `confirmed` 已经统一走 `main -> ExecutionIntentPublisher -> execution_intents -> ExecutionIntentConsumer -> TradeExecutor`，但 `intrabar_armed_*` 仍只在装配了本地 `trade_executor` 的 runtime 上通过 `signal_runtime.add_signal_listener(trade_executor.on_intrabar_trade_signal)` 直接触发。这导致单账户场景可以盘中执行，而 `live-main + live-exec-*` 双实例场景下 `intrabar` 无法进入 worker 链。现已把 `ExecutionIntentPublisher` 扩展为同时接受 `confirmed_*` 与 `intrabar_armed_*` 两类可执行信号，并移除本地 intrabar 直连 listener，让 `confirmed / intrabar` 两条交易入口统一收口到 execution intent 交付面，避免继续保留一条 live 双实例下不可见的旁路。
 
-- **`intrabar_synthesis` 健康态已从“未初始化即 stale”拆分为 `warming_up / healthy / stale`**  
-  之前 ingestor 的 intrabar synthesis 汇总在 `count=0`、尚未等到首个子 TF close 时，会直接把 parent TF 标成 `stale`，导致 H1/H4 这类触发周期较长的时间框架在启动初期看起来像“已经断更”。现已把 runtime health 聚合改为：从未合成过的目标明确标记为 `warming_up`，已有合成记录且超阈值才算 `stale`，其余为 `healthy`。`RuntimeReadModel.build_storage_summary()` 也同步补齐 `warming_up` 计数与整体状态投影，避免 `/health` 再把正常 warmup 窗口误报成真实故障。  
+- **`intrabar_synthesis` 健康态已从“未初始化即 stale”拆分为 `warming_up / healthy / stale`**
+  之前 ingestor 的 intrabar synthesis 汇总在 `count=0`、尚未等到首个子 TF close 时，会直接把 parent TF 标成 `stale`，导致 H1/H4 这类触发周期较长的时间框架在启动初期看起来像“已经断更”。现已把 runtime health 聚合改为：从未合成过的目标明确标记为 `warming_up`，已有合成记录且超阈值才算 `stale`，其余为 `healthy`。`RuntimeReadModel.build_storage_summary()` 也同步补齐 `warming_up` 计数与整体状态投影，避免 `/health` 再把正常 warmup 窗口误报成真实故障。
 
-- **`intrabar` 的 intent 消费结果合同已修复，不再把“被门禁挡住”误记成 `execution_succeeded`**  
-  在 `intrabar_armed_*` 接入 `execution_intents` 后，live canary 暴露出一个新的执行侧语义错误：`TradeExecutor.process_event()` 对 `scope=\"intrabar\"` 之前无论 `_handle_intrabar_entry()` 是否真正放行或下单，都会固定返回 `{\"status\": \"intrabar_processed\"}`。这会让 `ExecutionIntentConsumer` 把被 deployment / intrabar_synthesis / execution_gate 等门禁挡住的 intrabar intent 也统一记成 `status=completed`，并向 trace 发出 `execution_succeeded`，从而把“已消费但跳过”和“真实执行成功”混在一起。现已把 intrabar 路径改为返回真实执行结果：被任何门禁挡住或未产生下单动作时返回 `None`，只有真正进入执行结果时才向上返回 result；consumer 因而能把这类 canary 正确落成 `execution_skipped`，恢复 `intent -> execution` 生命周期的状态语义。  
+- **`intrabar` 的 intent 消费结果合同已修复，不再把“被门禁挡住”误记成 `execution_succeeded`**
+  在 `intrabar_armed_*` 接入 `execution_intents` 后，live canary 暴露出一个新的执行侧语义错误：`TradeExecutor.process_event()` 对 `scope=\"intrabar\"` 之前无论 `_handle_intrabar_entry()` 是否真正放行或下单，都会固定返回 `{\"status\": \"intrabar_processed\"}`。这会让 `ExecutionIntentConsumer` 把被 deployment / intrabar_synthesis / execution_gate 等门禁挡住的 intrabar intent 也统一记成 `status=completed`，并向 trace 发出 `execution_succeeded`，从而把“已消费但跳过”和“真实执行成功”混在一起。现已把 intrabar 路径改为返回真实执行结果：被任何门禁挡住或未产生下单动作时返回 `None`，只有真正进入执行结果时才向上返回 result；consumer 因而能把这类 canary 正确落成 `execution_skipped`，恢复 `intent -> execution` 生命周期的状态语义。
 
-- **启动期 `Spread/cost` 告警已从拍脑袋启发式收口为“仅在配置自相矛盾时告警”**  
-  `src.app_runtime.builder` 之前仅凭 `base_spread_points` 与 `max_spread_to_stop_ratio` 的固定比例关系，就会在 `base=30 / ratio=0.33` 这类正常配置下持续刷出 “may be too tight” warning，既不基于真实止损距离，也不反映运行时实际拦单事实。现已改为：启动时只输出一条事实型的 execution cost gate 摘要；只有当 `max_spread_points` 或 `session_spread_limits` 明确低于 `base_spread_points`、形成内部自相矛盾时才告警，避免 observability 面继续被伪风险噪音污染。  
+- **启动期 `Spread/cost` 告警已从拍脑袋启发式收口为“仅在配置自相矛盾时告警”**
+  `src.app_runtime.builder` 之前仅凭 `base_spread_points` 与 `max_spread_to_stop_ratio` 的固定比例关系，就会在 `base=30 / ratio=0.33` 这类正常配置下持续刷出 “may be too tight” warning，既不基于真实止损距离，也不反映运行时实际拦单事实。现已改为：启动时只输出一条事实型的 execution cost gate 摘要；只有当 `max_spread_points` 或 `session_spread_limits` 明确低于 `base_spread_points`、形成内部自相矛盾时才告警，避免 observability 面继续被伪风险噪音污染。
 
-- **`signal_filter_decided` trace 已补齐 `evaluation_time`，时段冷却审计不再依赖 `recorded_at` 猜测**  
-  本轮审计 `session_transition_cooldown:london_to_new_york` 时发现，部分 detached trace 只剩 `signal_filter_decided`，没有同 trace 的 `bar_closed`，导致只能看到持久化 `recorded_at`，而无法直接还原 filter 实际使用的 `event_time/bar_time`。现已在 pipeline event payload 中正式写入 `evaluation_time`（即 filter 真实判定时间）；后续查库、trace 目录投影或审计脚本都可直接按该字段判断是否落在 13:00 UTC handoff 窗口内，不再把“延迟落库”和“策略误判”混淆。  
+- **`signal_filter_decided` trace 已补齐 `evaluation_time`，时段冷却审计不再依赖 `recorded_at` 猜测**
+  本轮审计 `session_transition_cooldown:london_to_new_york` 时发现，部分 detached trace 只剩 `signal_filter_decided`，没有同 trace 的 `bar_closed`，导致只能看到持久化 `recorded_at`，而无法直接还原 filter 实际使用的 `event_time/bar_time`。现已在 pipeline event payload 中正式写入 `evaluation_time`（即 filter 真实判定时间）；后续查库、trace 目录投影或审计脚本都可直接按该字段判断是否落在 13:00 UTC handoff 窗口内，不再把“延迟落库”和“策略误判”混淆。
 
-- **已新增延后门禁审计 CLI，避免运行几天后再临时翻库拼 SQL**  
-  由于系统刚上线时样本不足，`session_transition_cooldown_minutes`、`quote_stale`、`intrabar_synthesis_*` 等门禁是否“过严”不应立即下结论。现已新增 `python -m src.ops.cli.pipeline_gate_audit --environment live --days N`：它基于 pipeline trace 的只读投影汇总 `signal_filter` / `execution` 两侧的真实拦截分布，并按 `gate family / gate reason / day / timeframe / source` 输出。这样后续运行 3 到 5 天后，可以直接拿真实样本评估哪些门禁需要收紧，而不必再次临时拼接数据库查询。  
+- **已新增延后门禁审计 CLI，避免运行几天后再临时翻库拼 SQL**
+  由于系统刚上线时样本不足，`session_transition_cooldown_minutes`、`quote_stale`、`intrabar_synthesis_*` 等门禁是否“过严”不应立即下结论。现已新增 `python -m src.ops.cli.pipeline_gate_audit --environment live --days N`：它基于 pipeline trace 的只读投影汇总 `signal_filter` / `execution` 两侧的真实拦截分布，并按 `gate family / gate reason / day / timeframe / source` 输出。这样后续运行 3 到 5 天后，可以直接拿真实样本评估哪些门禁需要收紧，而不必再次临时拼接数据库查询。
 
-- **MT5 根级共享默认配置在实例上下文下已恢复生效**  
+- **MT5 根级共享默认配置在实例上下文下已恢复生效**
   `src.config.mt5` 之前在 `MT5_INSTANCE` 已设置时，连根级 `config/mt5.ini` / `config/mt5.local.ini` 也会误走到 `config/instances/<instance>/...`，导致 `server_time_offset_hours` 这类共享默认项在 `live-exec-a` 这类未重复声明的实例上失效，并持续退回运行时自动探测 offset。现已把根级层读取改为显式绕过实例上下文，只让实例层参与覆盖；新增回归测试覆盖“实例上下文下仍继承根级共享默认”这一合同，避免再出现“`live-main` 因实例重复配置看似正常、`live-exec-a` 却丢失共享默认”的隐蔽漂移。
 
-- **`live-main` 的重复 MT5 offset override 已移除，根级 `config/mt5.local.ini` 恢复为唯一事实源**  
+- **`live-main` 的重复 MT5 offset override 已移除，根级 `config/mt5.local.ini` 恢复为唯一事实源**
   在修复 MT5 loader 的根级继承 bug 后，`config/instances/live-main/mt5.local.ini` 中那条冗余的 `server_time_offset_hours = 3` 已删除，避免继续用实例层重复配置掩盖共享默认层回归。当前 `server_time_offset_hours` 的正式来源已回到根级 `config/mt5.local.ini`；若未来 live/demo 的 broker server offset 确实分叉，应通过根配置分层或新的正式环境级合同解决，而不是继续在单个实例文件里偷偷覆盖。
 
-- **Vote/consensus 已从 runtime、backtest、配置与公开接口中正式移除**  
+- **Vote/consensus 已从 runtime、backtest、配置与公开接口中正式移除**
   当前信号主链路已收口为“单策略评估 → `no_signal` 或直接进入状态机/执行链路”，不再保留 `consensus fallback`、`voting_groups`、`standalone_override`、`strategy="consensus"` 或 `/signals/consensus/recent` 之类的公开语义。`config/signal.ini` 已删除对应 section，`signal.local.ini` 若仍保留旧 vote 配置会在启动时直接按配置漂移失败；trace 读侧则仅保留对历史 `voting_completed` 的最小归一化兼容。
 
-- **交易命令消费者已修复 `close_position.volume` 与 `cancel_orders.magic` 转发缺失**  
+- **交易命令消费者已修复 `close_position.volume` 与 `cancel_orders.magic` 转发缺失**
   `OperatorCommandConsumer` 执行 `close_position` 时现已把队列 payload 的 `volume` 原样透传到 `command_service.close_position(...)`，避免“部分平仓请求退化为全平仓”；执行 `cancel_orders` 时也已补传 `magic` 过滤条件，避免“限定策略撤单退化为同品种全撤”。本轮同时新增消费者级回归测试，直接断言上述两个字段会被正确转发，防止后续重构再次回归。
 
-- **`economic_calendar_staleness` 监控阈值已按最快启用的经济日历刷新路径收口**  
+- **`economic_calendar_staleness` 监控阈值已按最快启用的经济日历刷新路径收口**
   之前 health monitor 固定把 warning 阈值设成 `stale_after_seconds / 2`，在 `release_watch_idle_interval_seconds = 1800`、`stale_after_seconds = 1800` 的配置下，会在服务仍然 `health_state=ok / stale=false` 时提前持续刷 warning。现已改为按“最快启用刷新路径的最大预期间隔”计算 warning 阈值：当前 `calendar_sync=21600 / near_term=0 / release_watch_idle=1800` 时，warning 与 critical 都对齐到 `1800s`，避免 idle release_watch 期间的误报型日志噪音；若未来重新启用 `near_term_sync=900`，warning 也会自动回落到 `900s`。
 
-1. **demo/live 环境已收口为 topology 的唯一事实源，MT5 不再反推系统环境**  
+1. **demo/live 环境已收口为 topology 的唯一事实源，MT5 不再反推系统环境**
    `load_db_settings()` 现已只按当前 topology environment 路由到 `db.live` / `db.demo`，不再从 MT5 账户字段二次推导；`RuntimeIdentity` 统一收口为 `instance_id / instance_role / live_topology_mode / environment / account_alias / account_key`。启动时会强制校验：`demo` 只允许 `single_account + main`，`live` 的 `multi_account` 下所有启用账户必须使用不同 terminal path。回测、research、experiment 入口也已改为默认读取当前环境数据库，不再写死 `live` 或隐式跟随旧单库。
 
-2. **自动交易已统一收口到 `execution_intents` 队列，而不再保留“信号直接下单”双轨语义**  
+2. **自动交易已统一收口到 `execution_intents` 队列，而不再保留“信号直接下单”双轨语义**
    `main` 现在只负责写入 `execution_intents`，`executor`/单账户 main 再按 `target_account_key` claim 并执行；`signal_runtime -> trade_executor` 的直接监听已移除，改为 `ExecutionIntentPublisher + ExecutionIntentConsumer` 的正式交付面。当前一期策略分发来源固定为 `signal.ini` 中的 `account_bindings.<alias>.strategies` 静态绑定，`single_account` 下默认投递到当前账户，`multi_account` 下只投递到显式绑定账户。
 
-3. **signal performance 与 execution performance 已拆成两条正式链路**  
+3. **signal performance 与 execution performance 已拆成两条正式链路**
    `SignalModule` 现在只消费基于 `signal_outcomes` 的 signal performance；账户真实成交侧则通过独立的 execution performance tracker 仅消费当前 `account_key` 的 `trade_outcomes`。warm-up 也已同步拆分为 `fetch_recent_signal_outcomes()` 与 `fetch_recent_trade_outcomes(account_key=...)`，避免不同 live 账户的真实盈亏再反向污染当前账户的信号 multiplier。
 
-4. **账户事实表已补齐 `account_key`，运行态追踪补齐 `instance_id / instance_role`**  
+4. **账户事实表已补齐 `account_key`，运行态追踪补齐 `instance_id / instance_role`**
    `auto_executions`、`trade_outcomes` 之外，本轮继续把 `trade_command_audits`、`pending_order_states`、`position_runtime_states`、`trade_control_state`、`position_sl_tp_history` 的写库契约补齐到 `account_key`；`runtime_task_status`、`pipeline_trace_events` 已补上实例维度，执行侧事件同时带 `intent_id` / `account_key`。现阶段仍保留 `account_alias` 作为展示字段与兼容过滤口径，但新的事实写入已经按稳定 `account_key` 输出，读模型/API 可逐步迁移到 key 口径。
 
-5. **SL/TP 历史写入已从占位 alias 回到运行时真实账户语义**  
+5. **SL/TP 历史写入已从占位 alias 回到运行时真实账户语义**
    `PositionManager` 过去写 `position_sl_tp_history` 时仍依赖空 `account_alias` 占位；当前已改为在运行时装配层基于 `RuntimeIdentity` 注入真实 `account_alias + account_key`，避免多账户下 SL/TP 审计继续丢账户归属。
 
-6. **本轮改动已补齐定向回归测试**  
+6. **本轮改动已补齐定向回归测试**
    已新增/扩展配置与交易侧回归，覆盖 `db` 分库路由、`validate_mt5_topology()` 的多终端冲突校验、`RuntimeIdentity` 的 `account_key` 生成、`ExecutionIntentPublisher/Consumer` 的单账户/多账户发布消费语义，以及 `TradingStateStore` / `TradingModule` 的 `account_key` 落库。定向执行通过：`tests/config/test_mt5_multi_account_config.py`、`tests/trading/test_execution_intents.py`、`tests/trading/test_state_store.py`、`tests/trading/test_trading_module.py`、`tests/readmodels/test_trade_trace.py`、`tests/api/test_trade_api.py`、`tests/api/test_monitoring_runtime_tasks.py`、`tests/readmodels/test_runtime.py`、`tests/config/test_signal_config.py`、`tests/app_runtime/test_signal_factory.py`。
 
-7. **指标 durable event 消费断链已修复**  
+7. **指标 durable event 消费断链已修复**
   `IndicatorEventLoop` 已改为调用 `event_store.claim_next_events(...)`，真实启动时事件循环线程可正常存活，不再因接口名不匹配崩溃。
 
-8. **`runtime_task_status` 持久化契约已统一并补库表迁移**  
+8. **`runtime_task_status` 持久化契约已统一并补库表迁移**
   新增统一状态集合，覆盖 `ready / failed / idle / disabled / ok / partial / error / stopped` 等当前真实生产者语义；`TimescaleWriter.init_schema()` 现在会在启动时重建相关 check constraint，现有数据库不需要手工删表。
 
-9. **经济日历 `session_bucket/status` 与 schema 漂移已修复并补库表迁移**  
+9. **经济日历 `session_bucket/status` 与 schema 漂移已修复并补库表迁移**
   现已允许 `all_day / asia_europe_overlap / europe_us_overlap`，同时允许 `imminent / pending_release` 状态；真实启动后不再出现该表 check constraint 失败和因此进入 DLQ 的问题。
 
-10. **`StorageWriter.stop()` 生命周期语义已修正**  
+10. **`StorageWriter.stop()` 生命周期语义已修正**
   线程 `join(timeout)` 后若仍存活，将保留线程引用并保持 `is_running()` 为真，避免误判组件已停止。
 
-11. **`/health` 已扩展为链路级组件视图**  
+11. **`/health` 已扩展为链路级组件视图**
    除市场与交易摘要外，现在还会返回 `storage_writer / indicator_engine / signal_runtime / trade_executor / pending_entry_manager / position_manager / economic_calendar` 运行状态，便于直接判断“采集 → 指标 → 信号 → 执行”链路是否在线。
 
-12. **日志目录已统一回到项目根目录 `data/`**  
+12. **日志目录已统一回到项目根目录 `data/`**
    `src.entrypoint.web` 的相对 `log_dir` 解析现已锚定仓库根目录，不再向 `src/entrypoint/data/logs` 写入；本轮也已把历史遗留日志迁移到根目录 `data/logs/` 下的 `legacy-src-entrypoint-*.log`。
 
-13. **系统 readiness 盲区已补齐：采集线程现在纳入就绪探针**  
+13. **系统 readiness 盲区已补齐：采集线程现在纳入就绪探针**
    `/monitoring/health/ready` 过去只看 `storage_writer` 与 `indicator_engine`，即使 `BackgroundIngestor` 已退出也可能误报 `ready`。本轮已把 `ingestion` 纳入同一探针，`RuntimeReadModel.build_storage_summary()` 也同步把 `ingest_alive=false` 视为 `critical`。
 
-14. **`PipelineTraceRecorder` 生命周期语义已修正**  
+14. **`PipelineTraceRecorder` 生命周期语义已修正**
    该组件此前在 `stop()` 的 `join(timeout)` 后会无条件清空线程引用，且监听器注册失败时仍会假装启动成功。本轮已改为：监听器挂接失败立即抛错；线程未退出时保留引用并维持真实运行态，避免 observability 组件假死但状态看起来正常。
 
-15. **`calendar` 包顶层导入导致的循环依赖已修复**  
+15. **`calendar` 包顶层导入导致的循环依赖已修复**
    `src.persistence.schema.economic_calendar` 引入 contract 时会先执行 `src.calendar.__init__`，此前这里立即导入 `service`，从而形成 `db -> schema -> calendar -> service -> db` 的循环。现已改为懒加载导出，不再阻塞采集/持久化相关测试与运行时装配。
 
-16. **测试资产已做一轮去噪和契约收口**  
+16. **测试资产已做一轮去噪和契约收口**
    已删除 7 个只有 `pytest.mark.skip`、实际不产生任何覆盖的历史空文件；同时移除了 2 个“打印 + 吞异常”的脚本式伪测试。`tests/data/test_data_layer.py` 也已改造成无外部 DB 依赖的真实单元测试，`tests/api/test_monitoring_config_reload.py` 则同步对齐当前 404 契约，避免旧口径误报失败。
 
-17. **`SignalRuntime` 测试已从私有子方法绑定收口到行为契约**  
+17. **`SignalRuntime` 测试已从私有子方法绑定收口到行为契约**
    原 `tests/signals/test_runtime_submethods.py` 直接断言 `_dequeue_event / _is_stale_intrabar / _apply_filter_chain / _detect_regime` 等私有实现细节，重构成本高而行为保护有限。本轮已删除该文件，并把仍有价值的覆盖迁移为 `tests/signals/test_signal_runtime.py` 中的行为测试，直接校验队列反饥饿、stale intrabar 丢弃、filter 统计和 stop 后队列清理。
 
-18. **`docs/` 已完成一次“运行时真相 / 审计治理 / 方案规划”分层审计，并新增单一导航入口**  
+18. **`docs/` 已完成一次“运行时真相 / 审计治理 / 方案规划”分层审计，并新增单一导航入口**
    已新增 `docs/README.md` 作为文档入口，`architecture / full-runtime-dataflow / signals-dataflow-overview / intrabar-data-flow / entrypoint-map` 已明确标注为当前实现真相文档；`signal-system / research-system / next-plan / r-based-position-management` 等文档已补充“设计参考/规划”定位说明，避免再把方案稿直接当作当前运行结论。`architecture.md` 也已把本应属于专题设计的参数表和方案细节收口到对应专题文档。与此同时，`docs/` 下运行时流图已统一为 Claude 风格 ASCII，不再保留 Mermaid 图。
 
-19. **系统启动巡检与 live canary 已收口成独立 runbook**  
+19. **系统启动巡检与 live canary 已收口成独立 runbook**
    已新增 `docs/runbooks/system-startup-and-live-canary.md`，把 `live_preflight`、启动后 5 分钟巡检、休盘/开盘日志判读、以及开盘窗口的系统级 live canary 步骤统一成一套固定流程。`entrypoint-map.md` 与 `docs/README.md` 已同步改为链接到该 runbook，避免启动入口文档和运行时文档再各自维护一套巡检说明。
 
-20. **回测已正式区分 `research` 与 `execution_feasibility` 两种执行语义**  
+20. **回测已正式区分 `research` 与 `execution_feasibility` 两种执行语义**
    本轮没有拆分指标、策略、过滤或 regime/voting 内核，仍然复用同一套生产数据指标流；变化只发生在“信号如何转成可成交动作”这一层。`BacktestConfig` 新增 `simulation_mode`，CLI / API / `config/backtest.ini` 已能显式指定；`BacktestResult` 新增 `execution_summary`，会输出当前模式、accepted entries、rejected entries 与 rejection reasons。`research` 模式允许理论子最小手数仓位继续用于策略研究，`execution_feasibility` 模式则会在最小手数不可成交时明确拒单，避免再把研究回测误当成上线可执行性结论。
 
-21. **手工运行产物目录已收口到 `data/artifacts/`**  
+21. **手工运行产物目录已收口到 `data/artifacts/`**
    根目录平级 `runtime/` 过去混放了回测 JSON、压测日志、启动排查 stdout/stderr 等人工执行产物，语义上与正式运行期目录 `data/` 并行，容易形成第二套“事实源”。本轮已把这类文件迁到 `data/artifacts/`，并在运行时流图/runbook 中明确：`data/` 是唯一运行期根目录，`data/artifacts/` 只承载手工回测、压测、排障输出，仓库根目录不再保留 `runtime/`。
 
-22. **Research feature → shared indicator 的半自动晋升链路已落地第一版**  
+22. **Research feature → shared indicator 的半自动晋升链路已落地第一版**
    本轮新增了 `FeatureCandidateSpec / IndicatorPromotionDecision / FeaturePromotionReport`，并把 research feature registry 的元数据扩展为 `formula_summary / source_inputs / runtime_state_inputs / live_computable / compute_scope / bounded_lookback / strategy_roles / promotion_target_default`。`MiningRunner` 现在可直接输出 feature candidate 工件与 promotable 过滤结果；首个真实晋升指标 `momentum_consensus14` 已注册进 `config/indicators.json`，并接入 `structured_breakout_follow` 作为共享动量一致性确认因子。与此同时，回测验证报告已能携带 `feature_candidate_id / promoted_indicator_name / strategy_candidate_id / research_provenance`，用于把 research → indicator → strategy 的证据链真正串起来。
 
-23. **`src/research` 已按职责边界重组为 `core / analyzers / features / strategies / orchestration`**  
+23. **`src/research` 已按职责边界重组为 `core / analyzers / features / strategies / orchestration`**
    过去 `src/research` 顶层同时平铺 `runner.py`、`data_matrix.py`、`feature_candidates.py`、`candidates.py`、`models.py` 等文件，公共基础、feature 路径和 strategy 路径混在同一层，包边界不清晰。本轮已把公共基础能力收口到 `src/research/core/`，将 research feature / indicator promotion 路径收口到 `src/research/features/`，将 strategy candidate 发现收口到 `src/research/strategies/`，并把编排入口迁到 `src/research/orchestration/runner.py`。共享统计分析器仍保留在 `src/research/analyzers/`，避免按“指标版/策略版”复制两套证据引擎。
 
-24. **`docs/research-system.md` 已补齐 research 模块职责、流程和关键文件作用说明**  
+24. **`docs/research-system.md` 已补齐 research 模块职责、流程和关键文件作用说明**
    在目录重组之后，`research-system.md` 已同步新增“模块职责总览”和“关键文件职责表”，明确写清 `orchestration / core / analyzers / features / strategies` 五层的输入、输出和边界，并把 research 的两条正式分支整理为“feature/indicator 晋升路径”和“strategy candidate 晋升路径”。这样后续再看 `src/research/*` 时，不需要再从代码倒推“谁负责编排、谁负责证据、谁负责候选工件”，减少继续演化时的边界漂移风险。
 
-25. **首个真实 promoted indicator 已接入受限 consumer strategy，并补齐 research / execution / WF 证据链**  
+25. **首个真实 promoted indicator 已接入受限 consumer strategy，并补齐 research / execution / WF 证据链**
     本轮没有继续把 `momentum_consensus14` 硬塞到休眠策略里，而是新增了 `structured_trend_h4_momentum` 作为 `StructuredTrendContinuation` 的受限变体：复用同一套结构化策略骨架，只在 `why` 层接入 `momentum_consensus14`，并通过 `strategy_deployment` 明确收口为 `paper_only + tf_specific + locked_timeframes=H1 + locked_sessions=london,new_york`。同时，`ValidationDecision` 已修正为支持 `research backtest result + execution_feasibility result` 双结果输入，不再混用一份回测结果承担两种语义；`walkforward_runner` 也已修复对旧字段 `is_result/oos_result` 的错误引用，并把 split 详情落盘。当前真实产物表明：该指标的 promotion 成立，但首个 downstream strategy consumer 结论仍为 `refit`，主因是研究回测样本不足、执行可行性下最小手数全部拒单，以及 WF 一致性仅 40%。
 
-26. **QuantX 前端消费契约已从“多接口手工拼装”收口到正式分页/目录/流式接口**  
+26. **QuantX 前端消费契约已从“多接口手工拼装”收口到正式分页/目录/流式接口**
     本轮围绕 `docs/quantx-backend-backlog.md` 与 `docs/design/quantx-trade-state-stream.md`，把原先只适合后台排查的只读接口升级为前端可直接消费的正式契约：`/signals/recent` 现已支持 `direction/status/from/to/page/page_size/sort`；`/trade/command-audits` 新增 `symbol/signal_id/trace_id/actor` 与时间窗口分页；`/trade/traces` 提供 trace 目录视图；`/trade/state/stream` 提供统一 SSE 状态流（`state_snapshot`、`position_changed`、`order_changed`、`pending_entry_changed`、`alert_raised/resolved`、`command_audit_appended` 等事件）。对应的 `TradingFlowTraceReadModel` 也已补齐 trace 摘要状态、目录列表和详情关联事实，减少了前端直接拼多条后端读模型、探测隐式状态的边界泄漏；本次没有新增兼容别名路径，而是把缺失的查询/目录能力补成正式端口。
 
-27. **QuantX 控制闭环已补上“统一动作结果 + 审计 ID + SSE 关联”第一版正式契约**  
+27. **QuantX 控制闭环已补上“统一动作结果 + 审计 ID + SSE 关联”第一版正式契约**
     本轮进一步把 `POST /trade/control`、`POST /trade/runtime-mode`、`POST /trade/closeout-exposure` 从“只返回状态快照”升级为统一动作结果模型，正式返回 `accepted / status / action_id / audit_id / actor / reason / idempotency_key / recorded_at / effective_state`，并支持 `request_context`。后端会把同一 `action_id` 写入命令审计，再由 `/trade/state/stream` 的 `trade_control_changed / runtime_mode_changed / closeout_started / closeout_finished / command_audit_appended` 一并带出，前端不再需要靠时间接近性去猜“哪条状态变化对应刚才哪个按钮”。与此同时，`trade_control` 状态快照已优先走 live state 而非旧持久化快照，减少了控制后立刻读取 `/trade/state` 与 SSE 时状态源不一致的边界泄漏。
 
-28. **QuantX 控制类 mutation 已补成真正的服务端幂等，而不再只是透传 `idempotency_key`**  
+28. **QuantX 控制类 mutation 已补成真正的服务端幂等，而不再只是透传 `idempotency_key`**
     本轮把 `POST /trade/control`、`POST /trade/runtime-mode`、`POST /trade/closeout-exposure` 的幂等能力从“请求/响应里有 `idempotency_key` 字段”推进到正式服务端语义：应用层新增独立的 operator action replay 服务，按 `command_type + idempotency_key` 收口短期内存去重，并在进程重启后回退到命令审计中查找最近一次已记录结果；同键同请求会直接回放原始动作结果，同键不同请求会返回显式冲突错误，而不是再次执行控制动作。这样前端的重试、双击和网络重放不再依赖时间接近性猜测，也避免把幂等逻辑散落在 3 条路由各自维护。当前实现没有引入兼容别名字段或第二套老路径，而是把 replay/冲突语义补成 `TradingCommandService` 背后的正式能力。
 
-29. **QuantX 手动平仓/撤单 mutation 已接入同一套 operator action replay 边界**  
+29. **QuantX 手动平仓/撤单 mutation 已接入同一套 operator action replay 边界**
     本轮继续把 `POST /close`、`POST /close_all`、`POST /close/batch`、`POST /cancel_orders`、`POST /cancel_orders/batch` 从“原始 MT5 结果直出”升级为统一动作结果模型，正式返回 `accepted / status / action_id / audit_id / actor / reason / idempotency_key / recorded_at / effective_state`，并复用同一套 `command_type + idempotency_key` 回放/冲突拒绝语义。实现上没有再为这几条路由单独复制一套幂等逻辑，而是让 `TradingModule` 在 `_execute_command` 里直接产出 operator action response，并把结果同步写入 replay cache 与命令审计；同时，operator replay 指纹已去掉 `account_alias` 这类作用域内生字段，避免 API 请求体与审计载荷仅因账户上下文字段不同而被误判成冲突。这样前端控制台的手动平仓、批量平仓和撤单操作终于与控制类 mutation 落在同一条正式动作合同上，而不是继续保留“有些按钮可重试，有些按钮只能靠前端自己防重”的双轨语义。
 
-30. **`pending-entry cancel` 与 `backtest/run` 已补进统一 action contract，而不再直出裸布尔/裸 job**  
+30. **`pending-entry cancel` 与 `backtest/run` 已补进统一 action contract，而不再直出裸布尔/裸 job**
     本轮继续把 `POST /monitoring/pending-entries/{signal_id}/cancel`、`POST /monitoring/pending-entries/cancel-by-symbol` 与 `POST /backtest/run` 纳入同一组执行类 mutation 语义。`pending-entry cancel` 现在改为正式请求体，支持 `reason / actor / idempotency_key / request_context`，并复用交易命令审计背后的 operator action replay 边界；同键同请求会直接回放原始取消结果，同键不同请求会显式冲突拒绝。`backtest/run` 则把动作状态拥有方收口到 `BacktestRuntimeStore`：同样支持 `actor / reason / idempotency_key / request_context`，返回统一的 `accepted / status / action_id / audit_id / message / effective_state`，并在 runtime store 内按 `command_type + idempotency_key` 做提交回放/冲突拒绝，避免网络重试或双击重复生成多条回测任务。与此同时，共享的 action contract helper 已从 `trade_routes/common.py` 抽到 `src/api/action_contracts.py`，后续再扩展其它危险操作时不需要继续复制一套字段归一化与 replay 响应拼装逻辑。
 
-31. **单代码目录 + `config/instances/<instance>` 多实例配置与 `instance/supervisor` 入口已落地第一版**  
+31. **单代码目录 + `config/instances/<instance>` 多实例配置与 `instance/supervisor` 入口已落地第一版**
     配置底座已支持在共享 `config/*.ini` 之上叠加 `config/instances/<instance>/*.ini` 与实例级 `.local.ini`；`load_config_with_base()` / `get_merged_option_source()` 已能按实例名解析最终配置来源。新增 `src.entrypoint.instance` 与 `src.entrypoint.supervisor` 后，同一代码目录下可通过 `python -m src.entrypoint.instance --instance live-main` 启动单实例，也可通过 `python -m src.entrypoint.supervisor --environment live`（或 `--group live`）按 `config/topology.ini` 拉起 `main + workers` 进程组，不再依赖复制多份代码目录来承载多账户部署。
 
-32. **账户自治风控已补齐正式当前态投影，`main` 只读聚合而不再以本地对象假装管理其他账户**  
+32. **账户自治风控已补齐正式当前态投影，`main` 只读聚合而不再以本地对象假装管理其他账户**
     新增 `account_risk_state` 表与 `AccountRiskStateProjector`，由每个账户执行拥有者基于本地 `trade_control / circuit breaker / margin_guard / pending / positions / runtime_mode / quote freshness` 独立计算并写出当前风险态；`RuntimeReadModel` 与 `/trade/accounts` 现已优先读取正式投影，而不是探测当前进程里是否恰好持有某个本地风控对象。与此同时，executor 角色的 runtime registry 已停止启动共享采集、共享指标计算、信号运行时和 paper trading，只保留账户本地执行、持仓保护、风控投影与 trace，边界上正式收敛为“`main` 做共享计算，账户实例做本地执行与风控”。
 
-33. **实例配置模型已进一步收口：只有 `mt5/market/risk` 允许实例级覆盖，其余配置保持共享事实源**  
+33. **实例配置模型已进一步收口：只有 `mt5/market/risk` 允许实例级覆盖，其余配置保持共享事实源**
     `config/instances/<instance>/` 现在不再被视为“什么都能放的第二套配置树”。配置加载层已显式限制只有 `mt5.ini`、`market.ini`、`risk.ini` 参与实例级合并；`app.ini`、`db.ini`、`signal.ini`、`topology.ini`、`economic.ini`、`ingest.ini`、`storage.ini`、`cache.ini` 等都保持根配置唯一事实源，即使实例目录下存在同名文件也不会被加载。这样可以避免实例配置再次演化成第二套系统，把角色/拓扑/策略/数据库等共享语义重新分叉到实例目录。
 
-34. **多实例本地运行态与日志已按实例自动隔离，消除了共享 `data/` 污染风险**  
+34. **多实例本地运行态与日志已按实例自动隔离，消除了共享 `data/` 污染风险**
     之前多实例虽然已经共享同一代码目录，但 `health_monitor.db`、`signal_queue.db`、`events.db`、`mt5services.log` 等仍默认写到同一个 `data/` 与 `data/logs/`，存在运行态互相覆盖和日志混写风险。当前已改为命名实例自动隔离到 `data/runtime/<instance>/` 与 `data/logs/<instance>/`；`instance` / `supervisor` 启动下不再需要手工为每个实例额外改 `runtime_data_dir/log_dir`，也避免了多实例下本地 SQLite/WAL 与日志文件继续互相污染。
 
-35. **入口日志现已补齐 `environment / instance / role` 上下文，多实例控制台输出不再完全不可判读**  
+35. **入口日志现已补齐 `environment / instance / role` 上下文，多实例控制台输出不再完全不可判读**
     `src.entrypoint.web` 与 `src.entrypoint.supervisor` 现已统一通过入口级 LogRecord context 注入，把 `environment / instance / role` 收口到每条日志记录，而不是只在启动首行打印实例名。这样多实例并行时，控制台输出与 `data/logs/<instance>/` 文件日志的内容语义保持一致；`main` 在 single-account 与 multi-account 下仍写入同一个 `data/logs/live-main/`，差异只体现在日志上下文和 topology，而不是路径漂移。
 
-36. **账户风险投影中的 `quote_stale` 已从“API 级 1 秒 stale”收口为“执行侧行情失联”语义**  
+36. **账户风险投影中的 `quote_stale` 已从“API 级 1 秒 stale”收口为“执行侧行情失联”语义**
     开盘实测中，XAUUSD 的真实 quote age 常落在 `1.1s ~ 1.9s`，而 `app.ini[limits].quote_stale_seconds = 1.0` 原本同时被 API 与 `AccountRiskStateProjector` 复用，导致 `account_risk_state.quote_stale` 在行情健康时也长期误报。当前已将 projector 改为显式使用执行侧阈值：至少 `3s`，并同时参考 `quote_stale_seconds` 与 `stream_interval_seconds` 的 3 倍；`trade/state` 中也新增 `metadata.quote_health.age_seconds / stale_threshold_seconds` 供巡检判读。这样 API 的紧阈值 stale 提示仍保留，但账户风控投影不再把正常开盘报价误标成风险盲区。
 
-37. **`intrabar` 合成 freshness 已收口为正式元数据合同与执行门禁**  
+37. **`intrabar` 合成 freshness 已收口为正式元数据合同与执行门禁**
     过去 `intrabar` 支链虽然已经能由子 TF close 合成父 TF 当前 bar，但执行侧并不知道这根 intrabar snapshot 是“刚由哪根子 bar 合成的、已经多久没更新、是否已断更”，因此 `main -> intent -> executor` 多实例路径里无法基于同一事实源判断盘中 trigger 是否已经过时。当前已在 `MarketDataService.set_intrabar(...)` 正式缓存 `trigger_tf / synthesized_at / stale_threshold_seconds / last_child_bar_time / child_bar_count / count` 等 synthesis 元数据，并由 `SignalRuntime.build_snapshot_metadata()` 注入到 signal metadata；执行侧通过共享 helper 统一计算 `intrabar_synthesis` 健康度，若 `scope=intrabar` 且 metadata 缺失或超时，会直接以 `intrabar_synthesis_unavailable / intrabar_synthesis_stale` 阻断交易。与此同时，`/health.runtime.components.ingestor.intrabar_synthesis` 与 runtime storage summary 已补齐 `configured / status / stale / worst_age_seconds` 聚合，用于把“盘中 trigger 时效不足”从日志告警提升为正式可观测状态。
 
-38. **Timescale schema 初始化已补串行门禁，避免双实例并发启动互相踩库对象**  
+38. **Timescale schema 初始化已补串行门禁，避免双实例并发启动互相踩库对象**
     本轮实机拉起 `live-main + live-exec-a` 时，发现两个实例同时进入 `StorageWriter.ensure_schema_ready()` 会偶发触发 `could not open relation with OID ...`，而顺序启动可恢复，说明问题不在固定坏库而在 schema 初始化竞争。当前 `TimescaleWriter.init_schema()` 已补为会话级 PostgreSQL advisory lock 串行执行：同一数据库上的第二个实例会等待前一个实例完成 `DDL + POST_INIT_DDL_STATEMENTS`，而不是并发修改 hypertable / 索引 / migration 对象。这样双实例 supervisor/instance 并发启动时，schema 初始化不再是随机炸掉的启动盲点。
 
 本轮验证结果：
@@ -6946,32 +7734,32 @@ python -m src.ops.cli.mining_runner --environment live --tf H1,M30,M15 \
 - monitoring/backtest/trade 联合定向回归已通过 `90` 项，新增覆盖 `pending-entry cancel` 两条 mutation 的统一动作结果与冲突拒绝，以及 `/backtest/run` 的统一提交动作结果、同键回放、冲突复用拒绝与 `run_fields` 契约同步。
 - `/v1/monitoring/runtime-tasks` 已收口为“默认当前实例作用域”，不再在 worker 侧混入其他实例或历史轮次的任务状态；当显式传入 `instance_id / instance_role / account_key / account_alias` 时，才切换到跨实例查询口径。
 
-39. **Research 特征层已从单文件 God class 重构为 FeatureHub + 6 个模块化 Provider（feat/research-feature-providers）**  
-    原 `src/research/features/engineer.py`（~1250 行，~21 个特征）承载了所有特征定义与计算逻辑，职责边界模糊且扩展成本高。本轮把它拆分为：`FeatureHub`（`hub.py`，纯编排入口）+ 6 个独立 Feature Provider（`temporal` ~33 / `microstructure` ~21 / `cross_tf` ~8 / `regime_transition` ~11 / `session_event` ~7 / `intrabar` ~5），总特征数从 ~31 扩展至 ~85，全部 numpy 向量化。  
-    **本次改动如何减少边界泄漏**：特征计算从单文件 God class 拆分为 6 个职责清晰的 Provider，通过 `FeatureProviderProtocol` 接口解耦，`FeatureHub` 与各 Provider 之间不存在隐式状态共享；各 Provider 只依赖 `DataMatrix` 输入，不访问其他 Provider 的输出，从根本上消除了原 God class 中跨特征隐式依赖的边界泄漏风险。  
-    **配置**：新增 `research.ini [feature_providers] enabled_providers` 控制 Provider 子集；BH-FDR 新增 `fdr_group_by = provider` 支持按 Provider 分组校正，避免跨维度特征稀释显著性阈值。  
-    **CLI 扩展**：`--providers temporal,microstructure` 可指定只运行部分 Provider，便于调试和对比实验。  
+39. **Research 特征层已从单文件 God class 重构为 FeatureHub + 6 个模块化 Provider（feat/research-feature-providers）**
+    原 `src/research/features/engineer.py`（~1250 行，~21 个特征）承载了所有特征定义与计算逻辑，职责边界模糊且扩展成本高。本轮把它拆分为：`FeatureHub`（`hub.py`，纯编排入口）+ 6 个独立 Feature Provider（`temporal` ~33 / `microstructure` ~21 / `cross_tf` ~8 / `regime_transition` ~11 / `session_event` ~7 / `intrabar` ~5），总特征数从 ~31 扩展至 ~85，全部 numpy 向量化。
+    **本次改动如何减少边界泄漏**：特征计算从单文件 God class 拆分为 6 个职责清晰的 Provider，通过 `FeatureProviderProtocol` 接口解耦，`FeatureHub` 与各 Provider 之间不存在隐式状态共享；各 Provider 只依赖 `DataMatrix` 输入，不访问其他 Provider 的输出，从根本上消除了原 God class 中跨特征隐式依赖的边界泄漏风险。
+    **配置**：新增 `research.ini [feature_providers] enabled_providers` 控制 Provider 子集；BH-FDR 新增 `fdr_group_by = provider` 支持按 Provider 分组校正，避免跨维度特征稀释显著性阈值。
+    **CLI 扩展**：`--providers temporal,microstructure` 可指定只运行部分 Provider，便于调试和对比实验。
     **未决兼容项**：无——旧 `engineer.py` 已被 `hub.py` 完整替代，不保留兼容别名或双轨入口。
 
-40. **Research Feature Provider 首轮回归缺陷已修复（2026-04-16）**  
-    针对 PR #47 的 Codex review 高优先级问题，本轮补齐了两处会导致“任务成功但无有效特征”的回归：  
-    - `src/research/features/candidates.py` 已移除 `indicator_name == "derived"` 的硬编码过滤，`discover_feature_candidates()` 现在会按 `field_name` 识别 provider 命名空间特征（如 `temporal.*`、`microstructure.*`、`cross_tf.*`），避免新架构特征被静默跳过。  
-    - `src/research/orchestration/runner.py` 已实现 `_prepare_extra_data()` 的正式跨 TF 数据加载：会按 Provider 声明的 `parent_tf_mapping + parent_indicators` 预加载父 TF DataMatrix，并注入 `parent_bar_times + parent_indicators` 给 `CrossTFFeatureProvider`，不再固定返回 `None`。  
-    **本次改动如何减少边界泄漏/兼容分支**：未新增兼容双轨；直接把旧 `derived` 假设与“预留未实现”路径替换为正式 Provider 契约实现，保持 `FeatureHub.required_extra_data() -> Runner._prepare_extra_data() -> Provider.compute()` 单一链路闭环。  
+40. **Research Feature Provider 首轮回归缺陷已修复（2026-04-16）**
+    针对 PR #47 的 Codex review 高优先级问题，本轮补齐了两处会导致“任务成功但无有效特征”的回归：
+    - `src/research/features/candidates.py` 已移除 `indicator_name == "derived"` 的硬编码过滤，`discover_feature_candidates()` 现在会按 `field_name` 识别 provider 命名空间特征（如 `temporal.*`、`microstructure.*`、`cross_tf.*`），避免新架构特征被静默跳过。
+    - `src/research/orchestration/runner.py` 已实现 `_prepare_extra_data()` 的正式跨 TF 数据加载：会按 Provider 声明的 `parent_tf_mapping + parent_indicators` 预加载父 TF DataMatrix，并注入 `parent_bar_times + parent_indicators` 给 `CrossTFFeatureProvider`，不再固定返回 `None`。
+    **本次改动如何减少边界泄漏/兼容分支**：未新增兼容双轨；直接把旧 `derived` 假设与“预留未实现”路径替换为正式 Provider 契约实现，保持 `FeatureHub.required_extra_data() -> Runner._prepare_extra_data() -> Provider.compute()` 单一链路闭环。
     **验证状态**：已新增定向测试覆盖 provider 前缀特征候选识别与 cross-TF extra_data 准备行为；未引入临时兼容字段或历史别名。
 
 仍需单独关注但不属于本轮代码阻塞项：
 
-1. **外部经济数据源仍可能超时**  
+1. **外部经济数据源仍可能超时**
    真实启动时 Jin10 请求出现过 `read operation timed out`，这是外部依赖可用性问题，不是当前 schema/线程契约问题。
 
-2. **市场数据延迟告警需要结合交易时段判断**  
+2. **市场数据延迟告警需要结合交易时段判断**
    当前环境在监控中仍会报 `data latency critical`，更像是运行时没有收到足够新鲜行情或目标市场不活跃，需要结合 MT5 连接状态和交易时段继续看，不建议把它和本轮启动故障混为一类。
 
-3. **`/trade/state/stream` 目前仍是轮询快照 diff，尚未具备服务端事件重放缓冲**  
+3. **`/trade/state/stream` 目前仍是轮询快照 diff，尚未具备服务端事件重放缓冲**
    当前 SSE 已能满足前端状态面板、流水线追踪与告警订阅，但 `Last-Event-ID` 只会返回 `resync_required`，不会做真正的断线续传。若后续要承载更长连接时长、标签页切换恢复或多前端实例游标恢复，需要补服务端 replay buffer / cursor store，而不是继续让前端自己做事件补洞。
 
-4. **危险操作的统一动作合同仍未覆盖到所有长耗时/批处理入口**  
+4. **危险操作的统一动作合同仍未覆盖到所有长耗时/批处理入口**
    当前已经接入正式 action contract / replay 语义的包括 `trade/control`、`trade/runtime-mode`、`trade/closeout-exposure`、`close`、`close_all`、`close/batch`、`cancel_orders`、`cancel_orders/batch`、`pending-entry cancel`、`backtest/run`。但 `backtest/optimize`、`backtest/walk-forward` 等同样会触发后台长任务的 mutation 仍然沿用旧的“裸 job 提交”合同；如果后续前端继续扩展实验/回测控制台，这些入口也应复用同一套动作结果与幂等边界，而不是继续在不同子系统保留两套提交语义。
 
 ## 1. 总体结论
@@ -7158,14 +7946,14 @@ python -m src.ops.cli.mining_runner --environment live --tf H1,M30,M15 \
   - `src/indicators/manager_bindings.py`：统一方法绑定映射；
   - `src/indicators/runtime/loop_adapter.py` 已移除，事件循环与循环入口直接通过 `lifecycle/event_loops` 的组合边界进入。
   - 兼容分支清理：`src/indicators/query_services/` 与 `src/indicators/runtime/` 的 observer/event-store/snapshot 发布路径统一走正式端口（明确契约，不做兼容分支兜底）。
-6. **阶段 B 收敛（2026-04-10）**：`SignalModule` 已有能力索引（`strategy_capability_catalog`）并用于回测引擎 confirmed 能力门控；`SignalRuntime` 已同步通过 `SignalPolicy` 注入能力快照，消费字段改为 `valid_scopes`、`needed_indicators`、`needs_intrabar`、`needs_htf`。  
-  - 已完成增量（2026-04-10）：  
-    - `SignalPolicy` 增加 `strategy_capability_contract()` 作为运行时对账口。  
-    - `runtime_warmup.py`/`runtime_status.py` 已改为能力口读取，避免分散兼容回退。  
-    - 回测 `BacktestEngine` 已改为按 `strategy_capability_catalog()` 初始化能力快照，策略能力契约与 runtime/backtest 调度语义对齐。  
-    - 回测策略评估加一层 `capability.valid_scopes` 门禁，确认与 `SignalRuntime` 的 scope 消费语义一致。  
-  - 下一步：把能力快照治理点进一步上移为统一回放一致性检查口（intrabar/丢弃率），并通过 admin 入口 `GET /admin/strategies/capability-reconciliation` 与 `GET /admin/strategies/capability-contract` 固化风险红线。  
-  - 当前状态：能力对账已对齐 `regime_affinity / htf_requirements`，并在 runtime 快照与 readmodel 两端都可见。  
+6. **阶段 B 收敛（2026-04-10）**：`SignalModule` 已有能力索引（`strategy_capability_catalog`）并用于回测引擎 confirmed 能力门控；`SignalRuntime` 已同步通过 `SignalPolicy` 注入能力快照，消费字段改为 `valid_scopes`、`needed_indicators`、`needs_intrabar`、`needs_htf`。
+  - 已完成增量（2026-04-10）：
+    - `SignalPolicy` 增加 `strategy_capability_contract()` 作为运行时对账口。
+    - `runtime_warmup.py`/`runtime_status.py` 已改为能力口读取，避免分散兼容回退。
+    - 回测 `BacktestEngine` 已改为按 `strategy_capability_catalog()` 初始化能力快照，策略能力契约与 runtime/backtest 调度语义对齐。
+    - 回测策略评估加一层 `capability.valid_scopes` 门禁，确认与 `SignalRuntime` 的 scope 消费语义一致。
+  - 下一步：把能力快照治理点进一步上移为统一回放一致性检查口（intrabar/丢弃率），并通过 admin 入口 `GET /admin/strategies/capability-reconciliation` 与 `GET /admin/strategies/capability-contract` 固化风险红线。
+  - 当前状态：能力对账已对齐 `regime_affinity / htf_requirements`，并在 runtime 快照与 readmodel 两端都可见。
   - 已完成增量（2026-04-11）：
     - runtime/readmodel 新增 `strategy_capability_execution_plan`，明确 `configured/scheduled/filtered` 调度边界、scope 覆盖与指标需求并集。
     - 回测 `BacktestResult` 新增同语义 `strategy_capability_execution_plan`，用于与实盘 status 直接对账。
@@ -7194,8 +7982,8 @@ python -m src.ops.cli.mining_runner --environment live --tf H1,M30,M15 \
 - [x] `src/indicators/runtime/pipeline_runner.py` 统一承载 pipeline 计算分层，不由 `manager.py` 或 `query_services.runtime` 直接承担入口。
 - [x] `src/indicators/runtime/loop_adapter.py` 已移除，不保留重复循环适配。
 - [x] `manager_bindings.py` 维持显式端口映射，调用走统一绑定方法，避免私有属性直接穿透。
-- [x] 已拆除跨模块的双向循环导入：  
-  - `query_services.runtime` 与 `runtime.bar_event_handler` 改为懒加载边界；  
+- [x] 已拆除跨模块的双向循环导入：
+  - `query_services.runtime` 与 `runtime.bar_event_handler` 改为懒加载边界；
   - `runtime.pipeline_runner` 不再顶层反向 import query services。
 - [x] 已补齐冒烟测试：`tests/indicators/test_core_functions.py`、`tests/indicators/test_flush_event_batch.py`、`tests/indicators/test_manager_intrabar.py`。
 - [ ] 建议后续：补 `tests/indicators/` 层面的职责契约测试（`manager` 与 `runtime/query_services` 的输入输出不变量）。
@@ -7379,141 +8167,141 @@ domain 组件
 
 按“职责边界/依赖方向/异常边界/历史兼容”四项复核 `src` 下除 `trading`、`risk` 外的其余包：
 
-- `backtesting`：  
-  - 结果：分层还算清晰（data / engine / filtering / optimization / paper_trading / runtime 数据对象），但 `src/backtesting/cli.py` 曾存在入口函数断裂问题（未定义引用、缺少子命令解析与持久化分支）。已完成修复：补齐 `_parse_param`、`_build_components`、`_persist_result`、`_build_parser`、`main()` 分发逻辑，当前 `python -m src.backtesting --help` 可正常给出可执行入口。  
+- `backtesting`：
+  - 结果：分层还算清晰（data / engine / filtering / optimization / paper_trading / runtime 数据对象），但 `src/backtesting/cli.py` 曾存在入口函数断裂问题（未定义引用、缺少子命令解析与持久化分支）。已完成修复：补齐 `_parse_param`、`_build_components`、`_persist_result`、`_build_parser`、`main()` 分发逻辑，当前 `python -m src.backtesting --help` 可正常给出可执行入口。
   - 剩余建议：把 `--output`、`--param`、`--timeframes` 等通用参数抽到统一构建器，避免命令与默认行为语义再次发散（当前默认运行时为 `run`）。
 
-- `clients`：  
-  - 结果：基本职责清晰，按 MT5 外部系统封装，内部大量 `getattr`/`hasattr` 主要用于跨平台常量兼容与容错，属边界内“适配器策略”而非跨域探测（`clients/base.py` 与 `clients/mt5_trading.py` 明确通过 `_normalize_market_time`、`_get_field` 保证兼容）。  
+- `clients`：
+  - 结果：基本职责清晰，按 MT5 外部系统封装，内部大量 `getattr`/`hasattr` 主要用于跨平台常量兼容与容错，属边界内“适配器策略”而非跨域探测（`clients/base.py` 与 `clients/mt5_trading.py` 明确通过 `_normalize_market_time`、`_get_field` 保证兼容）。
   - 建议：将常量探测统一到 `clients/base.py` 的常量适配层，逐步在上层策略中改为显式能力字段，减少重复 `getattr` 分散。
 
-- `api`：  
-  - 结果：依赖链路完整，负责输入校验与序列化是合理的；监控路由异常防御已收敛为统一入口（`_execute_monitored_call` / `_execute_health_call`），避免散落 `try/except`。  
+- `api`：
+  - 结果：依赖链路完整，负责输入校验与序列化是合理的；监控路由异常防御已收敛为统一入口（`_execute_monitored_call` / `_execute_health_call`），避免散落 `try/except`。
   - 建议：继续沿用“必须失败/可降级”分层，持续将通用边界策略下沉到业务路由层。
 
-- `ingestion`：  
-  - 结果：与 `market`/`persistence` 职责耦合度低，职责边界清晰，`BackgroundIngestor` 与存储写入方向单向。  
+- `ingestion`：
+  - 结果：与 `market`/`persistence` 职责耦合度低，职责边界清晰，`BackgroundIngestor` 与存储写入方向单向。
   - 建议：保持现状。
 
-- `calendar` / `market_structure`：  
-  - 结果：各自以领域能力边界存在，`calendar` 主要负责事件同步与风控告警前置、`market_structure` 负责形态计算，边界清晰。  
+- `calendar` / `market_structure`：
+  - 结果：各自以领域能力边界存在，`calendar` 主要负责事件同步与风控告警前置、`market_structure` 负责形态计算，边界清晰。
   - 建议：保持现状，补充一次策略级契约测试（事件窗口与交易过滤字段映射）即可。
 
-- `monitoring`：  
-  - 结果：职责清晰，仍有一定 `except Exception` 保护，建议区分“指标采集可降级”与“生命周期关键指标不可用”。  
+- `monitoring`：
+  - 结果：职责清晰，仍有一定 `except Exception` 保护，建议区分“指标采集可降级”与“生命周期关键指标不可用”。
   - 建议：为健康检查和关键事件总线增加错误码分级，避免所有异常被同一告警语义吞没。
 
-- `ops`：  
-  - 结果：`cli` 与 `scripts` 同名脚本并行分工，历史上形成重复入口。  
-  - 执行结论：`src/ops/scripts` 已清理，统一仅保留 `src/ops/cli/*` 作为执行入口。  
-  - 变更效果：入口可读性与可追踪性提升，文档入口与实现保持一致。  
+- `ops`：
+  - 结果：`cli` 与 `scripts` 同名脚本并行分工，历史上形成重复入口。
+  - 执行结论：`src/ops/scripts` 已清理，统一仅保留 `src/ops/cli/*` 作为执行入口。
+  - 变更效果：入口可读性与可追踪性提升，文档入口与实现保持一致。
 
-- `persistence`：  
-  - 结果：分层较正，repositories 与 db/writer 职责分离明显；入口集中在 `repositories/`。  
+- `persistence`：
+  - 结果：分层较正，repositories 与 db/writer 职责分离明显；入口集中在 `repositories/`。
   - 建议：保留现状，增加一次 `writer/schema` 的 contract 测试（DDL、insert、upsert 的返回值与异常码一致性）。
 
-- `research` / `readmodels` / `studio`：  
-  - 结果：三者定位明确（实验计算、读模型投影、前端观测），职责分界清楚。  
+- `research` / `readmodels` / `studio`：
+  - 结果：三者定位明确（实验计算、读模型投影、前端观测），职责分界清楚。
   - 建议：保持现状。
 
 #### 该轮结论
 
-- 大部分包职责边界已可接受，不再存在典型“同文件跨域合并”问题。  
-- 当前最优先关注点仍在高风险链路：`trading`、`signals`、`indicators`，其余包可以采用低优先级清洁度改造（以异常语义与观测可解释性为主）。  
+- 大部分包职责边界已可接受，不再存在典型“同文件跨域合并”问题。
+- 当前最优先关注点仍在高风险链路：`trading`、`signals`、`indicators`，其余包可以采用低优先级清洁度改造（以异常语义与观测可解释性为主）。
 
 ### 6.H 全量包职责边界清单（2026-04-11）
 
-- `api`：HTTP 适配与路由组织层，职责正确。  
-- `app_runtime`：运行时装配与生命周期层，职责正确。  
-- `backtesting`：回测与实验运行时，职责正确。  
-- `calendar`：经济事件窗口与日历风控前置，职责正确。  
-- `clients`：外部系统客户端封装，职责正确。  
-- `config`：配置模型与配置加载层，职责正确。  
-- `entrypoint`：启动入口层，职责正确。  
-- `indicators`：指标计算与状态计算层，职责正确。  
-- `ingestion`：行情历史与实时抓取层，职责正确。  
-- `market`：市场状态与行情服务层，职责正确。  
-- `market_structure`：市场结构特征层，职责正确。  
-- `monitoring`：可观测与健康度采集层，职责正确。  
-- `ops`：运维工具层，已完成入口统一，仅保留 `cli`。  
-- `persistence`：持久化与仓储层，职责正确。  
-- `readmodels`：读模型与投影层，职责正确；新增 `decision` 决策摘要逻辑收敛到该层。  
-- `research`：研究实验算子层，职责正确。  
-- `risk`：风控领域层，职责正确。  
-- `signals`：信号与策略调度层，职责正确。  
-- `studio`：前端可观测数据服务层，职责正确。  
-- `trading`：交易执行与仓位协调层，职责正确。  
-- `utils`：通用工具层，职责正确。  
+- `api`：HTTP 适配与路由组织层，职责正确。
+- `app_runtime`：运行时装配与生命周期层，职责正确。
+- `backtesting`：回测与实验运行时，职责正确。
+- `calendar`：经济事件窗口与日历风控前置，职责正确。
+- `clients`：外部系统客户端封装，职责正确。
+- `config`：配置模型与配置加载层，职责正确。
+- `entrypoint`：启动入口层，职责正确。
+- `indicators`：指标计算与状态计算层，职责正确。
+- `ingestion`：行情历史与实时抓取层，职责正确。
+- `market`：市场状态与行情服务层，职责正确。
+- `market_structure`：市场结构特征层，职责正确。
+- `monitoring`：可观测与健康度采集层，职责正确。
+- `ops`：运维工具层，已完成入口统一，仅保留 `cli`。
+- `persistence`：持久化与仓储层，职责正确。
+- `readmodels`：读模型与投影层，职责正确；新增 `decision` 决策摘要逻辑收敛到该层。
+- `research`：研究实验算子层，职责正确。
+- `risk`：风控领域层，职责正确。
+- `signals`：信号与策略调度层，职责正确。
+- `studio`：前端可观测数据服务层，职责正确。
+- `trading`：交易执行与仓位协调层，职责正确。
+- `utils`：通用工具层，职责正确。
 
-执行落地：  
+执行落地：
 
-- [x] `decision` 包职责收口到 `readmodels`。  
-- [x] `ops/scripts` 历史重复入口清理。  
-- [x] 命令入口文档与实现对齐。  
+- [x] `decision` 包职责收口到 `readmodels`。
+- [x] `ops/scripts` 历史重复入口清理。
+- [x] 命令入口文档与实现对齐。
 
 ### 6.I 启动阻塞修复记录（2026-04-11）
 
-- 发现问题：`src/app_runtime/factories/signals.py` 的 `build_executor_config()` 已透传 `htf_conflict_block_timeframes` / `htf_conflict_exempt_categories`，但 `src/trading/execution/executor.py` 的 `ExecutorConfig` 未同步声明同名字段，导致 `deps._ensure_initialized()` 在真实容器初始化阶段直接抛 `TypeError`，服务无法进入 lifespan。  
-- 本次修复：恢复装配层与执行层配置契约一致性，`ExecutorConfig` 正式补齐上述两个字段；未新增兼容分支，也未改变现有调用边界。  
-- 验证补强：新增 `tests/app_runtime/test_signal_factory.py`，直接覆盖 `SignalConfig -> build_executor_config() -> ExecutorConfig` 的字段对账，避免未来再次出现“入口 smoke 通过，但真实容器初始化失败”的装配断裂。  
-- 未决项：这两个 HTF conflict 字段当前已恢复配置契约，但预交易流水线尚未消费它们；如果后续确认该能力需要生效，应在 `pre_trade_pipeline / pre_trade_checks` 中补正式门禁，而不是继续停留在“可配置但未落地”的状态。  
+- 发现问题：`src/app_runtime/factories/signals.py` 的 `build_executor_config()` 已透传 `htf_conflict_block_timeframes` / `htf_conflict_exempt_categories`，但 `src/trading/execution/executor.py` 的 `ExecutorConfig` 未同步声明同名字段，导致 `deps._ensure_initialized()` 在真实容器初始化阶段直接抛 `TypeError`，服务无法进入 lifespan。
+- 本次修复：恢复装配层与执行层配置契约一致性，`ExecutorConfig` 正式补齐上述两个字段；未新增兼容分支，也未改变现有调用边界。
+- 验证补强：新增 `tests/app_runtime/test_signal_factory.py`，直接覆盖 `SignalConfig -> build_executor_config() -> ExecutorConfig` 的字段对账，避免未来再次出现“入口 smoke 通过，但真实容器初始化失败”的装配断裂。
+- 未决项：这两个 HTF conflict 字段当前已恢复配置契约，但预交易流水线尚未消费它们；如果后续确认该能力需要生效，应在 `pre_trade_pipeline / pre_trade_checks` 中补正式门禁，而不是继续停留在“可配置但未落地”的状态。
 
-33. **`live-main` 单实例 smoke 已打通，启动期配置空值、schema 时序和风险投影 JSON 缺陷已修复**  
-    本轮按 `python -m src.entrypoint.instance --instance live-main` 做了真实单实例烟测，并在 smoke 期间显式关闭自动交易，验证 `/health=200` 与 `/v1/monitoring/health/ready=ready`。过程中修复了三类真实启动问题：  
-    1) `src/config/signal.py` 现在会把直接映射到 `SignalConfig` 的空字符串配置视为“未覆盖”，不再因 `signal.ini` 中留空占位字段触发 `ValueError`/Pydantic 校验失败；  
-    2) `StorageWriter` 新增正式 `ensure_schema_ready()` 入口，`AppRuntime.start()` 会在 warm-start 之前先确保 schema 与 retention 就绪，避免新库首次启动时 `position_runtime_states / trade_control_state` 查询先于建表；  
-    3) `AccountRiskStateProjector` 已对非有限浮点做 JSON 清洗，不再把 `Infinity` 写入 `account_risk_state.metadata` 导致 PostgreSQL JSON 解析失败。  
+33. **`live-main` 单实例 smoke 已打通，启动期配置空值、schema 时序和风险投影 JSON 缺陷已修复**
+    本轮按 `python -m src.entrypoint.instance --instance live-main` 做了真实单实例烟测，并在 smoke 期间显式关闭自动交易，验证 `/health=200` 与 `/v1/monitoring/health/ready=ready`。过程中修复了三类真实启动问题：
+    1) `src/config/signal.py` 现在会把直接映射到 `SignalConfig` 的空字符串配置视为“未覆盖”，不再因 `signal.ini` 中留空占位字段触发 `ValueError`/Pydantic 校验失败；
+    2) `StorageWriter` 新增正式 `ensure_schema_ready()` 入口，`AppRuntime.start()` 会在 warm-start 之前先确保 schema 与 retention 就绪，避免新库首次启动时 `position_runtime_states / trade_control_state` 查询先于建表；
+    3) `AccountRiskStateProjector` 已对非有限浮点做 JSON 清洗，不再把 `Infinity` 写入 `account_risk_state.metadata` 导致 PostgreSQL JSON 解析失败。
     当前单实例启动已可进入 `ready`，残余告警主要是数据陈旧导致的 `market_data data latency critical`，属于环境/时段问题而非装配阻塞。
 
-34. **`/v1/trade/accounts` 已补齐正式读模型端口，休盘 smoke 下账户视图不再因私有字段访问而 500**  
+34. **`/v1/trade/accounts` 已补齐正式读模型端口，休盘 smoke 下账户视图不再因私有字段访问而 500**
     本轮休盘巡检中，`/health`、`ready`、queues、performance、events 均已打通，唯一暴露的真实断点是 `/v1/trade/accounts` 仍直接访问 `RuntimeReadModel.runtime_identity`，而读模型内部只持有私有 `_runtime_identity`，导致账户视图在 live-main 单实例烟测时返回 500。现已在 `RuntimeReadModel` 上补齐正式公开属性 `runtime_identity`，让 `trade/accounts`、风险投影聚合和环境标签统一通过公开只读端口获取，避免 API 为了取状态继续探测私有字段；同时补充了对应 API 回归测试，覆盖新实例配置模型下的账户清单返回。
 
-35. **交易控制烟测已打通：命令审计、状态回放与文本日志三条链路现已一致可追踪**  
-    本轮按 `live-main` 单实例、显式不下真实订单的方式对交易控制面做了休盘烟测，实际调用了 `/v1/trade/control` 的安全开关操作，并核对了 `/v1/trade/command-audits` 与 `data/logs/live-main/mt5services.log`。过程中修复了两个真实断点：  
-    1) `src/persistence/repositories/trade_repo.py` 中 `write_trade_command_audits()` 的批量写库字段顺序与 `trade_command_audits` 表契约不一致，导致 `account_key` 被错误写入 JSON 列，控制命令虽然返回成功但审计表为空；现已按正式 schema 顺序重排，并补了仓储回归测试。  
-    2) `RuntimeReadModel.persisted_trade_control_payload()` 直接返回数据库原始字典，`updated_at` 等 `datetime` 值未做 JSON-safe 归一，导致 `/v1/trade/control` 在持久化状态存在时触发响应验证失败；现已在读模型层统一做递归序列化。  
+35. **交易控制烟测已打通：命令审计、状态回放与文本日志三条链路现已一致可追踪**
+    本轮按 `live-main` 单实例、显式不下真实订单的方式对交易控制面做了休盘烟测，实际调用了 `/v1/trade/control` 的安全开关操作，并核对了 `/v1/trade/command-audits` 与 `data/logs/live-main/mt5services.log`。过程中修复了两个真实断点：
+    1) `src/persistence/repositories/trade_repo.py` 中 `write_trade_command_audits()` 的批量写库字段顺序与 `trade_command_audits` 表契约不一致，导致 `account_key` 被错误写入 JSON 列，控制命令虽然返回成功但审计表为空；现已按正式 schema 顺序重排，并补了仓储回归测试。
+    2) `RuntimeReadModel.persisted_trade_control_payload()` 直接返回数据库原始字典，`updated_at` 等 `datetime` 值未做 JSON-safe 归一，导致 `/v1/trade/control` 在持久化状态存在时触发响应验证失败；现已在读模型层统一做递归序列化。
     同时在 `src.trading.application.module` 中补了正式文本日志：每次 operator action 成功入审计后都会记录 `account / command / status / action_id / actor / reason / idempotency_key`，避免后续只能依赖数据库追查。当前已验证安全开关操作会同时落到 API 状态、审计表与文本日志，说明交易控制主链路的可追踪性已恢复。
 
-36. **`trade/precheck` 准入链已修复账户信息契约缺口，休盘下可返回结构化风险阻断而非 AttributeError**  
+36. **`trade/precheck` 准入链已修复账户信息契约缺口，休盘下可返回结构化风险阻断而非 AttributeError**
     在继续扩大 `live-main` 单实例休盘烟测时，`POST /v1/trade/precheck` 暴露出一个真实契约断点：`src.risk.rules` 的日内亏损规则会读取 `day_start_balance / daily_realized_pnl / daily_pnl`，而 `src.clients.mt5_account.AccountInfo` 适配对象并未暴露这些字段，导致准入接口直接抛出 `AttributeError`，无法返回结构化风险评估。该问题现已通过收口账户信息契约修复：`AccountInfo` 正式补齐上述可空字段，并由 MT5 账户适配层统一返回 `None` 作为“当前 broker 不提供该字段”的显式语义，而不是让下游规则依赖隐式属性探测。修复后已验证 `/v1/trade/precheck` 能在休盘与低保证金场景下稳定返回结构化 `block` 结果，正确给出 `margin_availability` 与 `market_order_protection` 阻断原因，同时文本日志中也会记录对应的风险阻断告警。
 
-37. **economic calendar 健康语义已从“无 last_refresh_at 即 stale”收口为正式启动引导状态，重启后也会恢复上次成功刷新时间**  
-    本轮针对休盘 smoke 中出现的 `economic calendar stale` 与 Jin10 TLS 握手超时告警做了根因收口。问题不在风控侧，而在日历服务自身的健康模型：`EconomicCalendarService.is_stale()` 以前只要 `_last_refresh_at is None` 就直接返回 `True`，而 `start_service()` 又会把首次 `calendar_sync` 延后 `startup_calendar_sync_delay_seconds` 执行；同时 `restore_job_state()` 只恢复 job_state，不恢复 `_last_refresh_at`。结果是服务刚启动或刚重启，即使还处于计划中的 bootstrap 窗口，也会被错误标成 stale，并进一步让监控与 Trade Guard 看到“日历健康退化”。现已做三项正式修复：  
-    1) `EconomicCalendarService` 新增 `warming_up / staleness_seconds / health_state` 正式健康语义，首次成功刷新前仅在 bootstrap 截止时间之后才视为 stale；  
-    2) `restore_job_state()` 现在会恢复最近一次成功刷新的 `_last_refresh_at`，以及最近一次尝试的时间、状态和错误，避免重启后状态丢失；  
-    3) 监控侧 `check_economic_calendar()` 改为消费 `staleness_seconds`，在 warming_up 阶段不再把 staleness 记为 `inf`，并补充了经济日历刷新成功日志，便于区分“外部瞬时抖动已恢复”与“持续同步失败”。  
+37. **economic calendar 健康语义已从“无 last_refresh_at 即 stale”收口为正式启动引导状态，重启后也会恢复上次成功刷新时间**
+    本轮针对休盘 smoke 中出现的 `economic calendar stale` 与 Jin10 TLS 握手超时告警做了根因收口。问题不在风控侧，而在日历服务自身的健康模型：`EconomicCalendarService.is_stale()` 以前只要 `_last_refresh_at is None` 就直接返回 `True`，而 `start_service()` 又会把首次 `calendar_sync` 延后 `startup_calendar_sync_delay_seconds` 执行；同时 `restore_job_state()` 只恢复 job_state，不恢复 `_last_refresh_at`。结果是服务刚启动或刚重启，即使还处于计划中的 bootstrap 窗口，也会被错误标成 stale，并进一步让监控与 Trade Guard 看到“日历健康退化”。现已做三项正式修复：
+    1) `EconomicCalendarService` 新增 `warming_up / staleness_seconds / health_state` 正式健康语义，首次成功刷新前仅在 bootstrap 截止时间之后才视为 stale；
+    2) `restore_job_state()` 现在会恢复最近一次成功刷新的 `_last_refresh_at`，以及最近一次尝试的时间、状态和错误，避免重启后状态丢失；
+    3) 监控侧 `check_economic_calendar()` 改为消费 `staleness_seconds`，在 warming_up 阶段不再把 staleness 记为 `inf`，并补充了经济日历刷新成功日志，便于区分“外部瞬时抖动已恢复”与“持续同步失败”。
     这次修复保持了边界正确：Trade Guard 继续只读取经济日历正式健康状态，不在风控规则里增加启动期特判。
 
-38. **economic calendar runtime task 持久化已按实例新契约收口，shutdown 不再覆盖最后一次成功刷新结果**  
-    在进一步做“停机重启后立即恢复 economic status”的真实 smoke 时，又暴露出第二层设计偏差：economic calendar 的 `runtime_task_row()` 仍按旧 13 列写 `runtime_task_status`，而仓储层已经升级到 17 列实例契约（`instance_id / instance_role / account_key / account_alias`），导致 `persist_job_state()` 实际写库失败但被内部 debug 吃掉；同时 `stop_service()` 会把 `last_status` 改成 `stopped` 并覆盖同一 runtime task 行，使得恢复逻辑即便读到记录，也会把“最后一次成功刷新”误读成 `stopped`。现已收口为：  
-    1) `EconomicCalendarService` 正式注入 `runtime_identity`，runtime task row 按实例新契约完整写入；  
-    2) `runtime_task_status` 查询支持按 `instance_role/account_key` 过滤，并按 `updated_at desc` 取最新，避免多实例或多轮重启的旧行干扰恢复；  
-    3) economic calendar task details 新增 `last_result_status`，shutdown 只更新当前任务状态为 `stopped`，不再抹掉最近一次真实刷新结果；恢复时优先用 `last_result_status + success_count` 还原上次成功刷新时间。  
+38. **economic calendar runtime task 持久化已按实例新契约收口，shutdown 不再覆盖最后一次成功刷新结果**
+    在进一步做“停机重启后立即恢复 economic status”的真实 smoke 时，又暴露出第二层设计偏差：economic calendar 的 `runtime_task_row()` 仍按旧 13 列写 `runtime_task_status`，而仓储层已经升级到 17 列实例契约（`instance_id / instance_role / account_key / account_alias`），导致 `persist_job_state()` 实际写库失败但被内部 debug 吃掉；同时 `stop_service()` 会把 `last_status` 改成 `stopped` 并覆盖同一 runtime task 行，使得恢复逻辑即便读到记录，也会把“最后一次成功刷新”误读成 `stopped`。现已收口为：
+    1) `EconomicCalendarService` 正式注入 `runtime_identity`，runtime task row 按实例新契约完整写入；
+    2) `runtime_task_status` 查询支持按 `instance_role/account_key` 过滤，并按 `updated_at desc` 取最新，避免多实例或多轮重启的旧行干扰恢复；
+    3) economic calendar task details 新增 `last_result_status`，shutdown 只更新当前任务状态为 `stopped`，不再抹掉最近一次真实刷新结果；恢复时优先用 `last_result_status + success_count` 还原上次成功刷新时间。
     经过真实 `live-main` 重启烟测验证，服务刚进入 ready 时即使 `release_watch` 正在新一轮刷新，`/v1/economic/calendar/status` 也已经能恢复出上一轮 `last_refresh_at` 与 `last_refresh_status=ok`，不再出现重启后全部为 `null` 的假 stale 状态。
 
-39. **`/signals/evaluate` 的持久化载荷已收口为 JSON-safe 契约，不再因 metadata 中的 `datetime` 卡死请求**  
+39. **`/signals/evaluate` 的持久化载荷已收口为 JSON-safe 契约，不再因 metadata 中的 `datetime` 卡死请求**
     在本轮单实例连通性测试中，`POST /v1/signals/evaluate` 会命中真实持久化路径，而 `SignalModule._persist_signal()` 直接把 context metadata 与 indicator snapshot 原样塞进 `SignalRecord`。当 metadata 中包含 `bar_time / recent_bars[].time` 这类 `datetime` 时，`psycopg2` 在写 `signal_events` 的 JSON 列时会抛 `TypeError: Object of type datetime is not JSON serializable`，接口表现为超时，日志中持续出现 `Failed to persist signal event`。本轮已把“信号持久化载荷必须是 JSON-safe”正式收口到 `SignalRecord.to_row()`：统一递归序列化 `datetime -> ISO8601`、`tuple -> list`、非有限浮点 -> `null`，避免再让 API、runtime 或研究链路各自猜测何时该做 JSON 归一。同时补了 `tests/signals/test_signal_module.py` 回归，明确验证带 `datetime` 的 metadata 能稳定持久化。
 
-40. **`SignalModule` 已在编排边界统一收口信号身份字段，避免策略空串污染 `signal_events` 与 recent/summary 读口**  
+40. **`SignalModule` 已在编排边界统一收口信号身份字段，避免策略空串污染 `signal_events` 与 recent/summary 读口**
     在继续做 `data -> indicators -> signals -> trade` 单实例连通性测试时，又发现 `/signals/evaluate` 虽然已经能稳定持久化，但结构化策略返回的 `SignalDecision.symbol/timeframe` 仍然是空串，导致 `signal_events`、`/signals/recent`、`/signals/summary` 被写入无符号、无周期的事实行。这不是 API 载荷问题，而是结构化策略基类长期把 `SignalDecision` 的身份字段留空，信号编排层也没有在出边界前做统一修正。该问题现已在 `SignalModule.evaluate()` 收口：策略返回后立即以当前请求的 `strategy/symbol/timeframe` 重建正式决策对象，再进入后续置信度修正与持久化流程。这样职责边界更清晰：策略只回答“方向/置信度/原因”，身份字段由编排层统一拥有，避免各策略重复样板代码，也避免 `recent/summary/trade_from_signal` 继续消费被污染的事实。已补 `tests/signals/test_signal_module.py` 回归，明确验证即便策略返回空身份字段，持久化后的 `signal_events` 也会写入正确的 `symbol/timeframe`。
 
-41. **`/v1/trade/dispatch` 已在 API 边界统一归一化交易操作契约，不再让调用方猜测 `submit_trade/trade` 与 `direction/side` 双轨语义**  
+41. **`/v1/trade/dispatch` 已在 API 边界统一归一化交易操作契约，不再让调用方猜测 `submit_trade/trade` 与 `direction/side` 双轨语义**
     在单实例连通性烟测中，`/v1/trade/dispatch` 暴露出一条典型的接口契约漂移：监控读口会提示使用 `operation=trade`，但历史调用经常仍发 `submit_trade`；同时 payload 中 `direction` 在 `/trade` 主入口可接受，经由 dispatch 走统一调度时却会因底层只认 `side` 而失败。该问题现已在 `TradeAPIDispatcher` 的 API 边界正式收口：`submit_trade / execute_trade` 统一映射到正式操作 `trade`，`precheck_trade` 统一映射到 `trade_precheck`，并且凡是交易类 payload 都先通过 `TradeRequest` 做标准化，再交给 `TradingCommandService.dispatch_operation()`。这样下游只需要面对一套正式载荷，旧别名也不会继续把“语义转换”散落到命令服务内部。对应回归已补到 `tests/api/test_trade_api.py`，明确验证 `submit_trade + direction` 会被稳定归一到正式 `trade + side` 契约。
 
-42. **`/v1/signals/runtime/status` 已补齐执行闸门与过滤摘要，单实例巡检不再只能看到“运行中”而看不到“为什么会放行/过滤”**  
+42. **`/v1/signals/runtime/status` 已补齐执行闸门与过滤摘要，单实例巡检不再只能看到“运行中”而看不到“为什么会放行/过滤”**
     休盘连通性测试显示 `SignalRuntime` 内部其实已经维护了 `filter_realtime_status / filter_by_scope / filter_window_by_scope`，`TradeExecutor.status()` 也已经有 `execution_gate`，但 `RuntimeReadModel.signal_runtime_summary()` 长期只投影了队列和 warmup 基础状态，导致 `/v1/signals/runtime/status` 返回里 `executor_enabled / execution_gate / active_filters / filter_stats` 都是空值。这个缺口会直接削弱交易链路可审查性：看到 `signal_runtime.running=true` 并不能回答“当前有哪些过滤器启用、执行闸门是否打开、最近是被什么过滤掉的”。本轮已在读模型层把这部分正式投影补齐，统一公开当前执行器启用状态、执行闸门配置、活跃过滤器列表，以及 confirmed/intrabar 两个 scope 的过滤累计/窗口统计。这样单实例 smoke 下即可直接回答“策略在跑，但当前是 session/economic/spread 等哪些门在起作用”，不再依赖读代码或翻日志推断。
 
-43. **`/v1/monitoring/health/ready` 的巡检契约已升级为结构化对象，runbook 已同步修正判读口径**  
+43. **`/v1/monitoring/health/ready` 的巡检契约已升级为结构化对象，runbook 已同步修正判读口径**
     最新单实例 smoke 中，`/v1/monitoring/health/ready` 已返回结构化对象 `{status, checks, startup_phase, timestamp}`，而不是旧 runbook 中记载的裸字符串 `ready`。如果巡检脚本仍按字符串比较，就会误判服务“未就绪”，即使底层 `storage_writer / ingestion / indicator_engine` 都已经达标。本轮已把 runbook 的 ready 判读规则同步修正为：以 `status=ready` 和 `checks.*=ok` 为唯一准则，不再依赖历史的字符串返回语义。这个修正不改变接口实现，但能避免后续运维脚本和 smoke 流程继续按过期契约误报。
 
-44. **双实例 smoke 已打通 `main + executor` 的就绪探针、风险投影与审计链，但 executor 角色边界仍有待继续收紧**  
-    本轮按 `python -m src.entrypoint.supervisor --environment live` 对 `live-main + live-exec-a` 做了真实双实例烟测，确认 `8808/8809` 两个实例都能进入 `ready`，并且 `worker` 本地执行控制操作会同时写入 `trade_command_audits`、`account_risk_state` 和 `data/logs/live-exec-a/mt5services.log`，`main` 侧的 `/v1/trade/accounts` 也能正确聚合看到 `live_exec_a` 的最新风险当前态。过程中修复了一个真实观测断点：`/v1/monitoring/health/ready` 过去始终按主实例口径检查 `ingestion + indicator_engine`，导致 executor 明明已经装配好 `PendingEntryManager / PositionManager / AccountRiskStateProjector`，探针仍会返回 503；现已改为按角色判定，executor 的 ready 口径收口为 `storage_writer + pending_entry + position_manager + account_risk_state`。同时，`RuntimeReadModel` 对 executor 的 `storage / indicators / signals` 视图也已改成 `disabled` 语义，避免 `/health` 把“本来就不属于 worker 的共享计算面”误报成 critical；`paper_trading` 也已在 executor 装配阶段直接跳过。  
+44. **双实例 smoke 已打通 `main + executor` 的就绪探针、风险投影与审计链，但 executor 角色边界仍有待继续收紧**
+    本轮按 `python -m src.entrypoint.supervisor --environment live` 对 `live-main + live-exec-a` 做了真实双实例烟测，确认 `8808/8809` 两个实例都能进入 `ready`，并且 `worker` 本地执行控制操作会同时写入 `trade_command_audits`、`account_risk_state` 和 `data/logs/live-exec-a/mt5services.log`，`main` 侧的 `/v1/trade/accounts` 也能正确聚合看到 `live_exec_a` 的最新风险当前态。过程中修复了一个真实观测断点：`/v1/monitoring/health/ready` 过去始终按主实例口径检查 `ingestion + indicator_engine`，导致 executor 明明已经装配好 `PendingEntryManager / PositionManager / AccountRiskStateProjector`，探针仍会返回 503；现已改为按角色判定，executor 的 ready 口径收口为 `storage_writer + pending_entry + position_manager + account_risk_state`。同时，`RuntimeReadModel` 对 executor 的 `storage / indicators / signals` 视图也已改成 `disabled` 语义，避免 `/health` 把“本来就不属于 worker 的共享计算面”误报成 critical；`paper_trading` 也已在 executor 装配阶段直接跳过。
     但这轮 smoke 也暴露出一个仍待整改的结构性问题：executor 在 build 阶段仍会完整构建 `UnifiedIndicatorManager`、signal factory 与 economic calendar 相关组件，然后仅在 runtime mode 阶段停止其中一部分线程。这说明当前“账户执行面”和“共享计算面”在装配边界上还没有彻底拆干净；本轮只修正了观测契约和非必要的 `paper_trading` 装配，使双实例 smoke 可以成立，但后续仍应把 worker 收口到真正的 `AccountRuntime`，不再在 build 阶段构造不属于它的 shared compute 依赖。
 
-45. **executor 装配边界已前移到 composition root，不再靠 runtime stage 事后停线程**  
+45. **executor 装配边界已前移到 composition root，不再靠 runtime stage 事后停线程**
     针对上一条暴露出的结构性问题，本轮已把 `executor` 的运行时装配改为真正的角色化组合，而不是“先全量构造，再在 lifecycle 中禁用”。`build_app_container()` 现在会在进入 builder phase 前先识别 `instance_role`：`main` 仍构造 shared compute 路径（`ingestion / UnifiedIndicatorManager / SignalRuntime / economic calendar sync / paper trading`），而 `executor` 只构造本地 `AccountRuntime`，不会再在 build 阶段创建上述 shared compute 组件。与此同时，`build_market_layer()` 已支持 `include_ingestion / include_indicators`，`build_trading_layer()` 已支持 `enable_calendar_sync`，并新增 `build_account_runtime_layer()` 作为 executor/main-account 的统一账户执行装配入口。`runtime_controls` 也同步从“按角色特判”收口为“按组件存在性启停”，避免未来继续把边界错误藏在 lifecycle 分支里。
 
-46. **executor 的指标与经济日历依赖已改为只读适配，不再反向带入 shared compute 堆栈**  
+46. **executor 的指标与经济日历依赖已改为只读适配，不再反向带入 shared compute 堆栈**
     为了让 `AccountRuntime` 在没有 `UnifiedIndicatorManager` 和本地日历同步线程的情况下仍然具备持仓管理与风控输入，本轮新增了两个正式只读端口：`ConfirmedIndicatorSource` 与 `ReadOnlyEconomicCalendarProvider`。前者直接基于共享库中的确认 OHLC/indicators 快照为 `PositionManager` 提供最新确认指标，后者则只通过 DB 与 `runtime_task_status` 读取 economic calendar 的共享结果，而不会在 executor 本地启动同步线程。这样 executor 既能继续使用 confirmed 指标和经济事件作为本地风控输入，又不会在 build 阶段重新拥有 shared compute 的运行时职责。已新增 composition-root 级测试，直接验证 executor builder 不再调用 `build_signal_layer / build_paper_trading_layer`，而是只走 `build_account_runtime_layer`。
 
 ## 7. 验证记录
@@ -7522,9 +8310,9 @@ domain 组件
 
 - 已完成一轮职责边界复核，确认 `query_services`、`runtime`、`manager` 的边界已按新目录收口。
 - 已修复 import cycle（`runtime.bar_event_handler` 与 `query_services.runtime`、`pipeline_runner` 与 `runtime` 间）。
-- 冒烟测试命令执行通过：  
+- 冒烟测试命令执行通过：
   `pytest -q tests/indicators/test_core_functions.py tests/indicators/test_flush_event_batch.py tests/indicators/test_manager_intrabar.py -q`
-- 回测入口自检通过：  
+- 回测入口自检通过：
   `python -m src.backtesting --help`
 
 #### 全量回归（2026-04-11）
@@ -7544,9 +8332,9 @@ domain 组件
 51. 2026-04-13：`paper_trading` 的正式职责已重新澄清为 `main` 上的策略验证 sidecar，而不是 demo 专属能力。此前把它从 live main 默认运行态里移除，是把“不要混淆真实账户执行”和“不要装配验证能力”混为一谈，方向过度收缩。现已恢复为：`paper_trading` 只要启用就装配在 `main`，用于 shadow execution / 策略验证；`executor` 仍然严格禁止装配。这样边界更符合真实职责：`main` 拥有共享计算与验证 sidecar，`worker` 只拥有账户本地执行与风控。后续真正需要补的是 observability 语义，把 `paper_trading` 明确标成验证支路，而不是继续从 live main 里移除它。
 52. 2026-04-13：`paper_trading` 的可观测语义已从“普通 runtime component”正式收口为 `validation_sidecar`。此前虽然 `main` 上已经恢复装配 `paper_trading`，但 `/health`、`/v1/trade/state` 和 runtime 读模型仍只把它混在普通 `components` 视图里，容易把“策略验证 sidecar 正在运行”和“真实账户执行正在运行”混看。本轮已在 `RuntimeReadModel` 中新增 `paper_trading_summary()` 正式投影，并将其暴露到 `runtime_mode.validation_sidecars.paper_trading`、`dashboard_overview.validation.paper_trading`、`trade_state.validation.paper_trading` 以及根 `/health` 的 `runtime.validation_sidecars.paper_trading`。这样既保留 `runtime_mode.components.paper_trading=true` 作为“组件已装配”的事实，又能明确标注其 `kind=validation_sidecar`、`running/status/session_id/signals_received/signals_executed/signals_rejected` 等验证支路状态。最新单实例 smoke 已验证：`live-main` 的 `/v1/monitoring/health/ready` 正常返回 `ready`，同时 `/health` 与 `/v1/trade/state` 都会把 `paper_trading` 标成 `validation_sidecar`，不再与真实账户执行语义混淆。
 53. 2026-04-13：`/v1/trade/dispatch` 的交易载荷归一化已补齐最后一处语义泄漏，`submit_trade + direction` 现在能在开盘 canary 中稳定进入真实 dry-run 执行链。此前 `TradeAPIDispatcher` 虽然会用 `TradeRequest` 解析 `direction -> side`，但 `model_dump()` 仍把原始 `direction` 一起带给 `TradingCommandService.execute_trade()`，导致开盘实测中 `dispatch` 在 API 边界之后仍抛出 `unexpected keyword argument 'direction'`，形成“precheck 已 allow、dispatch 却死于接口契约”的假断链。本轮已在 API 调度器里把归一化后的 payload 显式移除 `direction`，只保留下游正式契约 `side/sl/tp/...`；并补回归测试，明确验证 `submit_trade + direction` 最终只会向下游传 `side`。最新开盘单实例 canary 已验证：`precheck` 返回 `allow`，`dispatch(dry_run)` 返回 `success=true`，`requested_operation=submit_trade` 与 `operation=trade` 同时可见，`trade_command_audits` 里也能看到对应的 `precheck_trade / execute_trade` 记录。
-54. 2026-04-13：intrabar 主链当前暴露的是**配置闭环缺失**，而不是引擎全断。最新开盘单实例验证中，`/v1/signals/diagnostics/pipeline-trace?scope=intrabar` 已出现 `XAUUSD/H1` 的 `bar_closed -> indicator_computed -> snapshot_published`，`/v1/ohlc/intrabar/series?timeframe=H1` 与 `/v1/indicators/XAUUSD/H1/live` 也都能返回实时快照，说明 intrabar 基础链路本身是工作的；但 `M30/M15/M5` 仍完全无 intrabar 数据。根因有两层：  
-    1) `intrabar_trading.trigger` 当前要求 `M30/M15/M5 <- M1`，而共享 `app.ini[trading].timeframes` 仍是 `M5,M15,M30,H1,H4,D1`，并不包含 `M1`，因此这些父级 TF 的 child close 事件在当前有效配置下根本不可能产生；  
-    2) 试图通过 `config/instances/live-main/app.local.ini` 临时把 `M1` 只加到单实例，并不会生效，因为配置系统当前只允许 `market.ini / mt5.ini / risk.ini` 参与实例级 overlay，`app.ini` 仍是全局共享事实源。  
+54. 2026-04-13：intrabar 主链当前暴露的是**配置闭环缺失**，而不是引擎全断。最新开盘单实例验证中，`/v1/signals/diagnostics/pipeline-trace?scope=intrabar` 已出现 `XAUUSD/H1` 的 `bar_closed -> indicator_computed -> snapshot_published`，`/v1/ohlc/intrabar/series?timeframe=H1` 与 `/v1/indicators/XAUUSD/H1/live` 也都能返回实时快照，说明 intrabar 基础链路本身是工作的；但 `M30/M15/M5` 仍完全无 intrabar 数据。根因有两层：
+    1) `intrabar_trading.trigger` 当前要求 `M30/M15/M5 <- M1`，而共享 `app.ini[trading].timeframes` 仍是 `M5,M15,M30,H1,H4,D1`，并不包含 `M1`，因此这些父级 TF 的 child close 事件在当前有效配置下根本不可能产生；
+    2) 试图通过 `config/instances/live-main/app.local.ini` 临时把 `M1` 只加到单实例，并不会生效，因为配置系统当前只允许 `market.ini / mt5.ini / risk.ini` 参与实例级 overlay，`app.ini` 仍是全局共享事实源。
     这意味着 intrabar 当前的真实风险点不是“线程没启动”，而是系统缺少对 `trigger_map` 与有效 timeframes 闭环的一致性校验。后续应在启动期对 `intrabar_trading.trigger` 与 `TradingConfig.timeframes` 做 fail-fast 校验，或明确禁止配置出“父级启用但 child TF 不存在”的无效组合。
 55. 2026-04-13：closeout 控制链已按 no-op 业务场景验证通过，`API -> 应用服务 -> 状态投影 -> 审计 -> 文本日志` 语义一致。最新验证中，在无持仓、无挂单的 live-main 场景下调用 `/v1/trade/closeout-exposure`，返回 `accepted=true / status=completed`，并明确给出 `remaining_positions=[] / remaining_orders=[]`；`/v1/trade/state/closeout` 能同步看到 `last_reason / last_comment / actor / action_id / audit_id / idempotency_key`，`/v1/trade/command-audits` 也记录了完整的 `closeout_exposure` 请求/响应载荷，主日志中对应的 `Operator action recorded` 也存在。这说明 closeout 链在“没有可平仓对象”时不会卡在中间态，也不会出现 API 成功但状态/审计不一致的问题。未决项仅剩真实持仓/挂单场景下的部分成功、部分失败和 `runtime_mode_after_manual_closeout` 行为验证。
 56. 2026-04-13：intrabar trigger 与有效时间框架的闭环校验已从 warning-only 升级为 startup/hot-reload fail-fast。此前 `build_signal_layer()` 只会对缺失 trigger map 发 warning，导致系统即使在 `intrabar_trading.enabled=true`、`enabled_strategies` 已声明、但 child timeframe 根本不在 `app.ini[trading].timeframes` 中时仍然进入 `ready`，运行后只表现为某些父级 TF 永远没有 intrabar 数据。这轮已把校验前移到信号装配边界，并在 `signal.ini` 热重载时复用同一份合同校验：对每个实际启用的 intrabar 策略，都会验证其活动父级 timeframe 是否存在 trigger 映射，以及该 child timeframe 是否属于全局有效 `trading.timeframes`。若不满足，启动直接失败，热重载也拒绝应用新配置。这样系统不再允许“intrabar 父级启用但 child TF 不在有效时间框架集合里”的静默坏配置继续带病运行。
@@ -7560,8 +8348,8 @@ domain 组件
 64. 2026-04-13：`multi_account` 下 `main` 的本地执行职责已改为显式绑定驱动，不再默认偷偷持有 worker 职责。`build_signal_components()` 现在只在当前 `main` 账户别名被 `account_bindings` 显式绑定到 live-executable 策略时，才装配本地 `trade_executor / pending_entry_manager / position_manager / execution_intent_consumer`；否则 `main` 只保留共享计算与 `ExecutionIntentPublisher`。`RuntimeReadModel` 也同步把这种场景收口为 `status=disabled / execution_scope=remote_executor`，避免 `/health` 把“没有本地执行器”误报成 `critical`。本轮同时把 `config/topology.ini` 的 live 组收口为最小正式双实例 `live-main + live-exec-a`，并新增 transport canary 回归，直接验证 `intent_published -> intent_claimed -> execution_succeeded` 生命周期。
 65. 2026-04-13：`ExecutionIntentPublisher -> ExecutionIntentRepository` 的落表 tuple 合同曾发生一位错位，已正式修复并补回归。根因是 `ExecutionIntentPublisher` 生成的 row 结构为 `(..., symbol, timeframe, payload, status, attempt_count, ...)`，但 `ExecutionIntentRepository.write_execution_intents()` 仍按旧顺序把 `row[8]` 当 payload、`row[9]` 当 status，导致 `timeframe/payload/status` 在真实落表时整体左移。这会让 live `main` 即使生成 confirmed intent，也可能写入畸形记录，进而把 transport 问题伪装成“worker 不 claim”或“链路没触发”。现已按正式 schema 顺序修正映射，并新增 `tests/persistence/test_execution_intent_repo.py`，明确锁住 `timeframe -> payload -> status` 三列顺序。
 66. 2026-04-13：双实例 live transport canary 已在真实运行态完成，`main -> intent -> exec-a -> execution_skipped` 事实链可通过 `/v1/trade/trace/by-trace/{trace_id}` 直接审计。本轮先定位出 MT5 `IPC timeout` 的真实前置条件是“终端未预热且主终端需要人工登录密码”，在沙箱外预启动并完成终端登录后，`live-main` 与 `live-exec-a` 均可稳定进入 `ready`。随后使用安全的低置信度 confirmed canary 信号，向 `live_exec_a` 写入 execution intent，并在真实运行中的 executor 上看到完整 trace：`intent_published -> intent_claimed -> execution_skipped`。这证明当前共享 intent 表、worker claim、pipeline trace 持久化和 `/v1/trade/traces` 读模型已经打通。未决项：这轮 transport canary 仍是“合成 confirmed signal”，不代表真实策略窗口中已经自然出现可执行信号；另外 MT5 终端登录态仍是开机前置条件，尚未收口成真正无人值守的纯进程级启动。
-67. 2026-04-13：MT5 会话启动契约已从“黑盒 initialize/login”收口为正式 session gate，启动入口、预检 CLI 与 `/health` 现在共用同一套状态语义。`MT5BaseClient` 已新增正式 `MT5SessionState`，显式区分 `terminal_reachable / terminal_process_ready / ipc_ready / authorized / account_match / session_ready / interactive_login_required`；`live_preflight`、`src.entrypoint.web` 与 `src.entrypoint.supervisor` 已统一复用该门禁，并在失败时输出 `terminal_not_running / ipc_timeout / interactive_login_required / login_failed / account_mismatch` 等明确错误码，不再把所有问题折叠成笼统的 `Failed to initialize MT5`。同时，根 `/health` 与 runtime readmodel 也补齐了 `runtime.external_dependencies.mt5_session` 正式投影，避免再把 `ready=true` 误读为“账户已可交易”。未决项：当前仍明确不做 GUI 自动输密码；若 broker 终端要求人工解锁，系统行为是 fail-fast 并提示人工处理，而不是尝试旁路自动化。 
-68. 2026-04-13：`quote_stale` 已从“仅观测 flag”正式收口为执行侧硬门禁，`trade_state / precheck / TradeExecutor` 三处语义现已一致。此前账户风险投影虽然会把 `quote_stale` 写入 `active_risk_flags`，但 `should_block_new_trades` 与执行前过滤链都不会因此阻断新交易，形成“读口显示不可交易、底层执行链仍可能放行”的双轨语义。本轮已把执行侧 quote freshness 抽成共享正式函数 `src.trading.execution.quote_health.build_execution_quote_health()`，由 `AccountRiskStateProjector` 与 `TradeExecutor` 共用同一套阈值：至少 `3s`，并同时参考 `quote_stale_seconds / stream_interval_seconds` 的 `3x`。现在只要执行侧 quote 判 stale，风险投影就会把它纳入 `should_block_new_trades`，`TradeExecutor.run_pre_trade_filters()` 也会以正式 reason `quote_stale` 本地拒绝 confirmed/intrabar 交易；`TradeAdmissionService` 则避免在 `last_risk_block=quote_stale` 时再追加一条泛化的 `risk_block_new_trades`，减少同一事实在报告中的重复表达。未决项：后续仍需把 bar freshness / intrabar freshness 也收口到同一类 market-tradability gate，避免只有 quote 被硬阻断而 OHLC/child-close 仍停留在观测告警层。 
+67. 2026-04-13：MT5 会话启动契约已从“黑盒 initialize/login”收口为正式 session gate，启动入口、预检 CLI 与 `/health` 现在共用同一套状态语义。`MT5BaseClient` 已新增正式 `MT5SessionState`，显式区分 `terminal_reachable / terminal_process_ready / ipc_ready / authorized / account_match / session_ready / interactive_login_required`；`live_preflight`、`src.entrypoint.web` 与 `src.entrypoint.supervisor` 已统一复用该门禁，并在失败时输出 `terminal_not_running / ipc_timeout / interactive_login_required / login_failed / account_mismatch` 等明确错误码，不再把所有问题折叠成笼统的 `Failed to initialize MT5`。同时，根 `/health` 与 runtime readmodel 也补齐了 `runtime.external_dependencies.mt5_session` 正式投影，避免再把 `ready=true` 误读为“账户已可交易”。未决项：当前仍明确不做 GUI 自动输密码；若 broker 终端要求人工解锁，系统行为是 fail-fast 并提示人工处理，而不是尝试旁路自动化。
+68. 2026-04-13：`quote_stale` 已从“仅观测 flag”正式收口为执行侧硬门禁，`trade_state / precheck / TradeExecutor` 三处语义现已一致。此前账户风险投影虽然会把 `quote_stale` 写入 `active_risk_flags`，但 `should_block_new_trades` 与执行前过滤链都不会因此阻断新交易，形成“读口显示不可交易、底层执行链仍可能放行”的双轨语义。本轮已把执行侧 quote freshness 抽成共享正式函数 `src.trading.execution.quote_health.build_execution_quote_health()`，由 `AccountRiskStateProjector` 与 `TradeExecutor` 共用同一套阈值：至少 `3s`，并同时参考 `quote_stale_seconds / stream_interval_seconds` 的 `3x`。现在只要执行侧 quote 判 stale，风险投影就会把它纳入 `should_block_new_trades`，`TradeExecutor.run_pre_trade_filters()` 也会以正式 reason `quote_stale` 本地拒绝 confirmed/intrabar 交易；`TradeAdmissionService` 则避免在 `last_risk_block=quote_stale` 时再追加一条泛化的 `risk_block_new_trades`，减少同一事实在报告中的重复表达。未决项：后续仍需把 bar freshness / intrabar freshness 也收口到同一类 market-tradability gate，避免只有 quote 被硬阻断而 OHLC/child-close 仍停留在观测告警层。
 69. 2026-04-13：`operator command` 结果合同已从“service/consumer/application 三层各自补字段”收口为单一正式构造器。此前 `OperatorCommandConsumer._normalize_existing_action()` 与 `OperatorCommandService._build_existing_response()` 都在用 `setdefault()` 把旧形状结果补齐成当前外观，导致 command queue 的完成态既不是单一状态拥有者，也不是单一结果模型。本轮已将结果合同下沉到 `src.trading.commands.results`，把 `accepted / status / action_id / command_id / audit_id / actor / reason / idempotency_key / request_context / message / error_code / recorded_at / effective_state` 收口为正式 `operator command result`；`TradingModule._build_operator_action_response()`、`OperatorCommandService.enqueue()/existing replay`、`OperatorCommandConsumer` 的本地控制命令与已有 operator action 结果绑定，现已全部复用同一构造器，不再保留 `_normalize_existing_action()` 或 `_build_existing_response()` 这类兼容层。定向回归与扩展切片已通过：`tests/trading/test_operator_commands.py` 以及 `test_signal_executor / test_execution_intents / test_pipeline_event_bus / test_trade_trace` 共 `88 passed`。
 70. 2026-04-13：普通交易应用服务的返回合同也已开始从“注入式补字段”迁移到正式结果构造器。此前 `TradingModule._run_trade_with_dispatch_controls()`、`_execute_command()`、`TradeExecutionReplayService` 与 `TradeCommandAuditService.fetch_successful_trade_result()` 都会用 `setdefault()` 或“重放时补字段”的方式给 `execute_trade/precheck_trade` 结果附加 `dispatch_precheck / trace_id / account_alias / operation_id / idempotent_*`，导致普通交易结果虽然可用，但不是单一正式合同。本轮新增 `src.trading.application.results`，并已把这些字段收口成显式结果构造：fresh result 通过 `build_trade_operation_result()` 明确生成，dispatch 通过 `attach_dispatch_precheck()` 明确附加，idempotent replay 通过 `build_idempotent_trade_replay()` 明确构造，不再依赖 `setdefault()` 注入式兼容。未决项：下游 `TradingService.execute_trade()` 的原始 MT5 结果仍是较宽松的基础载荷，后续如继续收口，可再向下抽成更强约束的正式 trade operation result。
 71. 2026-04-13：`src/trading/` 顶层散落文件已按职责重新纳入对应子包，不再把命令结果、执行健康、运行时基础设施和 MT5 交易服务平铺在领域根目录。当前目录收口为：`src.trading.commands.results`（命令结果合同）、`src.trading.execution.quote_health / intrabar_health`（执行健康门禁）、`src.trading.runtime.registry / lifecycle`（运行时账户与线程生命周期）、`src.trading.application.trading_service`（MT5 交易业务服务）。根目录保留的 `models / ports / reasons / trade_events` 仍是跨子域共享的领域根契约，本轮没有为了“目录整齐”而强行下沉。相关源码与 `app_runtime` 装配、测试 import 已同步迁移，未保留旧顶层路径转发壳。
@@ -7685,7 +8473,7 @@ domain 组件
     (3) **B7 双轨配置补丁**：`indicator_config.py` 的 `ConfigLoader.load()` 自动检测 yaml/yml/json 三种路径 + `from_yaml()` 在 PyYAML 缺失时静默 fallback 到 JSON。这是典型"补丁式兼容"——调用方无法预知 source of truth 切换。grep 全 src 确认 `from_yaml` 无外部调用 + 实际配置只有 `config/indicators.json`。修复：删除 `from_yaml()` 方法；`load()` 收口为单一 JSON 入口；遇 yaml/yml 路径 `raise NotImplementedError` fail-fast。
     (4) **B8 真 Bug 揭示**：审计 `breakeven_applied` 字段时发现它**不是简单冗余**（DB schema `position_runtime_states.breakeven_applied` 列 + TradingStateStore 写入），而是与运行时 `breakeven_activated` 字段语义不同（DB 持久化历史标志 vs 运行时活跃状态）。**真 bug**：`reconciliation.sync_open_positions()` 恢复持仓时只设 `breakeven_applied`，未同步 `breakeven_activated`。后果：`_evaluate_chandelier_exit` 误以为 breakeven 还没激活，可能基于"未激活"前提重复触发 breakeven 移动逻辑（SL 的 max() 会保护实际位置不回退，但 lock_ratio 等下游计算前提错乱）。修复：reconciliation 恢复时若 `breakeven_applied=True` → 同步 `breakeven_activated=True`；`TrackedPosition` 字段加注释明确两者语义差异；新增 2 个回归测试守住"持久化标志同步到运行时活跃状态"+"未持久化时保持默认 False"。
     (5) **supervisor.py:180 注释清理**：将"临时把 restart_count 累加"改为详细说明（与现有指数回退公式一致），避免后续审查再误判为补丁。
-    
+
     **核验后识别的 6 项 Agent 误报**（不修，记录避免重复审）：
     - F1 "compute_breakeven_sl 分母为零"：grep 全 src 零外部调用，全在 `evaluate_exit` 入口 `initial_risk > 0` 守卫内
     - F2 "PendingEntryManager 双线程竞态"：shutdown 用 stop_event 协调，两线程独立 join 设计正确
@@ -7693,7 +8481,7 @@ domain 组件
     - F4 "modify_sl 先赋值后调用"：实际顺序是 MT5 API + 校验通过后才赋值 `pos.stop_loss`，设计正确
     - F5 "_INSTANCE_SCOPED_CONFIGS 应加 topology.ini"：topology 是全局拓扑定义，实例级覆盖会破坏 group 一致性
     - F6 "supervisor restart_count 'temp' 是补丁"：实际是合法指数回退累加，仅注释措辞问题（B5 已优化）
-    
+
     **本会话不实施 — 记 follow-up F-6 ~ F-11**：
     - F-6 拆分 RuntimeReadModel（1523 行 → 4 facade）
     - F-7 拆分 TradeExecutor（1276 行 → 3 职责类）
@@ -7701,7 +8489,7 @@ domain 组件
     - F-9 TradingModule 拆分（1051 行）
     - F-10 Config 模块职责分离（centralized.py + signal.py 共 1246 行）
     - F-11 API root `__init__.py` 工厂化（24 子路由 import 重型）
-    
+
     全量 1442 通过（原 1436 + 6：4 lifecycle + 2 breakeven sync）。
 
 ---
@@ -8911,3 +9699,1628 @@ confirmation_bars）。
 1. Yahoo 限流恢复（典型 24h）后跑 `backfill --source yfinance --symbols GC=F --start 2023-01-01`，验证 `daily_external_ohlc` 中 GC=F 行数 ≥ 700，再重跑 with_cme mining——此时 vs baseline 的差异才能用作"CME 是否提供 alpha"的判据。
 2. 若持续限流，Phase 2 顺手实现 `StooqClient`（pandas_datareader 抓 stooq.com），通过 registry 切 `--source stooq` 即可，零改 backfill / lookup / provider。
 3. Phase 2 cross-asset Provider（DXY/10Y/SPX）实现完全不依赖 GC=F 数据可用，可与限流恢复并行。预计 ~100 行 + 4 处注册（Provider 文件、`_PROVIDER_FACTORIES`、`FeatureProviderConfig.cross_asset_enabled`、`_ALL_PROVIDERS`）。
+
+---
+
+## 2026-05-05 — 架构基建收口：策略路由、采集频率、EntryPolicy、回测部署门禁、live 风控
+
+### 触发
+
+策略已清理到结构化目录后，针对“高频/低频策略共存前的框架审查”发现 5 个基建风险：
+
+- 有效 `account_bindings` 被 `signal.local.ini` 清空，`auto_trade_enabled=true` 也不会路由到账户。
+- M1/M5 confirmed-bar 仍共用 30s OHLC 轮询，日内较高频延迟过大，低频又被过度轮询。
+- `EntrySpecGroup` 装配失败会在 decision engine 退回 market。
+- 回测加载 signal config 失败会返回空 deployments，静默关闭 deployment gate。
+- `config/instances/live-main/risk.local.ini` 保留旧 price_action 高风险试错口径。
+
+### 新增 / 调整职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `src/ops/cli/live_preflight.py` strategy routing check | effective `SignalConfig` + strategy catalog + environment topology | 无 | `Effective strategy routing` 预检结果：当前 topology group 下所有可执行策略必须绑定账户；未知策略 / 不可执行绑定 fail-fast | 不推导策略、不补默认绑定；不把 demo alias 计入 live 预检 |
+| `src/ops/cli/live_preflight.py` instance risk check | topology group + instance-scoped `risk.ini` merged config | 各实例 `risk.local.ini` | `[instance] Risk:*` 预检结果：live 实例超出仓位/手数/日亏损阈值直接 FAIL | 不读取 MT5 敏感配置、不替代风险服务 |
+| `config/app.ini [ohlc_intervals]` + `IntervalConfig.ohlc_intervals` | app.ini SSOT | centralized config | per-TF OHLC 检测间隔：M1=2s、M5=5s、低频逐步放宽 | 不在 ingest.ini 重复定义时间框架/采集间隔 |
+| `src/trading/execution/entry_dispatch.py` + `decision_engine.py` | `ENTRY_INTENT` + `RECENT_BARS` + injected registry | `EntryPolicyRegistry` | 缺 registry / intent / recent bars → `entry_policy_unavailable` 结构化拒单 | 不再用 direction/entry_price 构造兼容 intent/bar；不把 None 当 market |
+| `src/backtesting/engine/runner.py` deployment loader | signal config snapshot 或显式 deployments | signal config / caller | 默认加载失败直接 RuntimeError；显式 `strategy_deployments={}` 才表示 research-only 关闭 gate | 不再静默返回 `{}` |
+| `config/signal.local.ini` | 本机策略绑定覆盖 | 本机 local override | 历史记录：曾让 `demo_main` 显式绑定 `structured_micro_momentum`；已在 `0zf` 清空 | 不把 demo_validation 策略路由到 live |
+| `config/instances/live-main/risk.local.ini` | live-main local override | live-main 实例 | 保守 live 基线：单仓、0.01 lot、3% 日亏损、3 trades/day | 不保留旧策略试错注释或高风险 cap |
+
+### 移除的兼容路径
+
+- `entry_dispatch._build_entry_intent()` 不再在缺 `ENTRY_INTENT` 时用 `event.direction` 拼最小 intent。
+- `entry_dispatch._build_market_snapshot()` 不再在缺 `RECENT_BARS` 时用 entry price 拼单根 bar。
+- `group_is_market_only(None)` 不再返回 true；None 表示未装配，调用方必须拒单。
+- `BacktestEngine` 默认 deployment loader 不再吞掉 signal config 加载异常。
+
+### 验证
+
+- `python -m pytest tests/ops/test_live_preflight.py -q`
+- `python -m pytest tests/config/test_config_centralization.py -q`
+- `python -m pytest tests/trading/test_signal_executor.py -q`
+- `python -m pytest tests/backtesting/test_deployment_consistency.py -q`
+
+### 未决项
+
+| 项 | 原因 | 处理条件 |
+|---|---|---|
+| `config/signal.local.ini` 是本机 local 覆盖，不随 git status 展示 | 历史未决项已由 `0zf` 关闭；demo-main 普通策略绑定应为空 | 换机器/部署实例前先跑 `live_preflight --environment demo`，确认没有非 PA 残留路由 |
+| `EntryPolicyRegistry` 仍保留全局 `default_policy=market` | 当前已注册策略有显式 mapping；本次先阻断缺 registry / intent / bars 的主要退化路径 | 新增未映射策略前，评估是否把 default policy 改成显式 mapping-only 合同 |
+| `live_preflight` 风控阈值为代码内门禁 | 阈值用于上线前安全审计，不等同 runtime 风控配置 | 若需要账户规模化，先把阈值抽到正式 preflight policy 配置并补测试 |
+
+---
+
+## 2026-05-05 — Demo canary 复核：行情健康、交易 trace 合同与审计投影收口
+
+### 触发
+
+在 demo 环境做真实 0.01 手 canary 时发现：`/v1/trade/dispatch`
+返回的 admission `trace_id` 只能查到准入事件，最终 `execute_trade`
+审计落在 `request_id` 维度，导致“按响应 trace 反查成交”断链。同时，
+MT5 tick 历史接口返回陈旧市场时间，但 quote 与 OHLC 已经新鲜；若把 tick
+陈旧作为 ready 阻断，会误杀当前以 quote/OHLC 驱动的 M1/M5 链路。
+
+### 新增 / 调整职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `BackgroundIngestor.health_snapshot()` | quote/tick/OHLC 最近 fetch 时间 + 市场时间 | ingestor lane state | 区分 `age_seconds` 与 `market_age_seconds`；OHLC stale 阈值按 TF 周期放宽；tick stale 降为 warning | 不把线程存活等同于行情可用 |
+| `check_queue_stats()` | ingestor health snapshot | health monitor | 记录 `market_data_lane_market_age_seconds` 与 stale 指标 | 不只看 queue depth |
+| `TradeAPIDispatcher` + `TradeAdmissionService` | dispatch payload + admission report | API/application service | admission `trace_id` 注入执行 payload；`request_id` 继续用于幂等，`trace_id` 用于链路审计 | 不把 request_id 当 trace_id 兜底主键 |
+| `TradingModule.execute_trade()` | 执行参数 + envelope 字段 | TradingModule audit layer | `trace_id/signal_id/intent_id/action_id/scope` 保留在审计 payload，不传给 broker service | 不污染 MT5 下单参数 |
+| `TradeCommandAuditService` | broker response payload | audit service | 从 nested result/details/effective_state 投影顶层 `ticket/order_id/deal_id` | 不要求调用方手工补齐 broker id |
+| `TradingFlowTraceReadModel` | pipeline events + audit rows + state rows | read model | close/cancel terminal action 记为 completed；从 request/response payload 提取 ticket/action/command 标识 | 不依赖日志文本串链 |
+
+### 验证
+
+- 单测：`python -m pytest tests\api\test_trade_api.py tests\trading\test_trading_module.py tests\trading\test_admission_service.py tests\readmodels\test_trade_trace.py tests\trading\test_operation_state.py`
+  - 121 passed。
+- demo-main ready：`/v1/monitoring/health/ready` 返回 `status=ready`，
+  `checks.storage_writer/ingestion/market_data_health/indicator_engine=ok`；
+  `mt5.circuit_open=false`，critical stale=0，tick lane 为 warning stale。
+- demo 手工 canary：
+  - `request_id=demo_canary_20260505_210324_trace_contract`
+  - `trace_id=ba6641a35946479fbba67e4d1cc30c3a`
+  - XAUUSD buy 0.01，ticket/order=`296321138`，deal=`224595727`
+  - 平仓 command=`368522f694a14888851463d34cc70ec5`，action=`dc8e9e5cdd4040b7ac156d52570f51ac`
+  - `/v1/positions?symbol=XAUUSD` 最终为空。
+  - `/v1/trade/trace/by-trace/{trace_id}` 能查到 `execute_trade` 与 ticket；
+    `/v1/trade/trace/by-command/{command_id}` 能查到 close action 并显示 completed。
+
+### 剩余业务判断
+
+| 项 | 当前判断 | 下一步 |
+|---|---|---|
+| 高频支持边界 | 当前可支持 quote/OHLC 驱动的 M1/M5 日内策略；不应宣称已支持 tick-level scalping | 若策略声明 tick 级依赖，再把 tick lane 从 warning 升级为该策略/账户的 hard dependency |
+| 关闭动作与开仓 trace | 手工 close 是独立 operator command trace，能按 command/action 反查；开仓 trace 不自动吸收后续平仓 | 若需要“单笔交易全生命周期一张图”，应以 position lifecycle projection 串联 open ticket 与 close audit，而不是在 trace read model 里临时拼接 |
+| 中文经济事件名显示 | PowerShell JSON 输出仍有中文 mojibake；业务字段未作为本轮阻断项 | 后续单独验证 API raw UTF-8 与 DB 原文，必要时修 provider/serialization，而不是在调用端做显示补丁 |
+
+---
+
+## 2026-05-05 — Required market data health 进入交易准入与执行门禁
+
+### 触发
+
+ready 已能根据 `StrategyCapability.market_data_requirements` 把 required
+quote/tick/OHLC lane stale/missing 升级为 critical，但交易准入与
+`TradeExecutor` 仍只看 quote stale。结果是：控制面能发现 required lane
+不可用，执行链却仍可能消费 intent 并继续下单。
+
+### 新增 / 调整职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `src/trading/execution/market_data_health.py` | `BackgroundIngestor.health_snapshot()` 公开快照 + symbol | ingestor | execution/admission 可消费的 `status/blocking/blocked_lanes/dependency_contract` 投影 | 不读取 ingestor 私有字段；不重新定义采集状态 |
+| `RuntimeReadModel.market_data_health_summary()` | ingestor 公开 health snapshot | readmodel 投影 | `tradability.market_data_health` 与 `market_data_fresh=false`；critical 时 reason=`market_data_unhealthy` | 不把缺 ingestor 的 delegated/executor-only 拓扑误判为本地采集失败 |
+| `TradeAdmissionService` | `tradability_state_summary()` | admission service | `market_data_unhealthy` 作为 `market_tradability` 阶段结构化阻断原因 | 不在 admission 中探测采集器或 MT5 |
+| `TradeExecutor.market_data_health()` + pre-trade filter | 注入的 `market_data_health_fn(symbol)` | executor | 自动交易前 fail-closed，发出 blocked admission report / execution skipped | 不绕过 readmodel；不把 market data 检查混进 sizing/decision engine |
+| `build_signal_layer()` | container ingestor + trade_executor | app runtime | 装配期注入公开 market data health provider | 不通过兼容分支读取私有 lane state |
+
+### 移除 / 收口
+
+- required market data critical 不再只影响 `/ready`，而是同时进入：
+  - `/v1/trade/state.tradability`
+  - API/admission report
+  - `TradeExecutor` confirmed/intrabar pre-trade filters
+- 执行侧新增 `REASON_MARKET_DATA_UNHEALTHY`，归类为 `market_data` skip category。
+
+### 验证
+
+- `python -m pytest tests\trading\test_admission_service.py::test_market_data_health_critical_blocks_admission tests\readmodels\test_runtime.py::test_compute_tradability_verdict_market_data_unhealthy tests\readmodels\test_runtime.py::test_tradability_state_summary_blocks_on_market_data_health_critical tests\trading\test_signal_executor.py::test_trade_executor_blocks_when_required_market_data_health_is_critical`
+  - 4 passed。
+- `python -m pytest tests\readmodels\test_runtime.py tests\trading\test_admission_service.py tests\trading\test_signal_executor.py`
+  - 101 passed。
+
+### 剩余业务判断
+
+| 项 | 当前判断 | 下一步 |
+|---|---|---|
+| 高频支持边界 | 支持 quote/OHLC 驱动的 M1/M5 日内策略；required tick 依赖可以按策略能力声明升级为交易阻断 | tick-level scalping 仍需独立评估 MT5 tick lane 延迟、撮合滑点、限频 reservation 与订单簿/报价质量，不应只靠当前门禁宣称支持 |
+| executor-only 拓扑 | 无本地 ingestor 时 `market_data_health` 为 unavailable/non-blocking；其上游 main ready 与 intent 发布仍承担数据依赖判定 | 若未来 executor 也独立采集行情，应给该实例装配 ingestor 或正式 market-data health provider |
+
+---
+
+## 2026-05-05 — 单笔交易 lifecycle 投影收口到 TradingFlowTraceReadModel
+
+### 触发
+
+`/v1/trades/{trade_id}` 已有 `lifecycle` 字段，但它只是
+`TradesWorkbenchReadModel` 基于 trace facts 做的薄适配；开仓 ticket、
+position runtime、SL/TP trailing history、平仓 command 与 outcome 没有一份
+统一 canonical 投影。后续 demo/live 验证需要按单笔交易回答“何时开仓、何时
+改 SL/TP、何时平仓、结果如何、缺哪些事实”，不能继续让 API 或前端分散拼接。
+
+### 新增 / 调整职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `TradingStateRepository.fetch_position_sl_tp_history()` | account alias/key + position tickets | `position_sl_tp_history` 表 | 按账户与 position_ticket 拉取 SL/TP 调整事实 | 不在 readmodel 里直连 DB |
+| `TradingFlowTraceReadModel` lifecycle projection | signal / pipeline / command audit / pending / position / SLTP history / outcome facts | 各事实表原 owner | `lifecycle.summary / entry / management / exit / outcome / timeline / data_gaps` canonical 投影 | 不新增事实源；不在 API 路由拼生命周期 |
+| `TradesWorkbenchReadModel.build_trade_detail()` | trace payload | trace readmodel | 优先复用 `trace_payload.lifecycle`；缺失时才保留旧薄 fallback | 不再作为 lifecycle 事实聚合 owner |
+| `TradeTraceView` | trace readmodel payload | API view model | 显式暴露 `lifecycle` 字段 | 不改变已有 trace timeline / graph 合同 |
+
+### 验证
+
+- `python -m pytest tests\readmodels\test_trade_trace.py::test_trade_trace_projection_builds_trade_lifecycle_from_position_and_audits tests\readmodels\test_trades_workbench.py::test_build_trade_detail_returns_six_dimensions`
+  - 2 passed。
+- `python -m pytest tests\readmodels\test_trade_trace.py tests\readmodels\test_trades_workbench.py tests\api\test_trades_workbench_routes.py`
+  - 19 passed。
+
+### 剩余业务判断
+
+| 项 | 当前判断 | 下一步 |
+|---|---|---|
+| position SL/TP history | lifecycle 能纳入已有 `position_sl_tp_history`，但该表只记录 PositionManager 管理动作；broker 手工改 SL/TP 不会自动补齐 | 若需要 broker 侧手工改动审计，应在 position reconcile 中产出专门 mutation fact，而不是在 readmodel 推断 |
+| 平仓链路 | close command 与 position closed/outcome 已能进入 lifecycle；手工 close 仍可能是独立 command trace | 若要把开仓 trace 与平仓 command trace 自动合并，应按 ticket/position_ticket 做跨 trace lifecycle directory，而不是修改单条 trace 的语义 |
+
+---
+
+## 2026-05-06 — 真实 demo 常驻 martingale runner 验证与 quota / dispatch 边界修复
+
+### 触发
+
+按“真实 demo 马丁”验证常驻 `tick_martingale_probe` 时，demo-main 已能通过 tick feature route 驱动 `TradingModule` 真实下单，但连续重启与小时限频暴露了三类架构合同问题：
+
+- 常驻 runner 的 daily quota 先按 recovery state 行数计数，后续又把 CLI canary / dry-run 记录一起计入，导致真实 runner 被历史演练记录挡住。
+- 初始仓被 `max_trades_per_hour` 阻断时，交易端口异常从 `execute_trade` 抛出，runner 误当 `runner_exception`，按 tick 节奏刷失败审计。
+- 真实仓位已被 broker/人工/cleanup 清掉后，runner 需要通过正式 position snapshot port 收敛 cycle 状态，而不是继续保留 ghost active cycle。
+
+### 新增 / 调整职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `DemoBoundedRecoveryRunner` daily quota | `TradingStateStore.list_recovery_cycle_states()` | `recovery_cycle_states` | 只按唯一 `cycle_id` 统计 `resident_recovery_*` 且匹配当前 dry-run/real 模式的 runner cycle；CLI canary 与 dry-run 不占用真实 demo 配额 | 不用行数当周期数；不让 one-shot canary 影响 resident runner |
+| `DemoBoundedRecoveryRunner` dispatch throttle | 交易端口返回/异常 | runner 内存退避表 | initial/step 共用 `blocked_dispatch_retry_seconds`；阻断后返回 `blocked_initial_retry_wait` / `blocked_step_retry_wait` | 不按 tick 频率重复预检或重复 execute |
+| `open_initial_recovery_cycle()` / `RecoveryExecutionAdapter` | `trading_port.dispatch_operation("trade")` | TradingModule / broker | `PreTradeRiskBlockedError` 与交易端口异常都转为结构化 `blocked/skipped`，category 为 `pre_trade_risk` 或 `trading_port_failure` | 不让交易端口异常逃逸成 runner consumer error |
+| `DemoBoundedRecoveryRunner` submitted exposure reconcile | `position_snapshot_provider.active_positions()` + `status().last_reconcile_at` | PositionManager | 无匹配 live position 且 reconcile 新鲜时，将 submitted cycle 写成 closed，并记录 `exposure_absent_confirmation` | 不读取 PositionManager 私有字段；不凭 command audit 推断实时仓位 |
+
+### 真实 demo 结果
+
+- demo-main 当前以 `dry_run=false` 运行；`/v1/monitoring/health/ready` 返回 ready，`checks.recovery_runner=ok`。
+- 已有真实 demo tickets：
+  - `299290179`：0.01 buy initial；
+  - `299290761`：0.02 buy recovery step；
+  - `299306427`：0.01 buy initial。
+- 当前 `/v1/account/positions` 为空，`/v1/trade/state.recovery_runner.active_submitted_tickets=[]`、`active_live_position_tickets=[]`。
+- 23:31 之后再次尝试真实 initial 时被 `Hourly trade limit reached` 阻断；修复后 runner 状态为 `last_reason=blocked_initial_retry_wait`、`decision_counts.block=1`、`consecutive_errors=0`，审计不再按 tick 连续刷失败。
+
+### 移除 / 收口
+
+- 移除 `blocked_step_retry_seconds` 的窄语义，改为 `blocked_dispatch_retry_seconds`，覆盖 initial 与 step。
+- daily quota 不再受 `demo-recovery-canary-*` 或历史 dry-run runner cycle 影响。
+- 交易端口限频/执行失败不再表现为 `runner_exception`。
+
+### 验证
+
+- `python -m pytest tests\trading\recovery\test_recovery_runner.py tests\config\test_risk_config.py -q`
+  - 23 passed。
+- `python -m pytest tests\trading\recovery tests\app_runtime\test_recovery_runtime_layer.py tests\app_runtime\test_runtime_monitoring_registration.py tests\readmodels\test_runtime.py tests\config\test_risk_config.py tests\market\test_tick_feature_engine.py tests\api\test_monitoring_ready.py -q`
+  - 111 passed。
+- `python -m compileall src\trading\recovery src\app_runtime\builder_phases\recovery.py src\config tests\trading\recovery tests\app_runtime`
+  - exit 0。
+- demo-main 运行验证：
+  - service PID `11372` 监听 `8811`；
+  - `/v1/trade/state.tradability.verdict=tradable`；
+  - `tick_feature_health.XAUUSD.status=healthy`；
+  - optional `tick:XAUUSD` 原始 tick lane 仍为 `market_time_stale` warning，但 quote / OHLC / tick-feature 均可用，ready 不被拉 critical。
+
+### 未决项
+
+| 项 | 当前判断 | 下一步 |
+|---|---|---|
+| 小时限频窗口 | 当前 demo 已触达 `max_trades_per_hour=4`，真实 runner 会每 30 秒退避重试，直到窗口释放 | 不建议为了“马上成交”放宽小时限频；继续监控是否在窗口释放后提交一个新 initial |
+| recovery order 元数据 | MT5 / position readmodel 里部分恢复出来的仓位 strategy/timeframe 仍依赖 comment / metadata，不如 command audit 完整 | 后续补 broker position 与 recovery cycle 的正式关联投影，避免靠 comment 文本排查 |
+| 原始 tick history lane | `copy_ticks_from` 返回旧市场时间，当前 tick feature 主要依赖 quote-side 快照推进 | 若要验证真正 tick-history replay 与实盘一致，需要单独处理 broker tick history stale 或改为 live quote/tick stream 事实源 |
+
+---
+
+## 2026-05-06 — demo-main 高频 martingale 验证风险阈值调整
+
+### 触发
+
+真实 demo `tick_martingale_probe` 已打通 initial / step 成交，但 23:31 后持续被 `max_trades_per_hour=4` 阻断。用户明确希望用马丁作为高频验证负载，因此将实例级 demo local 风控从“保守 canary”调整为“高频验证”口径。
+
+### 调整边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `config/instances/demo-main/risk.local.ini` | demo-main 本机实例配置 | 本机 local 覆盖 | `max_trades_per_hour=30`、`max_trades_per_day=100`、`max_cycles_per_session=30`、`max_cycles_per_day=30` | 不修改 `config/risk.ini` 默认合同；不修改 live-main |
+| `recovery_runtime_runner` 风险边界 | tick feature snapshot + trading port | runner + risk service | 保留 `demo_only=true`、`dry_run=false`、`max_steps=1`、`max_total_volume=0.03`、`max_next_volume=0.02`、`data_unavailable_policy=fail_closed` | 不放开无限马丁；不绕过 pre-trade risk |
+
+### 业务判断
+
+这是 demo 负载测试参数，不是正式 live 风控建议。调整目标是让 tick-derived 马丁在真实 demo 中持续产生受控 initial / recovery step，从而验证数据获取、tick feature、交易端口、审计、状态恢复、监控与限频 reservation 的完整链路。
+
+### 后续验证
+
+- 重启 demo-main，让 local 风控覆盖重新加载。
+- 观察 `/v1/trade/state.recovery_runner` 是否从 `Hourly trade limit reached` 恢复到真实 submitted ticket。
+- 继续确认 `/v1/account/positions`、`/v1/trade/command-audits`、`/v1/monitoring/health/ready` 与 recovery runner 状态一致。
+
+### 追加调参
+
+- 放开高频验证后，`recovery_target_points=5` 导致 XAUUSD 目标距离只有 `0.05`，真实 demo 表现为快速刷 cycle，点差/手续费占比过高。
+- 将 demo-main `recovery_target_points` 调整为 `30`，即目标距离 `0.30`，仍保留 `step_distance_points=80`、`protective_stop_points=120` 与单 cycle 最大 `0.03 lot`。
+
+### 追加暂停结论
+
+- 真实 demo 样本进一步证明当前 `tick_martingale_probe` 只有 `direction=buy`，不是双向策略，也没有方向判定、spread gate、最小期望收益 gate 或费用后盈亏阈值。
+- 23:44 之后恢复出的 recovery runner 仓位全部为 buy：15 笔已平仓、0 笔 sell，近似价格盈亏合计约 `-4.85`（按 XAUUSD contract_size=100 粗算，未作为 broker 对账事实）。
+- 该 runner 当前只能证明执行链路吞吐与状态恢复，不能作为可交易策略继续跑。已通过 `/v1/trade/control` 设置 `auto_entry_enabled=false`、`close_only_mode=true`，并将 demo-main `[recovery_runtime_runner].enabled=false`，等待下一轮策略设计后再启用。
+
+---
+
+## 2026-05-07 — demo-main martingale dry-run 与 tick-feature bus 假积压修复
+
+### 触发
+
+按“先重启 demo 并运行一段时间分析问题”的要求，demo-main 以
+`recovery_runtime_runner.enabled=true`、`dry_run=true`、`demo_only=true`
+运行 `tick_martingale_probe`，同时保持 `auto_entry_enabled=false`、
+`close_only_mode=true`，用于验证 tick-derived 决策链路而不产生真实订单。
+
+### 新增 / 调整职责边界
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `TickFeatureBus.publish()` | `TickFeatureSnapshot` + listener 集合 | tick-feature bus | 有实时 listener 时同步派发快照且不计入 FIFO backlog；无 listener 时才保留到 `drain()` 队列 | 不把 pub/sub 已消费快照当成待消费积压 |
+| `TickFeatureHealthStore` bus stats | bus `stats()` | health store | `queue_depth=0` 表示 listener 消费路径无 pull backlog，`dropped_snapshots=0` 表示未发生 FIFO 丢弃 | 不把 replay buffer 深度作为高频消费 SLO |
+| `DemoBoundedRecoveryRunner` dry-run 验证 | tick-feature snapshot | recovery runner 内存状态 | 只更新 decision analytics / reason counts / direction counts，不写真实 execute audit | 不绕过 trade control；不在 dry-run 下提交 broker order |
+
+### demo 观测结果
+
+- 服务重启后 PID `13992`，`/v1/monitoring/health/ready.status=ready`。
+- ready checks：`storage_writer=ok`、`ingestion=ok`、`market_data_health=ok`、`indicator_engine=ok`、`tick_feature_health=ok`、`recovery_runner=ok`。
+- 观测约 1 分钟后：
+  - `recovery_runner.enabled=true`、`running=true`、`dry_run=true`、`demo_only=true`；
+  - `processed_snapshots=90`、`consecutive_errors=0`、`stalled=false`；
+  - `decision_counts.hold=90`、`open_initial=0`、`open_step=0`、`close_cycle=0`；
+  - `reason_counts` 主要为 `spread_too_wide=44`、`direction_pressure_mismatch=34`、`direction_signal_too_weak=12`；
+  - `direction_counts` 已双向：`sell=26`、`buy=18`；
+  - `active_submitted_tickets=[]`、`active_live_position_tickets=[]`；
+  - `tick_feature_health.XAUUSD.status=healthy`、`queue_depth=0`、`dropped_snapshots=0`。
+- `/v1/account/positions?symbol=XAUUSD` 与 `/v1/account/orders?symbol=XAUUSD` 均为空。
+- 当前启动后 `/v1/trade/command-audits` 没有新增记录，特别是没有 `execute_trade`。
+- optional `tick:XAUUSD` 原始 tick history lane 仍为 `market_time_stale` warning，`required=false`、`severity=warning`；quote / OHLC / tick-feature 可用，ready 未被拉 critical。
+
+### 验证
+
+- `python -m pytest tests\market\test_tick_feature_engine.py::test_feature_bus_does_not_report_listener_dispatch_as_backlog -q`
+  - 先失败，确认旧实现把 listener 已消费快照计为 backlog。
+- `python -m pytest tests\market\test_tick_feature_engine.py -q`
+  - 7 passed。
+- `python -m pytest tests\market\test_tick_feature_engine.py tests\readmodels\test_tick_feature_health.py tests\trading\test_tick_feature_pretrade.py tests\app_runtime\test_tick_derived_wiring.py -q`
+  - 19 passed。
+- `python -m compileall -q src\market\tick_features src\trading\recovery`
+  - exit 0。
+
+### 剩余判断
+
+| 项 | 当前判断 | 下一步 |
+|---|---|---|
+| 真实 demo 下单 | 当前仍是 dry-run，且 trade control 阻断新交易；链路可证明决策消费与成本/方向门禁，不证明真实成交质量 | 若进入真实 demo，应先显式切换 `dry_run=false`、`auto_entry_enabled=true`、`close_only_mode=false`，并限定最小手数与短时间窗口 |
+| 成本门禁 | `spread_too_wide` 是最高频阻断原因，说明上一轮“扣除点差基本亏损”的问题已进入策略门禁 | 下单前需要把 `max_entry_spread_points`、`min_net_profit_points`、`recovery_target_points` 按 XAUUSD 实际点差分布重新标定 |
+| 方向门禁 | buy/sell 已不再单边，但大量 `direction_pressure_mismatch` / `direction_signal_too_weak` 表明当前方向模型仍是探针级别 | 不应直接把它定义为统计高可用策略；下一步应基于 dry-run decision analytics 做阈值分布与命中率评估 |
+| 原始 tick history lane | MT5 `copy_ticks_from` 仍返回旧市场时间，继续产生 advisory warning | 若要做 tick replay 等价验证，需要单独修复 tick history stale；实时策略当前主要依赖 quote-side tick feature |
+
+### 追加高可用监控收口
+
+dry-run 常驻观测继续推进时，发现两个监控生命周期问题：
+
+- `recovery_runner.consumer_stalled` 曾触发 critical，但 runner 后续已恢复
+  `stalled=false`、snapshot 持续推进；`HealthMonitor.active_alerts` 没有在健康
+  采样回来后自动 resolve，导致 `/v1/monitoring/health` 继续 critical。
+- optional `tick:XAUUSD` raw tick history lane 的 `market_time_stale` 是
+  `required=false`、`severity=warning` 的 advisory 事实，但旧
+  `market_data_stale_count` 直接使用 raw `stale_count`，持续把 overall 拉 warning。
+
+本轮收口：
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `HealthMonitor.record_metric()` | 新 metric 采样 + active alert | health monitor | 同一 metric 恢复到 healthy 时自动 `resolve_alert(..., metric_recovered)`，并清空 report cache | 不保留已恢复故障的 active alert |
+| `check_queue_stats()` market data stale | ingestor `market_data_health.freshness.lanes` | monitoring health checks | `market_data_stale_count` 只统计 blocking stale lanes；optional stale 进入 `market_data_advisory_stale_count`，`check_alert=false` | 不把非 required lane 的 advisory stale 当故障 |
+
+验证：
+
+- `python -m pytest tests\monitoring\test_health_check_report.py::test_record_metric_resolves_active_alert_when_metric_recovers -q`
+  - 先失败，确认 active alert 不会自动解除；修复后通过。
+- `python -m pytest tests\monitoring\test_health_check_report.py::test_check_queue_stats_does_not_raise_optional_tick_stale_to_critical -q`
+  - 先失败，确认 optional stale 仍触发 warning；修复后通过。
+- `python -m pytest tests\monitoring -q`
+  - 74 passed。
+- `python -m pytest tests\api\test_monitoring_ready.py tests\readmodels\test_runtime.py tests\trading\recovery tests\market\test_tick_feature_engine.py -q`
+  - 115 passed。
+
+demo-main 重启到 PID `13760` 后观测：
+
+- `/v1/monitoring/health/ready.status=ready`，所有 checks 为 ok。
+- `/v1/monitoring/health.overall_status=healthy`，`active_alerts=[]`。
+- `market_data_advisory_stale_count=1`，但 `market_data_stale_count=0`、
+  `market_data_lane_stale=0`。
+- `recovery_runner.running=true`、`dry_run=true`、`processed_snapshots=136`、
+  `consecutive_errors=0`、`stalled=false`。
+- tick feature `queue_depth=0`、`dropped_snapshots=0`。
+- XAUUSD positions/orders 均为空，当前启动后没有新增 `execute_trade` audit。
+
+## 2026-05-07 — recovery decision analytics 增加标定投影
+
+继续 dry-run 验证时，原有 `RecoveryDecisionAnalytics` 只能回答“为什么被挡住”
+和“buy/sell 是否出现”，不能回答“当前阈值与市场分布差多远”。这会让
+`max_entry_spread_points`、`min_directional_move_points`、
+`min_pressure_delta`、`recovery_target_points` 等调参重新退回日志猜测。
+
+本轮收口：
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `RecoveryDecisionAnalytics.entry_calibration` | runner 已公开的 `direction_policy.metadata` 与 `cost_gate.metadata` | recovery analytics 内存投影 | spread、required points、expected net、abs price change、abs pressure delta、buy/sell pressure 的 count/avg/min/max/recent percentile；同时记录最近阈值快照 | 不参与策略决策、不提交订单、不反向修改 policy |
+| recovery runner | tick-feature snapshot + policy | runner 状态机 | 继续只产出 decision/execution metadata | 不把标定统计混进 runner 状态迁移逻辑 |
+
+验证：
+
+- `python -m pytest tests\trading\recovery\test_recovery_decision_analytics.py -q`
+  - 先失败：`KeyError: 'entry_calibration'`，确认旧快照缺少标定合同。
+  - 修复后 3 passed。
+- `python -m pytest tests\trading\recovery tests\readmodels\test_runtime.py tests\api\test_monitoring_ready.py -q`
+  - 109 passed。
+- `python -m compileall -q src\trading\recovery src\monitoring\health src\readmodels`
+  - exit 0。
+- `git diff --check -- src\trading\recovery\analytics.py tests\trading\recovery\test_recovery_decision_analytics.py`
+  - exit 0。
+
+demo-main 重启到 PID `24048` 后观测：
+
+- `/v1/monitoring/health/ready.status=ready`，所有 checks 为 ok。
+- `/v1/monitoring/health.overall_status=healthy`。
+- `recovery_runner.enabled=true`、`running=true`、`dry_run=true`、
+  `demo_only=true`、`consecutive_errors=0`。
+- `entry_calibration.thresholds` 当前为：
+  `max_entry_spread_points=25`、`recovery_target_points=30`、
+  `min_net_profit_points=5`、`min_directional_move_points=5`、
+  `min_pressure_delta=0.2`。
+- 早期样本显示 `spread_points.avg≈35` 且 `max_entry_spread_points=25`，
+  当前不开仓主要是成本门阻断，而不是 runner 停滞。
+
+剩余判断：
+
+| 项 | 当前判断 | 下一步 |
+|---|---|---|
+| 真实马丁可用性 | 基建能稳定推进 tick-derived dry-run 决策，但策略统计优势仍未证明 | 至少用 `entry_calibration` 做一段时间分布采样，再决定是否真实 demo 恢复下单 |
+| 点差/TP 合同 | 当前点差分布高于入场阈值，直接放宽会回到“扣除点差负期望”的问题 | 若放宽 spread，必须同步提高 `recovery_target_points` 或降低交易频次，且用 expected net 分布验收 |
+| 方向模型 | buy/sell 已双向，但 `direction_pressure_mismatch` 与 `direction_signal_too_weak` 仍频繁 | 需要用 abs price change / abs pressure delta 分布重新标定方向阈值 |
+
+### 追加：成本门 spread-blocked 元数据补齐
+
+`entry_calibration.expected_net_points` 首次上线后，demo 抽样发现其样本数为
+0。根因是 `RecoveryCostGate.assess_entry()` 在 `spread_too_wide` 分支先于
+`required_points / expected_net_points` 计算返回，导致最需要标定的
+spread-blocked 样本缺少净点数信息。
+
+本轮收口：
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `RecoveryCostGate.assess_entry()` | spread + slippage + commission + min net + target | cost gate 局部 metadata | spread 可用后先计算 `required_points` 与 `expected_net_points`，再执行 spread / net target 阻断 | 不改变 `spread_too_wide`、`net_target_below_cost`、`entry_cost_ok` 的判定顺序与结果 |
+| `RecoveryDecisionAnalytics.entry_calibration` | cost gate metadata | recovery analytics | spread-blocked 样本也进入 expected net / required points 分布 | 不从 analytics 反推策略参数 |
+
+验证：
+
+- `python -m pytest tests\trading\recovery\test_recovery_entry_policies.py::test_cost_gate_blocks_wide_spread_or_insufficient_net_target -q`
+  - 先失败：`KeyError: 'required_points'`，确认 spread-blocked 分支缺元数据。
+  - 修复后 1 passed。
+- `python -m pytest tests\trading\recovery -q`
+  - 69 passed。
+- `python -m pytest tests\readmodels\test_runtime.py tests\api\test_monitoring_ready.py tests\monitoring\test_health_check_report.py -q`
+  - 61 passed。
+
+demo-main 重启到 PID `12148` 后观测：
+
+- `/v1/monitoring/health/ready.status=ready`，`/v1/monitoring/health.overall_status=healthy`，
+  active alerts 为 0。
+- `recovery_runner.running=true`、`dry_run=true`、`processed_snapshots=49`、
+  `consecutive_errors=0`、`stalled=false`。
+- `entry_calibration.spread_points.sample_count=19`、`avg≈35`。
+- `entry_calibration.expected_net_points.sample_count=19`、`avg≈-8`。
+- `entry_calibration.required_points.sample_count=19`、`avg≈43`。
+- 当前 `recovery_target_points=30`，因此在实测 spread≈35、slippage=2、
+  commission=1、min_net=5 的合同下，目标至少要高于约 43 points 才有
+  正净收益预算。当前不开仓是正确阻断。
+
+### 追加：成本缺口直接投影
+
+为了避免后续每次从 `required_points` 和 `recovery_target_points` 手工反推
+TP 缺口，本轮把成本门的派生字段显式写入 metadata，并进入
+`entry_calibration` 分布：
+
+| 字段 | 含义 | 业务用途 |
+|---|---|---|
+| `net_margin_points` | `recovery_target_points - required_points` | 大于 0 才说明目标点数覆盖 spread、滑点、佣金与最小净收益预算 |
+| `target_shortfall_points` | `max(0, required_points - recovery_target_points)` | 直接显示当前 TP 还差多少 points 才满足成本合同 |
+
+验证：
+
+- `python -m pytest tests\trading\recovery\test_recovery_entry_policies.py::test_cost_gate_blocks_wide_spread_or_insufficient_net_target -q`
+  - 先失败：`KeyError: 'net_margin_points'`。
+  - 修复后 1 passed。
+- `python -m pytest tests\trading\recovery\test_recovery_decision_analytics.py::test_analytics_reports_entry_calibration_distributions -q`
+  - 先失败：`KeyError: 'net_margin_points'`。
+  - 修复后 1 passed。
+- `python -m pytest tests\trading\recovery -q`
+  - 69 passed。
+- `python -m pytest tests\readmodels\test_runtime.py tests\api\test_monitoring_ready.py tests\monitoring\test_health_check_report.py -q`
+  - 61 passed。
+
+demo-main 重启到 PID `16288` 后观测：
+
+- `/v1/monitoring/health/ready.status=ready`、overall `healthy`、active alerts 为 0。
+- `recovery_runner.running=true`、`dry_run=true`、`processed_snapshots=52`、
+  `consecutive_errors=0`、`stalled=false`。
+- `entry_calibration.spread_points.avg≈35`。
+- `entry_calibration.expected_net_points.avg≈-8`。
+- `entry_calibration.net_margin_points.avg≈-13`。
+- `entry_calibration.target_shortfall_points.avg≈13`。
+- XAUUSD active positions 为 0，`auto_entry_enabled=false`、`close_only_mode=true`。
+
+当前真实 demo 马丁的启用门槛应至少包括：
+
+- `target_shortfall_points.p90_recent <= 0` 持续成立；
+- `net_margin_points.p50_recent > 0` 且不是单点样本；
+- `spread_points.p90_recent` 低于策略允许范围，或策略自动等待低点差窗口；
+- 在上述条件未满足前，继续保持 dry-run / close-only 是正确状态。
+
+### 追加：真实 demo recovery calibration guard
+
+为了防止后续把 `dry_run=false` 打开后直接绕过成本标定，本轮把上面的启用门槛
+收口为 runner 内的正式 fail-closed guard。该 guard 只在真实 dispatch 前生效；
+dry-run 继续采样，不被阻断。
+
+本轮收口：
+
+| 模块 | 输入 | 状态拥有者 | 输出 / 合同 | 不做 |
+|---|---|---|---|---|
+| `RecoveryCostCalibrationGuard` | `RecoveryDecisionAnalytics.snapshot().entry_calibration` + guard settings | recovery calibration guard | `allowed/reason/metadata`，样本不足、`target_shortfall` 未收敛或 `net_margin` 不达标时 fail-closed | 不修改 policy、不写订单、不替代 pre-trade risk |
+| `DemoBoundedRecoveryRunner` | cost gate allowed + calibration guard decision | runner 状态机 | 真实 initial entry 前调用 guard；阻断时记录 `hold` + `calibration_guard_*` reason，并把当前 cost 样本继续写入 analytics | 不影响 dry-run 采样；不影响已有 active cycle 的退出/清理 |
+| 配置合同 | `[recovery_runtime_runner]` | `RiskConfig.recovery_runtime_runner` | `real_trade_calibration_guard_enabled`、`real_trade_calibration_min_samples`、`real_trade_calibration_max_target_shortfall_p90_points`、`real_trade_calibration_min_net_margin_p50_points` | 不用隐藏代码默认绕过真实 demo 门禁 |
+
+默认配置：
+
+- `real_trade_calibration_guard_enabled=true`
+- `real_trade_calibration_min_samples=50`
+- `real_trade_calibration_max_target_shortfall_p90_points=0`
+- `real_trade_calibration_min_net_margin_p50_points=0`
+
+验证：
+
+- `python -m pytest tests\trading\recovery\test_recovery_calibration_guard.py -q`
+  - 先失败：`ModuleNotFoundError: No module named 'src.trading.recovery.calibration_guard'`。
+  - 修复后 3 passed。
+- `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_blocks_real_initial_until_calibration_samples_are_ready -q`
+  - 先失败：`RecoveryRuntimeRunnerSettings.__init__() got an unexpected keyword argument 'real_trade_calibration_guard_enabled'`。
+  - 修复后 1 passed。
+- `python -m pytest tests\config\test_risk_config.py::test_recovery_runtime_runner_section_is_loaded_into_risk_config -q`
+  - 先失败：`RecoveryRuntimeRunnerConfig` 缺少 guard 字段。
+  - 修复后 1 passed。
+- `python -m pytest tests\trading\recovery -q`
+  - 73 passed。
+- `python -m pytest tests\config\test_risk_config.py tests\app_runtime\test_recovery_runtime_layer.py tests\api\test_monitoring_ready.py tests\readmodels\test_runtime.py tests\monitoring\test_health_check_report.py -q`
+  - 66 passed。
+
+demo-main 重启到 PID `11600` 后观测：
+
+- `/v1/monitoring/health/ready.status=ready`，所有 checks 为 ok。
+- `/v1/monitoring/health.overall_status=healthy`，active alerts 为 0。
+- `recovery_runner.running=true`、`dry_run=true`、`demo_only=true`、
+  `processed_snapshots=50`、`consecutive_errors=0`、`stalled=false`。
+- `recovery_runner.calibration_guard.enabled=true`、`min_samples=50`。
+- 当前为 dry-run 且最近方向/成本门未到真实 dispatch 点，所以
+  `calibration_guard.reason=null` 是预期；guard 只在 real dispatch 前给出 verdict。
+- 运行分布仍显示 `net_margin_points.avg≈-13`、
+  `target_shortfall_points.avg≈13`，因此即使切到 `dry_run=false`，
+  guard 也会先 fail-closed，而不是真实下单。
+
+剩余判断：
+
+| 项 | 当前判断 | 下一步 |
+|---|---|---|
+| 真实 demo 安全门 | 已有正式 fail-closed guard，避免手工误开 `dry_run=false` 后直接下单 | 下一步可做持久化 calibration snapshot，否则进程重启后真实模式会从样本不足开始重新预热 |
+| 策略可用性 | 仍未证明统计优势；当前数据证明成本合同不成立 | 需要调整 TP/低点差窗口或降低频次后继续 dry-run 采样 |
+
+## 2026-05-08 — 真实 demo martingale 小窗口执行结果
+
+用户确认后，demo-main 执行了一次受控真实 demo 实验：
+
+- `[recovery_runtime_runner] dry_run=false`
+- `recovery_target_points=50`
+- `max_entry_spread_points=40`
+- `max_cycles_per_session=2`
+- `max_cycles_per_day=2`
+- `real_trade_calibration_min_samples=10`
+- trade control 临时打开 `auto_entry_enabled=true`、`close_only_mode=false`
+
+执行后立即切回 `auto_entry_enabled=false`、`close_only_mode=true`，并把
+local runner 配置恢复为 `dry_run=true` 后重启。最终状态：
+
+- `/v1/monitoring/health/ready.status=ready`
+- `/v1/monitoring/health.overall_status=healthy`
+- active alerts 为 0
+- `recovery_runner.dry_run=true`
+- `trade_control.auto_entry_enabled=false`
+- `trade_control.close_only_mode=true`
+- XAUUSD 无活动仓位，`active_cycle_id=null`
+
+### 真实成交
+
+| cycle | scope | ticket/order | deal | side | volume | result |
+|---|---|---:|---:|---|---:|---|
+| `demo-recovery-runner-1778174120722` | initial | `301974352` | `228797068` | sell | 0.01 | execute success |
+| `demo-recovery-runner-1778174120722` | step:1 | `301974447` | `228797133` | sell | 0.02 | execute success |
+| `demo-recovery-runner-1778174140572` | initial | `301974821` | `228797397` | sell | 0.01 | execute success |
+| `demo-recovery-runner-1778174140572` | step:1 | `301974932` | `228797477` | sell | 0.02 | execute success |
+
+可见链路已经能真实 demo 下单，且 auto direction 不再是单边 buy，本次两轮均为 sell。
+
+### 暴露的问题
+
+1. **netting / ticket 语义不清导致 cleanup 误关单**
+
+   第二轮 cycle 目标触发后，runner 对 `submitted_tickets` 中的
+   `301974821` 和 `301974932` 发起 close。`301974932` 曾成功 close，
+   之后仍出现多次 `Position 301974932 not found`；`301974821` 持续
+   `Position 301974821 not found`。trade state 只恢复出 step 仓位：
+
+   - `301974932` sell 0.02，entry `4715.62`，close `4714.85`，closed
+   - `301974447` sell 0.02，entry `4714.26`，close `4715.41`，closed
+
+   初始 order/deal ticket 没有成为可关闭 position ticket。当前实现把
+   order/deal ticket 当作后续 close ticket 使用，在 netting 账户上会产生
+   “Position not found” 清理噪声和重复 close 尝试。
+
+2. **首次 cycle 在达到 step 后很快被 SL/history 关闭**
+
+   `301974447` 的 close price 等于 stop loss `4715.41`，说明在当前
+   `max_steps=1` 与保护止损下，行情逆向时恢复空间很小，容易直接止损。
+
+3. **API 视图需要区分 active account positions 与 managed history**
+
+   `/v1/account/positions` 实时口径为 0，但 `/v1/trade/state.positions`
+   会保留 managed history。排障时应优先用 trade state 的 status_counts
+   和 account 实时口径共同判读。
+
+### 修复状态
+
+| 优先级 | 项 | 状态 | 结果 |
+|---|---|---|---|
+| P1 | recovery close 必须按 live position ticket / matching position snapshot 关闭，而不是按 submitted order ticket 关闭 | 已修复 | `DemoBoundedRecoveryRunner` 的真实 close 合同改为先读取 `position_snapshot_provider.active_positions()`；fresh snapshot 中存在 matching position 时，只对 live position ticket 派发 close，并把 submitted order/deal tickets 仅作为审计上下文 |
+| P1 | close cleanup 需要幂等：一次 close 成功或 history 已确认 closed 后，不再重复发 close | 已修复 | fresh snapshot 为空时返回 `submitted_positions_absent` 并关闭 cycle；snapshot 不可用或过期时 fail-closed，不再回退到 submitted ticket close |
+| P2 | cycle summary 应直接输出每个 ticket 的 role/order/deal/position/close_source | 未完成 | 仍需要单独做 recovery cycle summary/readmodel，把 order/deal/position/close_source 显式投影出来 |
+
+### 职责收口
+
+- `submitted_tickets` 只表示 broker 提交回执里的 order/deal 线索，不再被当成可关闭 position ticket。
+- 真实 close 的事实源收口到 position snapshot public port；snapshot 不 fresh 时阻断，不做兼容兜底。
+- recovery position matching 只接受 submitted ticket 直接相等，或 `metadata/signal_id/comment/request_id/action_id` 中含 cycle identity；不再用宽泛的 `symbol + strategy + timeframe` 猜测归属。
+
+### 验证
+
+- `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_closes_submitted_cycle_by_live_position_ticket_on_netting_account -q`
+  - 先失败：旧实现对 `[7001, 7002]` 两个 submitted tickets 发 close。
+  - 修复后 1 passed：只对 live position ticket `9001` 发 close。
+- `python -m pytest tests\trading\recovery\test_recovery_runner.py -q`
+  - 25 passed。
+- `python -m pytest tests\trading\recovery -q`
+  - 74 passed。
+
+---
+
+## 2026-05-08 — Recovery runner cycle pacing 合同
+
+### 背景
+
+真实 demo 马丁小窗口验证证明执行链路可以开仓、加仓、按 live position
+ticket 平仓并清理 cycle，但也暴露出持续观察模式的问题：当 entry gate 满足时，
+runner 会在前一轮结束后立即开下一轮，几分钟内耗尽 `max_cycles_per_session`
+或 `max_cycles_per_day`。这适合 smoke test，不适合跑数小时观察稳定性。
+
+### 修复状态
+
+| 优先级 | 项 | 状态 | 结果 |
+|---|---|---|---|
+| P1 | 新 cycle 缺少正式节奏控制 | 已修复 | `RecoveryRuntimeRunnerSettings` 增加 `min_cycle_interval_seconds`、`cooldown_after_cycle_close_seconds`、`max_cycles_per_hour`，作为 initial cycle admission gate |
+| P1 | 节奏状态不可观测 | 已修复 | `RecoveryRuntimeRunner.status()` 增加 `pacing` 快照，暴露配置、latest started/closed、rolling hourly count、next-cycle time、remaining seconds 和 active reason |
+| P2 | cycle 退出策略仍偏窄 | 未完成 | 当前退出仍是 net recovery target 或 submitted exposure absent；`max_steps_reached` 仍只阻止加仓，不主动退出。后续应单独设计 `CycleExitPolicy` |
+
+### 职责收口
+
+- pacing 是 recovery runner 的 cycle admission 职责，只在 `_active_cycle is None`
+  时阻止新 initial cycle。
+- pacing 不改变 entry direction、成本 gate、calibration guard、pre-trade risk、
+  dispatch 或 close 语义。
+- pacing 的滚动小时事实源来自 recovery cycle state store，而不是仅靠进程内计数；
+  重启后不会绕过小时 cycle 上限。
+
+### 验证
+
+- `python -m pytest tests\trading\recovery\test_recovery_runner.py -q`
+  - 28 passed。
+- `python -m pytest tests\config\test_risk_config.py tests\trading\recovery\test_recovery_runner.py -q`
+  - 31 passed。
+
+### 追加：真实 demo pacing 窗口验证
+
+用户确认后开启一次受控真实 demo 窗口：
+
+- 临时设置 `dry_run=false`
+- 临时设置 `max_cycles_per_day=12`
+- 临时设置 `max_cycles_per_hour=8`
+- 保持 `max_cycles_per_session=2`
+- 保持 `min_cycle_interval_seconds=300`
+- 保持 `cooldown_after_cycle_close_seconds=300`
+- trade control 临时打开 `auto_entry_enabled=true`、`close_only_mode=false`
+
+执行后已恢复：
+
+- `dry_run=true`
+- `max_cycles_per_day=2`
+- `max_cycles_per_hour=2`
+- `auto_entry_enabled=false`
+- `close_only_mode=true`
+- demo-main 重启到 PID `9196`
+- `/v1/monitoring/health/ready.status=ready`
+- XAUUSD 实时持仓 0、挂单 0
+
+验证成交：
+
+| cycle | scope | ticket/order | deal | side | volume | outcome |
+|---|---|---:|---:|---|---:|---|
+| `demo-recovery-runner-1778178236645` | initial | `302132629` | `228915824` | buy | 0.01 | history_deals closed at `4706.93` |
+| `demo-recovery-runner-1778178236645` | step:1 | `302133102` | `228916052` | buy | 0.02 | history_deals closed at `4706.66` |
+| `demo-recovery-runner-1778178611881` | initial | `302143382` | `228922584` | sell | 0.01 | history_deals closed at `4713.36` |
+| `demo-recovery-runner-1778178611881` | step:1 | `302143503` | `228922659` | sell | 0.02 | runner `close_position` success after `resident_recovery_target_reached` |
+
+业务结论：
+
+- pacing 生效：第一轮结束后进入 `cycle_close_cooldown_active`，约 5 分钟后才开启第二轮；第二轮后由 `max_cycles_per_session_reached` 停住。
+- 双向方向生效：第一轮 buy，第二轮 sell。
+- execution / precheck / close_position 链路均可真实 demo 推进，无实时仓位/挂单残留。
+- 退出机制仍需要升级：第一轮两个 leg 和第二轮 initial 都是 `history_deals` 关闭，主要由保护止损/历史对账结束；只有第二轮 step 是 runner 主动目标平仓。后续应继续推进 `CycleExitPolicy`，明确 `max_steps_reached` 后的主动退出、cycle 最大持仓时长和 cycle 级亏损上限。
+
+### 追加：CycleExitPolicy 正式退出合同
+
+本轮把真实 demo 暴露出的退出缺口收口到 recovery domain，而不是在 runner
+中追加临时分支。
+
+新增配置：
+
+| 字段 | 默认 | 含义 |
+|---|---:|---|
+| `max_cycle_loss_points` | `0` | cycle 净点数亏损达到该值时主动 `close_cycle`；0 禁用 |
+| `max_cycle_duration_seconds` | `0` | cycle 持仓时间达到该秒数时主动 `close_cycle`；0 禁用 |
+| `max_steps_exit_mode` | `hold` | `hold` 保持现有行为；`close_cycle` 表示达到最大层数后主动退出 |
+
+demo-main local 当前安全值：
+
+- `dry_run=true`
+- `max_cycle_loss_points=120`
+- `max_cycle_duration_seconds=900`
+- `max_steps_exit_mode=hold`
+
+职责边界：
+
+- `RecoveryExitModel` 统一计算 `net_profit_points/loss_points/cycle_age_seconds`，
+  并按目标止盈、亏损上限、持仓时长、最大层数退出模式返回正式 decision。
+- `DemoBoundedRecoveryRunner` 只消费 `close_cycle/hold/block`，不自行判断退出条件。
+- close state reason 不再全部写成 target reached：
+  - `resident_recovery_target_reached_*`
+  - `resident_recovery_cycle_loss_limit_*`
+  - `resident_recovery_max_cycle_duration_*`
+  - `resident_recovery_max_steps_exit_*`
+- `RecoveryRuntimeRunner.status()` 新增 `exit_policy`，监控侧可以直接看到当前退出合同。
+
+验证：
+
+- `python -m pytest tests\trading\recovery\test_recovery_entry_policies.py -q`
+  - 7 passed。
+- `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_closes_dry_run_cycle_when_loss_limit_is_reached tests\trading\recovery\test_recovery_runner.py::test_runner_closes_dry_run_cycle_when_duration_limit_is_reached tests\trading\recovery\test_recovery_runner.py::test_runner_can_close_dry_run_cycle_after_max_steps_reached -q`
+  - 3 passed。
+- `python -m pytest tests\trading\recovery -q`
+  - 84 passed。
+- `python -m pytest tests\config\test_risk_config.py tests\app_runtime\test_recovery_runtime_layer.py tests\api\test_monitoring_ready.py tests\readmodels\test_runtime.py -q`
+  - 45 passed。
+
+---
+
+## 2026-05-08 — Recovery demo 真实运行统计窗口与 trace scope 合同修复
+
+### 背景
+
+继续运行真实 demo 常驻 recovery runner 时，`errors.log` 暴露
+`pipeline_trace_events_scope_check` 失败：operator command 事件使用正式
+`trade_control` scope，但 `pipeline_trace_events` 表仍只允许
+`confirmed/intrabar`。这会让交易控制、开关窗口和后续统计链路 trace 失明。
+
+### 修复状态
+
+| 优先级 | 项 | 状态 | 结果 |
+|---|---|---|---|
+| P1 | pipeline trace scope 合同落后于 runtime | 已修复 | `pipeline_trace_events` DDL 同时支持 `confirmed/intrabar/tick_derived` 和 operator 域 `trade_control/position/positions/exposure/orders/runtime_mode` |
+| P1 | 既有表约束不会被 `CREATE TABLE IF NOT EXISTS` 更新 | 已修复 | DDL 增加 `DROP CONSTRAINT IF EXISTS pipeline_trace_events_scope_check` + 重新 `ADD CONSTRAINT`，服务重启后迁移生效 |
+| P2 | recovery cycle summary 缺少净点数 | 已修复 | runner 在 close cycle metadata 写入 `close_decision`，readmodel 投影 `net_profit_points/target_net_points`，后续统计不再只依赖 runner 内存聚合 |
+| P2 | 真实 demo 统计样本不足 | 运行中 | demo-main 已按小仓位真单窗口运行；heartbeat 每 30 分钟继续巡检 |
+
+### 职责边界
+
+- `PipelineEvent.scope` 是 pipeline trace 的正式域标签，不应在 producer 端改名规避数据库约束。
+- schema 负责声明可持久化 scope 合同；trace recorder 只做事件持久化，不做 scope 兼容转换。
+- recovery runner 仍只负责 recovery cycle 决策；交易控制通过 operator command / trade control state 正式端口打开或关闭。
+
+### 当前真实 demo 观测
+
+本轮受控窗口配置：
+
+- `dry_run=false`
+- `demo_only=true`
+- `base_volume=0.01`
+- `max_steps=1`
+- `max_total_volume=0.03`
+- `max_cycles_per_day=6`
+- `max_cycles_per_hour=2`
+- `min_cycle_interval_seconds=300`
+- `cooldown_after_cycle_close_seconds=300`
+
+截至 2026-05-08 18:04 Asia/Shanghai：
+
+| cycle | tickets | structure | realized_pnl | cleanup |
+|---|---|---|---:|---|
+| `demo-recovery-runner-1778234217906` | `303735408` / deal `230022216` | initial buy 0.01 | `+0.55` | `cleanup_status=closed`, failed=0 |
+| `demo-recovery-runner-1778234579784` | `303745262`, `303745539` / deals `230027944`, `230028103` | initial buy 0.01 + step buy 0.02 | `+2.48` | `cleanup_status=closed`, failed=0 |
+
+运行面：
+
+- `/v1/monitoring/health/ready.status=ready`
+- queue summary：high=0、critical=0、full=0
+- active alerts：0
+- XAUUSD 实时持仓：0
+- XAUUSD 实时挂单：0
+- `recovery_runner.consecutive_errors=0`
+- `recovery_runner.stalled=false`
+- `net_exit.sample_count=2`
+- `net_exit.avg_net_profit_points=65.833333335`
+- `last_reason=max_cycles_per_hour_reached`，小时节奏上限正常生效
+
+### 后续优化方向
+
+1. `max_steps_reached` 当前会在 cycle 内产生较多 hold/block 统计，后续应让
+   `CycleExitPolicy` 在达到最大层数后按配置更明确地选择等待、减仓或主动退出。
+2. 当前 demo spread 约 35 points，低点差账户会直接改善 `required_points` 与
+   net margin，但仍需要保留 cost gate 和 calibration guard，不应因低点差取消。
+
+### 验证
+
+- `python -m pytest tests\persistence\test_pipeline_trace_repo.py -q`
+  - 3 passed。
+- `python -m pytest tests\persistence\test_pipeline_trace_repo.py tests\monitoring\test_pipeline_trace_recorder.py tests\trading\recovery\test_recovery_runner.py -q`
+  - 40 passed。
+- `python -m pytest tests\trading\recovery\test_recovery_runner.py tests\readmodels\test_runtime.py tests\api\test_trade_api.py tests\persistence\test_pipeline_trace_repo.py tests\monitoring\test_pipeline_trace_recorder.py -q`
+  - 135 passed。
+
+---
+
+## 2026-05-08 — 插拔式 Risk Profile 与 Recovery 亏损预算风控
+
+### 背景
+
+真实 demo recovery runner 已能成交和清仓，但继续用普通策略的
+`max_trades_per_hour/max_trades_per_day` 管控高频 martingale/recovery
+并不合理：高频策略本身需要较多执行动作，主风险应来自整体亏损预算、
+cycle 级最大亏损、持仓时长、保证金和清仓能力，而不是普通 K 线策略的
+交易次数闸门。
+
+### 本轮设计
+
+新增 `risk profile` 合同：
+
+| profile | 适用对象 | 通用交易频率限制 | 主要风险事实 |
+|---|---|---:|---|
+| `standard_kline` | 普通 K 线策略 | 启用 | 仓位数、手数、日亏损、保证金、session、事件窗口、交易频率 |
+| `recovery_budgeted` | tick-derived recovery / martingale runner | 关闭 | recovery cycle 已实现亏损、滚动亏损、连续亏损 lockout、cycle 级退出合同 |
+
+配置边界：
+
+- `RiskConfig.risk_profiles` 定义 profile 行为。
+- `RiskConfig.risk_profile_bindings` 定义策略到 profile 的绑定。
+- trade intent metadata 可显式携带 `risk_profile`，优先级高于策略绑定。
+- 未声明 profile 的普通策略默认走 `standard_kline`。
+- 未知 profile 在 pre-trade risk 层 fail-closed。
+
+模块职责：
+
+- `src/risk/profiles.py`：只负责从 intent + config 解析当前 risk profile。
+- `src/risk/service.py`：按 profile 决定是否执行通用 `TradeFrequencyRule`
+  和 reservation；不直接判断 martingale 策略名。
+- `src/trading/recovery/risk_budget.py`：只负责 recovery cycle 亏损预算，
+  通过 `list_recovery_cycle_states()` 读取公开状态，不读 runner 私有字段。
+- `DemoBoundedRecoveryRunner`：在新 cycle admission 前调用 budget guard；
+  active cycle 的退出仍由 `CycleExitPolicy` 负责。
+
+### Demo 配置状态
+
+`config/instances/demo-main/risk.local.ini` 当前绑定：
+
+- `tick_martingale_probe = recovery_budgeted`
+- `trade_frequency_enabled=false`
+- `max_daily_recovery_loss_amount=20`
+- `max_rolling_recovery_loss_amount=10`
+- `rolling_loss_window_minutes=60`
+- `max_consecutive_loss_cycles=3`
+- `loss_lockout_minutes=60`
+
+这意味着 demo martingale/recovery 后续不再被通用每小时交易次数卡住；
+如果日内或滚动 recovery 实现亏损触发预算，runner 会进入可解释的
+`recovery_daily_loss_budget_reached` 或
+`recovery_rolling_loss_budget_reached`。
+
+### 未决项
+
+1. recovery budget 当前只阻断新 cycle admission；active cycle 的止损、
+   持仓时长、最大层数退出仍由 `CycleExitPolicy` 承担。后续若要更严格，
+   可把 active floating loss 也投影到 budget snapshot，但不要在通用
+   risk rules 中探测 recovery 私有状态。
+2. demo 仍需要继续真实运行收集样本，重点看低点差账户前后的
+   `target_shortfall/net_margin` 分布变化。
+
+### 验证
+
+- `python -m pytest tests\config\test_risk_config.py tests\core\test_pretrade_risk_service.py tests\risk\test_risk_rules.py tests\trading\recovery\test_recovery_runner.py tests\app_runtime\test_recovery_runtime_layer.py -q`
+  - 89 passed。
+- `python -m compileall src\config\models\runtime.py src\config\risk.py src\config\centralized.py src\risk\profiles.py src\risk\service.py src\trading\recovery\risk_budget.py src\trading\recovery\runner.py`
+  - passed。
+
+---
+
+## 2026-05-08 — Recovery 高频观察切回 Loss Budget 主风控
+
+### 背景
+
+真实 demo 观察中发现，虽然 `recovery_budgeted` 已关闭通用
+`TradeFrequencyRule`，但常驻 runner 仍通过
+`max_cycles_per_hour/max_cycles_per_day/max_cycles_per_session` 与
+`cooldown_after_cycle_close_seconds` 控制 cycle 频率。对于高频
+martingale/recovery，这会把风险合同重新拉回“次数限制”，与前一轮
+“以整体亏损预算控制”的设计目标不一致。
+
+### 本轮修正
+
+- `DemoBoundedRecoveryRunner` 将 `max_cycles_per_session=0` 语义改为禁用，
+  与 `max_cycles_per_day=0`、`max_cycles_per_hour=0` 保持一致。
+- `config/instances/demo-main/risk.local.ini` 将 recovery runner 的
+  session/day/hour cycle quota、cycle 最小间隔和平仓后 cooldown 全部设为
+  `0`，真实 demo 高频观察改由以下合同控制：
+  - `risk_profile=recovery_budgeted`
+  - `max_daily_recovery_loss_amount=20`
+  - `max_rolling_recovery_loss_amount=10`
+  - `max_consecutive_loss_cycles=3`
+  - `max_total_volume=0.03`
+  - `max_next_volume=0.02`
+  - `max_cycle_loss_points=120`
+  - `max_cycle_duration_seconds=900`
+  - cost gate / calibration guard / protective stop / cleanup 审计
+
+### 职责边界
+
+- cycle quota 仍保留为可选“节流观测工具”，但不再作为
+  `recovery_budgeted` demo 观察的主风险控制。
+- loss budget 仍只阻断新 cycle admission；active cycle 的退出继续由
+  `CycleExitPolicy` 负责，避免通用 risk rules 探测 recovery 私有状态。
+
+### 验证
+
+- `python -m pytest tests\trading\recovery\test_recovery_runner.py -q`
+  - 36 passed。
+- `python -m compileall src\trading\recovery\runner.py`
+  - passed。
+- 配置加载检查确认 demo-main recovery runner：
+  - `max_cycles_per_session=0`
+  - `max_cycles_per_day=0`
+  - `min_cycle_interval_seconds=0.0`
+  - `cooldown_after_cycle_close_seconds=0.0`
+  - `max_cycles_per_hour=0`
+  - `risk_profile=recovery_budgeted`
+
+---
+
+## 2026-05-08 — Demo Recovery 参数收紧：提高入场质量与降低单 Cycle 风险
+
+### 背景
+
+切回 loss budget 主风控后，真实 demo 高频观察证明工程链路可以连续推进：
+`open_initial=9`、`open_step=7`、`close_cycle=9`，但滚动亏损预算很快触发。
+统计显示当前问题不是频率，而是入场阈值偏松、净收益目标相对 35 points
+点差过薄、单 cycle loss cap 偏大。
+
+### 本轮参数调整
+
+仅修改 `config/instances/demo-main/risk.local.ini` 的实例级 demo 参数：
+
+| 参数 | 旧值 | 新值 | 目的 |
+|---|---:|---:|---|
+| `min_directional_move_points` | 5 | 40 | 过滤弱 tick 方向变化 |
+| `min_pressure_delta` | 0.2 | 0.35 | 只接受更明确的买/卖压力差 |
+| `max_entry_spread_points` | 40 | 38 | 保持当前 35 points 附近可交易，但拒绝点差扩张 |
+| `recovery_target_points` | 50 | 80 | 提高扣成本后的净目标 |
+| `min_net_profit_points` | 5 | 15 | 入场成本门槛要求更高净余量 |
+| `max_cycle_loss_points` | 120 | 100 | 降低单 cycle 最大损失 |
+| `protective_stop_points` | 120 | 110 | broker 保护止损靠近 runner loss cap |
+| `max_rolling_recovery_loss_amount` | 10 | 15 | 给新参数一小段验证空间；daily budget 仍为 20 |
+| `max_consecutive_loss_cycles` | 3 | 0 | 关闭连续亏损 lockout，让高频 demo 主要由 rolling/daily loss budget 管控 |
+| `loss_lockout_minutes` | 60 | 0 | 避免非预算型锁定干扰真实频率观察 |
+
+2026-05-08 21:10 CST 复盘后追加一版有限观察参数：
+
+| 参数 | 调整后 | 目的 |
+|---|---:|---|
+| `min_directional_move_points` | 80 | 最新亏损 cycle 入场价格变化只有 58 points，继续抬高触发门槛 |
+| `min_pressure_delta` | 0.45 | 过滤 0.40 附近的弱方向压力 |
+| `recovery_target_points` | 90 | 在 35 points spread 下继续提高净目标 |
+| `max_cycle_loss_points` | 90 | 降低单 cycle 预算损失 |
+| `protective_stop_points` | 95 | broker 保护止损贴近 runner loss cap |
+| `max_daily_recovery_loss_amount` | 35 | demo-only 观察预算，允许继续跑有限样本 |
+| `max_rolling_recovery_loss_amount` | 25 | demo-only 滚动观察预算，仍由 loss budget 主控 |
+
+### 当前风险边界
+
+- 未恢复任何 hourly/daily/cooldown 频率门禁，也未启用连续亏损 lockout。
+- 当前 demo 以 `max_daily_recovery_loss_amount` 与 `max_rolling_recovery_loss_amount` 作为主风险刹车。
+- 未提高 `base_volume=0.01`、`max_next_volume=0.02`、`max_total_volume=0.03`。
+- `max_daily_recovery_loss_amount=20` 不变；由于已实现日内亏损约 16.77，
+  新参数实际剩余日内亏损预算约 3.23。
+
+### 待验证
+
+- 配置加载检查确认新参数。
+- 重启 demo-main 后观察：
+  - `direction_pressure_mismatch` 比例是否上升，说明噪音交易被过滤。
+  - `entry_calibration.net_margin_points` 是否从约 7 提高到约 27。
+  - `net_exit.avg_net_profit_points` 是否改善。
+  - 若继续触发 `recovery_daily_loss_budget_reached`，暂停实盘 demo，不继续加预算。
+
+### 2026-05-08 21:16 CST 真实 demo 观察结论
+
+- 服务 ready，recovery runner `running=true`、`dry_run=false`、`demo_only=true`。
+- 新参数下真实触发 3 个 cycle：1 个 `target_reached`，2 个亏损退出。
+- 最新样本结果：
+  - `target_reached`: `+3.49`
+  - `submitted_exposure_absent`: `-6.43`
+  - `cycle_loss_limit`: `-3.62`
+- 当前无持仓、无挂单、无 active alerts；runner `consecutive_errors=0`。
+- `max_consecutive_loss_cycles=0` 生效，当前阻断原因是
+  `recovery_rolling_loss_budget_reached`，说明高频马丁已由 rolling/daily
+  loss budget 接管，而不是由小时/日次数或连续亏损锁接管。
+- 业务结论：执行链路可以真实 demo 跑通，但当前 tick 方向过滤与 martingale
+  出场模型仍不具备统计优势；继续加预算只会扩大试错损失。下一步应优先改
+  recovery strategy 的入场/退出模型，而不是继续放宽风险预算。
+
+## 2026-05-08 — Recovery Strategy 专业化优化：脉冲过滤、连续确认与满层退出
+
+### 背景
+
+真实 demo 显示基础设施能稳定执行，但亏损来自策略合同而非执行故障：
+
+- 单 tick feature 窗口动量信号会追进脉冲末端。
+- 达到最大补仓层后仍继续等待完整 recovery target，满仓暴露时间过长。
+- `submitted_exposure_absent` 路径在 sell cycle 上曾使用 runner 默认方向估算退出价，
+  会导致 sell cycle 的审计 PnL 偏差。
+
+### 设计调整
+
+- 新增 `RecoveryEntrySignalConfirmer`：
+  - `entry_confirmation_snapshots` 要求同方向信号连续出现。
+  - `entry_confirmation_max_gap_seconds` 控制确认快照最大间隔。
+  - runner 通过正式 entry policy 组件调用，不把状态判断散落在执行层。
+- 扩展 `RecoveryDirectionPolicy`：
+  - `max_directional_move_points=0` 表示禁用。
+  - 大于 0 时，超过上限返回 `direction_signal_overextended`，避免追 spike 末端。
+- 扩展 `RecoveryExitModel`：
+  - `max_steps_hold_seconds=0` 表示禁用。
+  - 达到最大补仓层后超过该时间仍未达到目标时，返回
+    `max_steps_hold_time_reached` 并关闭 cycle。
+- 修复 `DemoBoundedRecoveryRunner._reconcile_submitted_cycle_exposure()`：
+  - 退出价按 `cycle.direction` 计算，而不是按 runner fallback direction。
+
+### demo-main 参数
+
+- `min_directional_move_points=120`
+- `max_directional_move_points=200`
+- `entry_confirmation_snapshots=2`
+- `entry_confirmation_max_gap_seconds=3`
+- `step_distance_points=100`
+- `max_cycle_loss_points=70`
+- `max_steps_hold_seconds=25`
+- `protective_stop_points=75`
+
+### 验证
+
+- `python -m pytest tests\trading\recovery\test_recovery_entry_policies.py tests\trading\recovery\test_recovery_runner.py tests\config\test_risk_config.py -q`
+  - 55 passed
+- `python -m compileall src\trading\recovery src\config`
+  - passed
+
+### 状态
+
+demo 新开仓已暂停：`auto_entry_enabled=false`、`close_only_mode=true`。
+demo-main 已重启到 PID `12032` 并加载本轮参数：
+
+- `/v1/monitoring/health/ready.status=ready`，`recovery_runner=ok`。
+- `recovery_runner.running=true`、`dry_run=false`、`demo_only=true`。
+- 短窗口复核时 `processed_snapshots=208`，`last_reason=entry_confirmation_pending`，
+  `consecutive_errors=0`、`stalled=false`。
+- `entry_confirmation.required_snapshots=2`、`max_gap_seconds=3`。
+- `exit_policy.max_steps_hold_seconds=25`。
+- XAUUSD 持仓 0、挂单 0，`active_submitted_tickets=[]`。
+- 当前 `daily_realized_loss_amount=30.93/35`、`rolling_realized_loss_amount=19.35/25`。
+
+由于 rolling / daily loss budget 剩余额度很小，本轮保持 close-only，不在未确认观察预算前继续放开交易。
+
+### 2026-05-08 21:41 CST 真实 demo 观察追加
+
+通过 `/v1/trade/control` 恢复 `auto_entry_enabled=true`、`close_only_mode=false`，保持：
+
+- `dry_run=false`
+- `demo_only=true`
+- `risk_profile=recovery_budgeted`
+- `trade_frequency_enabled=false`
+- daily / rolling loss budget 作为主控
+
+观察结果：
+
+- `recovery_runner.processed_snapshots` 持续推进，`consecutive_errors=0`、`stalled=false`。
+- 真实 demo 触发 3 个 initial cycle，均已关闭，无 XAUUSD 持仓 / 挂单残留：
+  - `demo-recovery-runner-1778247904624`：buy `0.01`，ticket/order `304294655`，deal `230428288`，trace `completed`，last stage `recovery.closed`。
+  - `demo-recovery-runner-1778247957793`：sell `0.01`，ticket/order `304297520`，deal `230430578`。
+- `demo-recovery-runner-1778248229375`：buy `0.01`，ticket/order `304313765`，deal `230443682`。
+- 当前 `decision_counts.open_initial=3`、`open_step=0`、`close_cycle=3`。
+- `net_exit.sample_count=12`，`avg_net_profit_points=-38.67`，`min=-187`，`max=129`。
+- 当前 budget：`daily_realized_loss_amount=33.36/35`，`rolling_realized_loss_amount=16.59/25`。
+- 由于 daily budget 剩余约 `1.64`，已再次通过 `/v1/trade/control` 设置
+  `auto_entry_enabled=false`、`close_only_mode=true`，暂停新开仓。
+
+新增未决问题：
+
+- P1：真实成交后的秒级窗口内出现 `position_snapshot_stale=11`，说明 broker position snapshot 与 recovery runner 决策频率之间仍有同步滞后。虽然最终无残留并能进入 `recovery.closed`，但高频策略不应依赖“下一轮自愈”来识别 live exposure。后续应在 recovery runner 内引入成交后 position refresh / ticket reconciliation 的显式短等待合同，或把 `execute_trade` 返回的 ticket 作为临时 exposure truth source，直到 broker snapshot 确认。
+
+### 2026-05-08 22:29 CST 不限额压力观察参数
+
+用户要求 demo 暂不做额度限制，先让 martingale 持续跑以暴露问题。本轮仅调整
+`config/instances/demo-main/risk.local.ini`，不修改默认 `config/risk.ini` 和 live 配置。
+
+调整内容：
+
+- recovery loss budget 禁用：
+  - `[risk_profiles.recovery_budgeted].max_daily_recovery_loss_amount=0`
+  - `[risk_profiles.recovery_budgeted].max_rolling_recovery_loss_amount=0`
+  - `[recovery_runtime_runner].max_daily_recovery_loss_amount=0`
+  - `[recovery_runtime_runner].max_rolling_recovery_loss_amount=0`
+- 外层 demo 频率 / 日亏损门槛改成压力观察口径：
+  - `max_trades_per_hour=300`
+  - `max_trades_per_day=1000`
+  - `daily_loss_limit_pct=50`
+- 入场采样放宽：
+  - `min_directional_move_points=60`
+  - `max_directional_move_points=320`
+  - `min_pressure_delta=0.25`
+  - `max_entry_spread_points=45`
+  - `min_net_profit_points=5`
+  - `entry_confirmation_snapshots=1`
+- 为了真正测试 martingale step，修正此前不合理关系：
+  - `step_distance_points=80`
+  - `max_cycle_loss_points=220`
+  - 原问题：`max_cycle_loss_points=70 < step_distance_points=100`，导致触发补仓前先亏损退出，无法充分验证补仓链路。
+- 保留硬边界：
+  - `demo_only=true`
+  - `dry_run=false`
+  - `base_volume=0.01`
+  - `max_next_volume=0.02`
+  - `max_total_volume=0.03`
+  - `max_steps=1`
+  - `protective_stop_points=160`
+  - `data_unavailable_policy=fail_closed`
+  - `margin_guard` 仍开启
+
+验证：
+
+- 配置加载检查确认上述参数生效，`risk_budget.enabled=false`。
+- demo-main 重启到 PID `7136`，`/v1/monitoring/health/ready.status=ready`。
+- 通过 `/v1/trade/control` 恢复 `auto_entry_enabled=true`、`close_only_mode=false`。
+- 压力观察前 3 分钟结果：
+  - `open_initial=8`
+  - `open_step=5`
+  - `close_cycle=7`
+  - `consecutive_errors=0`
+  - `stalled=false`
+  - `monitoring.overall_status=healthy`
+  - `active_alerts=0`
+  - 最新活跃仓位：sell `0.01`，ticket/order `304488027`，deal `230582872`
+
+新增观察结论：
+
+- 补仓链路已被真实打到，说明此前“马丁没有充分跑起来”主要是参数关系导致，而不是交易主链路不可用。
+- 当前核心问题从“能否成交”转为“满层后的退出质量”：`max_steps_reached` 高频出现，`net_exit.avg_net_profit_points=-141.42`，说明不限额后会快速暴露策略负期望。
+- `position_snapshot_stale` 与 `submitted_exposure_absent` 仍出现，继续支持上一条 P1 结论：高频 recovery runner 需要更强的成交后 exposure reconciliation 合同。
+
+### 2026-05-08 22:40 CST 压力观察暂停
+
+用户确认“效果很不好”后，通过 `/v1/trade/control` 暂停真实 demo 新开仓：
+
+- `auto_entry_enabled=false`
+- `close_only_mode=true`
+- reason=`pause demo martingale stress run due poor observed performance`
+
+暂停时状态：
+
+- `decision_counts.open_initial=22`
+- `decision_counts.open_step=14`
+- `decision_counts.close_cycle=22`
+- `net_exit.avg_net_profit_points=-63.41`
+- `net_exit.min_net_profit_points=-300`
+- `consecutive_errors=0`
+- `stalled=false`
+
+暂停后首次检查出现 runner active ticket 与 MT5 当前 positions 为空的短暂不一致；
+30 秒后自愈为：
+
+- `active_cycle_id=null`
+- `active_submitted_tickets=[]`
+- `active_live_position_tickets=[]`
+- XAUUSD 持仓 0、挂单 0
+
+结论：当前 runner 能在 close-only 后收敛干净，但成交后 / 退出后 exposure
+状态仍存在秒级滞后，后续应优先修复 recovery runner 的 ticket reconciliation
+与 position snapshot refresh，而不是继续调宽风险参数。
+
+### 2026-05-08 23:00 CST Exposure Ledger 第一阶段落地
+
+为修复高频 recovery runner 在成交后 / 退出后对 broker position snapshot
+过度依赖的问题，本轮新增正式 exposure reconciliation 合同：
+
+- 新增 `src/trading/recovery/exposure_ledger.py`
+  - `RecoveryExposureLedger`
+  - `RecoveryExposureSnapshot`
+- runner 现在在 status 中公开 `exposure_ledger`：
+  - `status`
+  - `fresh`
+  - `submitted_tickets`
+  - `live_position_tickets`
+  - `pending_submitted_tickets`
+  - `absent_confirmed`
+- 语义收口：
+  - `execute_trade` 成功返回的 submitted ticket 是临时 exposure truth source。
+  - broker snapshot stale / missing 时，submitted ticket 保持 `pending`，不能判定暴露消失。
+  - broker snapshot fresh 且存在匹配 position 时，exposure 为 `confirmed`。
+  - broker snapshot fresh 且没有匹配 position 时，才允许 `absent_confirmed`。
+  - close cleanup 遇到 pending exposure 时可用 submitted ticket 作为 fallback close ticket，而不是直接返回 `position_snapshot_stale`。
+
+职责边界：
+
+| 模块 | 输入 | 状态拥有者 | 输出 | 不再承担 |
+|---|---|---|---|---|
+| `RecoveryExposureLedger` | recovery cycle submitted tickets、broker positions、last reconcile time | ledger | exposure classification snapshot | 不调度交易、不记录 cycle、不估算 PnL |
+| `DemoBoundedRecoveryRunner` | tick feature、ledger snapshot、controller decision | runner | cycle orchestration、trade dispatch、state record | 不再直接解释 stale snapshot 是否代表无仓 |
+
+验证：
+
+- `python -m pytest tests\trading\recovery\test_recovery_exposure_ledger.py -q`
+  - 5 passed
+- `python -m pytest tests\trading\recovery\test_recovery_exposure_ledger.py tests\trading\recovery\test_recovery_runner.py -q`
+  - 45 passed
+- `python -m pytest tests\trading\recovery\test_recovery_entry_policies.py tests\trading\recovery\test_recovery_exposure_ledger.py tests\trading\recovery\test_recovery_runner.py tests\config\test_risk_config.py -q`
+  - 61 passed
+- `python -m compileall src\trading\recovery`
+  - passed
+- demo-main 复核仍保持暂停：`auto_entry_enabled=false`、`close_only_mode=true`，
+  XAUUSD 持仓 0、挂单 0。
+
+剩余策略问题：
+
+- 该改动提升执行状态可靠性，但不改变当前 martingale 负期望事实。
+- 下一阶段应拆出 `RecoveryStrategyModel`，重点优化：
+  - initial entry 的 setup filter；
+  - step 前的趋势加速拦截；
+  - max-step 后的退出质量；
+  - cycle expectancy / MAE / MFE 统计驱动的 kill switch。
+
+### 2026-05-08 23:25 CST Recovery Step Quality Gate 落地
+
+真实 demo 压力观察暴露的另一个策略质量问题是：initial entry 已经有 spread/net cost gate，
+但 recovery step 只看逆向距离、手数上限和冷却。也就是说，一旦价格逆向触发补仓，
+runner 可以在点差扩张或净目标不足时继续加仓，这会把“马丁验证”变成成本压力测试。
+
+本轮把该问题按职责边界修复：
+
+- `RecoveryCostGate` 新增 `assess_step()`：
+  - 复用 initial entry 的显式成本合同；
+  - 使用 `max_entry_spread_points`、`slippage_budget_points`、`commission_points`、`min_net_profit_points`；
+  - 输出 `step_spread_too_wide`、`step_net_target_below_cost`、`step_cost_ok` 等结构化 reason；
+  - metadata 标明 `scope=recovery_step`、`cycle_id`、`step_index`、`current_step_count`。
+- `DemoBoundedRecoveryRunner` 在 `evaluate_next_step()` 返回 `open_step` 后、交易派发前调用 step cost gate：
+  - blocked 时记录 `action=hold`；
+  - 不写 recovery cycle state；
+  - 不调用 trading port；
+  - analytics 记录 `cost_gate_reason_counts` 与 `cost_gate_allowed_counts`。
+
+职责边界：
+
+| 模块 | 输入 | 输出 | 不承担 |
+|---|---|---|---|
+| `RecoveryCostGate` | policy、cycle、step decision、tick feature snapshot | step cost decision | 不调度交易、不修改 cycle |
+| `BoundedRecoveryController` | cycle、market snapshot | 是否达到补仓触发 | 不判断点差/净成本 |
+| `DemoBoundedRecoveryRunner` | controller decision、cost decision | hold 或 dispatch | 不内联成本公式 |
+
+验证：
+
+- RED：
+  - `test_cost_gate_blocks_wide_spread_for_recovery_step` 先失败于 `assess_step` 缺失。
+  - `test_runner_holds_recovery_step_when_spread_is_too_wide` 先失败于 runner 仍 `open_step`。
+- GREEN：
+  - `python -m pytest tests\trading\recovery\test_recovery_entry_policies.py::test_cost_gate_blocks_wide_spread_for_recovery_step -q`
+    - 1 passed
+  - `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_holds_recovery_step_when_spread_is_too_wide tests\trading\recovery\test_recovery_runner.py::test_runner_applies_dry_run_recovery_step_to_loaded_cycle -q`
+    - 2 passed
+  - `python -m pytest tests\trading\recovery\test_recovery_entry_policies.py tests\trading\recovery\test_recovery_runner.py -q`
+    - 53 passed
+  - `python -m compileall src\trading\recovery`
+    - passed
+
+业务结论：
+
+- 当前马丁路线仍不能靠放开频率来改善；核心是避免在交易成本不可覆盖时继续产生 exposure。
+- 该改动不改变普通 K 线策略链路，也不改变通用 risk profile，仅收口 recovery/martingale 的 step-entry 质量门禁。
+
+### 2026-05-08 23:40 CST Recovery Risk Budget 按账户隔离
+
+进一步审查 recovery 专属亏损预算时发现：`RecoveryRiskBudgetGuard` 之前按
+`symbol + strategy + dry_run` 聚合 cycle history，没有把 `account_key`
+纳入预算范围。多账户或 demo/live 并行时，这会让另一个账户的 recovery
+亏损误挡当前账户，也可能让当前账户预算在聚合视图里被稀释。
+
+本轮收口为正式账户级预算合同：
+
+- `RecoveryRiskBudgetGuard.assess()` 新增必需输入 `account_key`。
+- `_row_matches_resident_recovery()` 过滤 `account_key + symbol + strategy + dry_run`。
+- budget snapshot 公开 `account_key`，便于 `/v1/trade/state.recovery_runner.risk_budget`
+  判断当前预算到底作用在哪个账户。
+- `DemoBoundedRecoveryRunner._assess_risk_budget()` 与 `_risk_budget_status()` 均传入
+  runner 自身 `account_key`。
+
+职责边界：
+
+| 模块 | 输入 | 输出 | 不承担 |
+|---|---|---|---|
+| `RecoveryRiskBudgetGuard` | settings、state_store、account_key、symbol、strategy、dry_run | budget decision/snapshot | 不读取 runner 私有状态、不决定交易方向 |
+| `DemoBoundedRecoveryRunner` | 自身 account identity | risk-budget admission 调用 | 不在 runner 内手写预算过滤 |
+
+验证：
+
+- RED：
+  - `test_risk_budget_ignores_losses_from_other_account_key` 先失败于 `account_key` 参数缺失。
+  - `test_runner_risk_budget_ignores_other_account_losses` 先失败于 runner 被其他账户亏损挡住。
+- GREEN：
+  - `python -m pytest tests\trading\recovery\test_recovery_risk_budget.py::test_risk_budget_ignores_losses_from_other_account_key -q`
+    - 1 passed
+  - `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_risk_budget_ignores_other_account_losses -q`
+    - 1 passed
+  - `python -m pytest tests\trading\recovery\test_recovery_risk_budget.py tests\trading\recovery\test_recovery_runner.py -q`
+    - 43 passed
+  - `python -m compileall src\trading\recovery`
+    - passed
+
+业务结论：
+
+- recovery/martingale 的亏损预算现在是账户级策略预算，不再是跨账户共享的全局粗计数。
+- 这与“高频策略用 overall loss budget 管控，而不是 per-hour/per-day 交易次数主控”的方向一致。
+
+### 2026-05-08 23:50 CST Max-Steps Hold-Time 退出语义补齐
+
+审查 recovery 退出链路时发现，`RecoveryExitModel` 已经能输出
+`max_steps_hold_time_reached`，但 `_cycle_close_status_reason()` 没有对应映射，
+最终持久化为泛化的 `resident_recovery_cycle_closed_*`。这会让后续统计无法区分：
+
+- 达到净盈利目标退出；
+- 达到最大补仓层后强制退出；
+- 达到最大补仓层后持有超时退出；
+- 其他普通关闭。
+
+本轮只补正式状态语义映射：
+
+- `max_steps_hold_time_reached -> resident_recovery_max_steps_hold_time_{dry_run|submitted}`。
+- 不改变 exit model 判定顺序。
+- 不改变交易执行或平仓逻辑。
+
+验证：
+
+- RED：
+  - `test_runner_records_status_reason_for_max_steps_hold_time_exit` 先失败，
+    旧值为 `resident_recovery_cycle_closed_dry_run`。
+- GREEN：
+  - `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_records_status_reason_for_max_steps_hold_time_exit -q`
+    - 1 passed
+  - `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_can_close_dry_run_cycle_after_max_steps_reached tests\trading\recovery\test_recovery_runner.py::test_runner_closes_dry_run_cycle_when_duration_limit_is_reached tests\trading\recovery\test_recovery_runner.py::test_runner_closes_dry_run_cycle_when_loss_limit_is_reached -q`
+    - 3 passed
+
+### 2026-05-09 00:05 CST Recovery Step Overextension Guard 落地
+
+继续审查 recovery step 触发逻辑时发现，controller 之前只判断“逆向距离是否超过
+`step_distance_points`”。这能触发补仓，但不能判断“当前逆向已经过度延展，继续加仓是否是在追单边趋势”。
+这正是 martingale 在强单边行情中风险非线性放大的关键路径之一。
+
+本轮把该判断收口到 controller 层，而不是执行器或 runner 临时判断：
+
+- `RecoveryPolicy` 新增 `max_step_adverse_move_points`：
+  - 默认 `0` 表示禁用；
+  - `>0` 时，如果 adverse move 已超过该值，controller 返回
+    `hold / step_adverse_move_overextended`；
+  - metadata 写入 `adverse_move_points`、`step_distance_points`、
+    `max_step_adverse_move_points`。
+- `RecoveryRuntimeRunnerSettings` 与 `RiskConfig.recovery_runtime_runner`
+  同步新增该字段。
+- `/v1/trade/state.recovery_runner.status` 新增 `step_policy`，暴露：
+  - `step_distance_points`
+  - `max_step_adverse_move_points`
+  - `min_step_interval_ms`
+  - `max_steps`
+  - `max_next_volume`
+  - `max_total_volume`
+- `config/risk.ini[recovery_runtime_runner]` 增加该配置项说明。
+- 本机 demo-main local 已设置 `max_step_adverse_move_points=160`；demo 服务当前仍停止，
+  该参数只会在下次显式启动 demo-main 后生效。
+
+职责边界：
+
+| 模块 | 输入 | 输出 | 不承担 |
+|---|---|---|---|
+| `BoundedRecoveryController` | recovery policy、cycle、market snapshot | step/hold/block decision | 不读 tick feature、不调度交易 |
+| `RecoveryRuntimeRunnerSettings` | RiskConfig runner section | RecoveryPolicy | 不解释交易质量 |
+| `DemoBoundedRecoveryRunner` | controller decision | status/dispatch orchestration | 不内联 adverse move 公式 |
+
+验证：
+
+- RED：
+  - `test_controller_holds_step_when_adverse_move_is_overextended` 先失败于 policy 字段缺失。
+  - `test_recovery_runtime_runner_section_is_loaded_into_risk_config` 先失败于 config 字段缺失。
+  - runner status/hold 测试先失败于 settings 字段缺失。
+- GREEN：
+  - `python -m pytest tests\trading\recovery\test_bounded_recovery_controller.py::test_controller_holds_step_when_adverse_move_is_overextended tests\trading\recovery\test_bounded_recovery_controller.py::test_controller_opens_next_step_when_adverse_move_crosses_trigger -q`
+    - 2 passed
+  - `python -m pytest tests\config\test_risk_config.py::test_recovery_runtime_runner_section_is_loaded_into_risk_config -q`
+    - 1 passed
+  - `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_holds_recovery_step_when_adverse_move_is_overextended tests\trading\recovery\test_recovery_runner.py::test_runner_status_exposes_exit_policy_contract tests\trading\recovery\test_recovery_runner.py::test_runner_applies_dry_run_recovery_step_to_loaded_cycle -q`
+    - 3 passed
+  - `python -m pytest tests\trading\recovery\test_bounded_recovery_controller.py tests\trading\recovery\test_recovery_entry_policies.py tests\trading\recovery\test_recovery_exposure_ledger.py tests\trading\recovery\test_recovery_risk_budget.py tests\trading\recovery\test_recovery_runner.py tests\config\test_risk_config.py tests\app_runtime\test_recovery_runtime_layer.py -q`
+    - 73 passed
+  - `python -m compileall src\trading\recovery src\config`
+    - passed
+
+### 2026-05-09 00:20 CST Recovery Cycle Pacing 按账户隔离
+
+在 recovery risk budget 已按 `account_key` 隔离后，继续检查同类历史聚合逻辑，
+发现 runner 内部的 cycle pacing 仍只按 `symbol + strategy + dry_run` 聚合：
+
+- `max_cycles_per_day`
+- `min_cycle_interval_seconds`
+- `cooldown_after_cycle_close_seconds`
+- `max_cycles_per_hour`
+
+这些不是 martingale 的主风险控制，但如果启用，就必须是账户级合同；否则一个账户的
+recovery cycle 会误挡另一个账户，形成跨账户运行污染。
+
+本轮修复：
+
+- `_daily_cycle_count()` 现在只统计当前 `account_key` 的 resident recovery rows。
+- `_list_resident_recovery_cycle_rows()` 统一过滤当前 `account_key`，因此 min interval、
+  close cooldown、hourly cap 共享同一账户级 history 口径。
+- `pacing` status 新增 `account_key`，便于运行态确认 pacing 的作用域。
+- 测试数据同步补齐 `account_key`，不再默认接受缺失账户身份的历史 row 参与账户级控制。
+
+验证：
+
+- RED：
+  - `test_runner_daily_cycle_cap_ignores_other_account_cycles` 先失败，
+    旧逻辑被其他账户 cycle 挡住。
+  - `test_runner_close_cooldown_ignores_other_account_cycle` 先失败，
+    旧逻辑被其他账户 close cooldown 挡住。
+- GREEN：
+  - `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_daily_cycle_cap_ignores_other_account_cycles tests\trading\recovery\test_recovery_runner.py::test_runner_close_cooldown_ignores_other_account_cycle -q`
+    - 2 passed
+  - `python -m pytest tests\trading\recovery\test_recovery_runner.py::test_runner_daily_cycle_cap_counts_unique_cycle_ids tests\trading\recovery\test_recovery_runner.py::test_runner_holds_initial_during_min_cycle_interval tests\trading\recovery\test_recovery_runner.py::test_runner_holds_initial_during_close_cooldown tests\trading\recovery\test_recovery_runner.py::test_runner_holds_initial_when_hourly_cycle_cap_is_reached -q`
+    - 4 passed
+  - `python -m pytest tests\trading\recovery\test_bounded_recovery_controller.py tests\trading\recovery\test_recovery_entry_policies.py tests\trading\recovery\test_recovery_exposure_ledger.py tests\trading\recovery\test_recovery_risk_budget.py tests\trading\recovery\test_recovery_runner.py tests\config\test_risk_config.py tests\app_runtime\test_recovery_runtime_layer.py -q`
+    - 75 passed
+
+业务结论：
+
+- recovery/martingale 的历史聚合控制现在在 risk budget 与 pacing 两侧都按账户隔离。
+- 这降低了后续多 demo、多 live executor 或多账户压测时的交叉污染风险。
+
+### 2026-05-09 00:55 CST Recovery Risk Profile 预算事实源收口
+
+继续检查“按策略可插拔风险管控”时发现，`risk_profiles.recovery_budgeted`
+已经加载了 recovery 亏损预算字段，但 resident recovery runner 实际只读取
+`[recovery_runtime_runner]` 下的同名字段。这形成了双事实源：调参人员可能在
+profile 中配置预算，但运行态仍显示 0，导致 recovery/martingale 的整体亏损预算
+没有真正接入 profile 合同。
+
+本轮收口：
+
+- `src.risk.profiles.resolve_recovery_budget_profile_settings()` 负责解析命名 profile，
+  并要求 recovery runner 使用的 profile 必须是 `policy=recovery_budgeted`。
+- `validate_strategy_risk_profile_binding()` 在装配期校验 runner 的 `strategy`
+  与 `risk_profile_bindings` 不漂移；如果绑定存在但与 runner 显式 profile 不一致，
+  直接 fail-fast。
+- `build_recovery_runtime_layer()` 在构造 `RecoveryRuntimeRunnerSettings` 前，
+  把 profile 中的亏损预算解析为 runner 的有效设置。
+- `normalize_risk_config_payload()` 对 `[recovery_runtime_runner]` 中的
+  recovery 亏损预算字段 fail-fast，提示迁移到 `risk_profiles.recovery_budgeted`。
+- 默认 `config/risk.ini` 和本机 `demo-main/risk.local.ini` 已移除 runner section
+  下的重复预算字段；demo 预算仍保持 0，因为用户已暂停 demo 实盘观察。
+
+职责边界：
+
+| 模块 | 输入 | 输出 | 不承担 |
+|---|---|---|---|
+| `src.config.risk` | 原始 risk.ini sections | 规范化配置 payload / 错位字段 fail-fast | 不解析具体 profile 语义 |
+| `src.risk.profiles` | `RiskConfig` + profile name | recovery budget payload / profile 校验 | 不读取 recovery cycle 状态 |
+| `src.app_runtime.builder_phases.recovery` | `RiskConfig` + runtime runner config | 已解析的 `RecoveryRuntimeRunnerSettings` | 不计算亏损、不做交易决策 |
+| `DemoBoundedRecoveryRunner` | 已解析 settings + tick feature snapshot + state store | cycle admission/step/exit 决策 | 不解释配置来源 |
+
+验证：
+
+- RED：
+  - `test_recovery_runtime_layer_applies_recovery_profile_budget` 先失败，runner
+    的 `risk_budget.max_daily_recovery_loss_amount` 仍为 0。
+  - `test_recovery_runtime_runner_rejects_profile_budget_fields` 先失败，
+    runner section 的错位预算字段未被拒绝。
+- GREEN：
+  - `python -m pytest tests\app_runtime\test_recovery_runtime_layer.py::test_recovery_runtime_layer_applies_recovery_profile_budget -q`
+    - 1 passed
+  - `python -m pytest tests\app_runtime\test_recovery_runtime_layer.py::test_recovery_runtime_layer_rejects_strategy_profile_binding_mismatch -q`
+    - 1 passed
+  - `python -m pytest tests\config\test_risk_config.py::test_recovery_runtime_runner_rejects_profile_budget_fields -q`
+    - 1 passed
+
+业务结论：
+
+- martingale/recovery 的风险 profile 现在不仅能关闭通用交易频率限制，也真正拥有
+  自己的整体亏损预算合同。
+- 后续如果要恢复 demo 观察，应该只在 `[risk_profiles.recovery_budgeted]` 调整
+  loss budget；`[recovery_runtime_runner]` 只调执行、节奏、成本和退出参数。
+
+### 2026-05-09 01:20 CST Risk Profile Rule Composition 落地
+
+继续审查“可插拔风控”时发现，上一轮 profile 只解决了 `TradeFrequencyRule`
+与 recovery loss budget，但 `PreTradeRiskService` 的实际规则链仍是固定 tuple。
+这意味着 profile 不是完整风险组合，只是单规则开关；后续新增高频/低频策略时仍会把
+普通 K 线风控和 recovery 风控混在同一执行链里。
+
+本轮收口：
+
+- `RiskProfileConfig` 新增 `pre_trade_rules`，规则 id 固定为：
+  - `account_snapshot`
+  - `daily_loss_limit`
+  - `margin_availability`
+  - `trade_frequency`
+  - `protection`
+  - `session_window`
+  - `market_structure`
+  - `economic_event`
+  - `calendar_health`
+- `RiskProfileSelection.to_dict()` 公开 `pre_trade_rules`，运行态 assessment 可以直接看到
+  当前 profile 启用了哪些规则。
+- custom profile 如果只声明 `policy=recovery_budgeted` 且未声明 `pre_trade_rules`，
+  会自动使用 recovery rule set；如果 `trade_frequency_enabled` 与 rule set 不一致，
+  配置解析直接 fail-fast。
+- `PreTradeRiskService` 用公开 rule id 过滤规则链；规则类本身不感知 profile，
+  仍保持纯规则组件。
+- 默认配置：
+  - `standard_kline` 启用全部 pre-trade rules。
+  - `recovery_budgeted` 默认不启用 `trade_frequency` 与普通 K 线
+    `market_structure`，但保留账户、日亏损、保证金、保护性止损、session、
+    economic event、calendar health。
+
+职责边界：
+
+| 模块 | 输入 | 输出 | 不承担 |
+|---|---|---|---|
+| `RiskProfileConfig` | `risk_profiles.*` 配置 | profile 的 rule-set 合同 | 不执行规则、不读取账户状态 |
+| `RiskProfileResolver` | intent metadata / strategy binding | `RiskProfileSelection` | 不决定订单是否允许 |
+| `PreTradeRiskService` | active profile + `RiskRule` 列表 | 仅执行 profile 启用的规则 | 不在规则内部写策略特判 |
+| `RiskRule` classes | `RuleContext` | `RiskCheckResult[]` | 不读取 profile、不处理策略类型 |
+
+验证：
+
+- RED：
+  - `test_risk_profile_pre_trade_rules_are_loaded` 先失败于 `RiskProfileConfig`
+    缺少 `pre_trade_rules` 字段。
+  - `test_custom_profile_rule_list_controls_pre_trade_pipeline` 先失败于固定规则链仍执行
+    `allowed_sessions`。
+  - `test_recovery_budgeted_profile_defaults_to_recovery_rule_set` 先失败于自定义
+    recovery profile 默认继承 standard rule set。
+  - `test_risk_profile_rejects_trade_frequency_flag_mismatch` 先失败于双字段漂移未被拒绝。
+- GREEN：
+  - `python -m pytest tests\config\test_risk_config.py::test_risk_profile_pre_trade_rules_are_loaded tests\config\test_risk_config.py::test_risk_config_has_builtin_profile_contracts -q`
+    - 2 passed
+  - `python -m pytest tests\core\test_pretrade_risk_service.py::test_custom_profile_rule_list_controls_pre_trade_pipeline -q`
+    - 1 passed
+  - `python -m pytest tests\config\test_risk_config.py tests\core\test_pretrade_risk_service.py -q`
+    - 29 passed
+  - `python -m pytest tests\config\test_risk_config.py tests\core\test_pretrade_risk_service.py tests\app_runtime\test_recovery_runtime_layer.py tests\trading\recovery\test_recovery_runner.py tests\trading\recovery\test_recovery_risk_budget.py -q`
+    - 80 passed
+  - `python -m compileall src\config src\risk src\app_runtime\builder_phases src\trading\recovery`
+    - passed
+
+业务结论：
+
+- 现在可以通过配置让不同策略族使用不同 pre-trade rule set，而不是在规则内部加策略名特判。
+- recovery/martingale 路径仍保留硬安全规则；真正被拿掉的是与高频/资金恢复逻辑冲突的
+  通用交易次数限制和普通 K 线结构过滤。
+
+### 2026-05-09 01:40 CST Recovery Runner 风险 Profile 合同进入状态投影
+
+上一轮已经让 `risk_profiles.recovery_budgeted` 拥有 pre-trade rule set 和 loss budget，
+但 `/v1/trade/state.recovery_runner` 只暴露 `risk_profile` 字符串和 `risk_budget`。
+长时间 demo 观察时仍无法直接确认 recovery runner 实际选择的 profile policy、
+是否禁用了 `trade_frequency`、保留了哪些硬规则。
+
+本轮收口：
+
+- `src.risk.profiles.resolve_recovery_risk_profile_contract()` 返回 recovery runner 使用的
+  profile 只读合同，并继续校验 `policy=recovery_budgeted`。
+- `build_recovery_runtime_layer()` 把该合同注入 `DemoBoundedRecoveryRunner`。
+- `DemoBoundedRecoveryRunner.status()` 新增 `risk_profile_contract`：
+  - `name`
+  - `policy`
+  - `trade_frequency_enabled`
+  - `pre_trade_rules`
+  - `source`
+- runner 不解释 `pre_trade_rules`，只负责状态透传；pre-trade 规则执行仍由
+  `PreTradeRiskService` 根据 profile selection 决定。
+
+职责边界：
+
+| 模块 | 输入 | 输出 | 不承担 |
+|---|---|---|---|
+| `src.risk.profiles` | `RiskConfig` + profile name | profile 合同 payload | 不读 runner 状态 |
+| `build_recovery_runtime_layer` | risk profile + runner config | 注入 runner 的只读合同 | 不执行风控 |
+| `DemoBoundedRecoveryRunner.status()` | 注入的只读合同 | `risk_profile_contract` 状态投影 | 不根据 rule set 做交易判断 |
+
+验证：
+
+- RED：
+  - `test_recovery_runtime_layer_exposes_risk_profile_contract` 先失败于
+    `risk_profile_contract` 缺失。
+- GREEN：
+  - `python -m pytest tests\app_runtime\test_recovery_runtime_layer.py::test_recovery_runtime_layer_exposes_risk_profile_contract -q`
+    - 1 passed
+
+业务结论：
+
+- 以后 demo 观察里可以直接从 `/v1/trade/state.recovery_runner.risk_profile_contract`
+  判断马丁路径当前启用了哪些风控规则，不需要再反查 local 配置或推断。

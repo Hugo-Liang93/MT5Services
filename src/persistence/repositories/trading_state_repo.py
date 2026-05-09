@@ -6,6 +6,7 @@ from src.persistence.schema import (
     UPSERT_ACCOUNT_RISK_STATE_SQL,
     UPSERT_PENDING_ORDER_STATES_SQL,
     UPSERT_POSITION_RUNTIME_STATES_SQL,
+    UPSERT_RECOVERY_CYCLE_STATES_SQL,
     UPSERT_TRADE_CONTROL_STATE_SQL,
 )
 
@@ -130,6 +131,108 @@ class TradingStateRepository:
             placeholders = ", ".join(["%s"] * len(statuses))
             sql += f" AND status IN ({placeholders})"
             params.extend(list(statuses))
+        sql += " ORDER BY updated_at DESC LIMIT %s"
+        params.append(limit)
+        return self._fetch_dicts(sql, params)
+
+    def fetch_position_sl_tp_history(
+        self,
+        *,
+        account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
+        position_tickets: Optional[Sequence[int]] = None,
+        symbol: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[dict]:
+        sql = (
+            "SELECT recorded_at, account_alias, account_key, position_ticket, "
+            "signal_id, symbol, action_type, reason, old_stop_loss, "
+            "new_stop_loss, old_take_profit, new_take_profit, current_price, "
+            "highest_price, lowest_price, atr_at_entry, success, retcode, "
+            "broker_comment, metadata "
+            "FROM position_sl_tp_history WHERE 1=1"
+        )
+        params: List = []
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        tickets: list[int] = []
+        for ticket in position_tickets or []:
+            try:
+                normalized_ticket = int(ticket)
+            except (TypeError, ValueError):
+                continue
+            if normalized_ticket > 0:
+                tickets.append(normalized_ticket)
+        if tickets:
+            placeholders = ", ".join(["%s"] * len(tickets))
+            sql += f" AND position_ticket IN ({placeholders})"
+            params.extend(tickets)
+        if symbol is not None:
+            sql += " AND symbol = %s"
+            params.append(str(symbol))
+        sql += " ORDER BY recorded_at ASC LIMIT %s"
+        params.append(limit)
+        return self._fetch_dicts(sql, params)
+
+    def write_recovery_cycle_states(
+        self, rows: Iterable[Tuple], page_size: int = 200
+    ) -> None:
+        batch = []
+        for row in rows:
+            metadata = row[20] if row[20] is not None else {}
+            batch.append((*row[:20], self._writer._json(metadata), row[21]))
+        if not batch:
+            return
+        self._writer._batch(
+            UPSERT_RECOVERY_CYCLE_STATES_SQL, batch, page_size=page_size
+        )
+
+    def fetch_recovery_cycle_states(
+        self,
+        *,
+        account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+        symbol: Optional[str] = None,
+        strategy: Optional[str] = None,
+        cycle_id: Optional[str] = None,
+        source_signal_id: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[dict]:
+        sql = (
+            "SELECT account_alias, account_key, cycle_id, symbol, direction, "
+            "strategy, timeframe, source_signal_id, status, status_reason, "
+            "base_volume, total_volume, step_count, average_entry_price, "
+            "last_entry_price, started_at, last_step_at, closed_at, "
+            "close_price, realized_pnl, metadata, updated_at "
+            "FROM recovery_cycle_states WHERE 1=1"
+        )
+        params: List = []
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        if statuses:
+            sql += " AND status = ANY(%s)"
+            params.append(list(statuses))
+        if symbol is not None:
+            sql += " AND symbol = %s"
+            params.append(symbol)
+        if strategy is not None:
+            sql += " AND strategy = %s"
+            params.append(strategy)
+        if cycle_id is not None:
+            sql += " AND cycle_id = %s"
+            params.append(cycle_id)
+        if source_signal_id is not None:
+            sql += " AND source_signal_id = %s"
+            params.append(source_signal_id)
         sql += " ORDER BY updated_at DESC LIMIT %s"
         params.append(limit)
         return self._fetch_dicts(sql, params)

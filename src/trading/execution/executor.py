@@ -24,6 +24,13 @@ from src.monitoring.pipeline import PipelineEventBus
 from src.signals.contracts import StrategyDeployment
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
+from src.trading.recovery import (
+    PositionScalingIntent,
+    RecoveryCycleState,
+    RecoveryExecutionAdapter,
+    RecoveryExecutionCanaryPolicy,
+    RecoveryPolicy,
+)
 
 from ..pending.manager import PendingEntryManager
 from ..ports import ExecutorTradingPort
@@ -43,6 +50,7 @@ from .eventing import (
 )
 from .eventing import notify_skip as _notify_skip_helper
 from .gate import ExecutionGate, ExecutionGateConfig
+from .market_data_health import normalize_market_data_health_snapshot
 from .params import estimate_price as _estimate_price_helper
 from .params import get_account_balance as _get_account_balance_helper
 from .pre_trade_pipeline import PreTradePipeline
@@ -64,6 +72,7 @@ from .reasons import (
 from .result_recorder import ExecutionResultRecorder
 from .risk_caps import MaxSingleTradeLossPolicy
 from .sizing import RegimeSizing, extract_atr_from_indicators
+from .tick_feature_health import normalize_tick_feature_health_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +143,8 @@ class TradeExecutor:
         pipeline_event_bus: PipelineEventBus | None = None,
         equity_curve_filter: Any | None = None,
         quote_health_fn: Callable[[str | None], dict[str, Any]] | None = None,
+        market_data_health_fn: Callable[[str | None], dict[str, Any]] | None = None,
+        tick_feature_health_fn: Callable[[str | None], dict[str, Any]] | None = None,
         circuit_breaker_history_fn: Callable[[list], None] | None = None,
     ):
         # §0dj：runtime_identity 必填。环境维度的 deployment 门禁、execution
@@ -163,6 +174,8 @@ class TradeExecutor:
         # 权益曲线过滤器。
         self._equity_curve_filter = equity_curve_filter
         self._quote_health_fn = quote_health_fn
+        self._market_data_health_fn = market_data_health_fn
+        self._tick_feature_health_fn = tick_feature_health_fn
         self._pipeline_event_bus = pipeline_event_bus
         self._runtime_identity = runtime_identity
         self._circuit_breaker_history_fn = circuit_breaker_history_fn
@@ -276,6 +289,26 @@ class TradeExecutor:
     @property
     def quote_health_fn(self) -> Callable[[str | None], dict[str, Any]] | None:
         return self._quote_health_fn
+
+    @property
+    def market_data_health_fn(self) -> Callable[[str | None], dict[str, Any]] | None:
+        return self._market_data_health_fn
+
+    @property
+    def tick_feature_health_fn(self) -> Callable[[str | None], dict[str, Any]] | None:
+        return self._tick_feature_health_fn
+
+    def set_market_data_health_fn(
+        self,
+        fn: Callable[[str | None], dict[str, Any]] | None,
+    ) -> None:
+        self._market_data_health_fn = fn
+
+    def set_tick_feature_health_fn(
+        self,
+        fn: Callable[[str | None], dict[str, Any]] | None,
+    ) -> None:
+        self._tick_feature_health_fn = fn
 
     @property
     def runtime_identity(self):
@@ -432,6 +465,62 @@ class TradeExecutor:
             "age_seconds": snapshot.get("age_seconds"),
             "stale_threshold_seconds": snapshot.get("stale_threshold_seconds"),
         }
+
+    def market_data_health(self, symbol: str | None) -> dict[str, Any]:
+        if self._market_data_health_fn is None:
+            return {
+                "status": "unavailable",
+                "blocking": False,
+                "blocked_lanes": [],
+                "dependency_contract": {"required_lanes": []},
+            }
+        try:
+            snapshot = self._market_data_health_fn(symbol)
+        except Exception as exc:
+            logger.debug(
+                "TradeExecutor: market data health probe failed for %s",
+                symbol,
+                exc_info=True,
+            )
+            return {
+                "status": "critical",
+                "source_status": "probe_failed",
+                "blocking": True,
+                "blocked_lanes": [],
+                "dependency_contract": {"required_lanes": []},
+                "error": str(exc),
+            }
+        if not isinstance(snapshot, dict):
+            return {
+                "status": "critical",
+                "source_status": "invalid_snapshot",
+                "blocking": True,
+                "blocked_lanes": [],
+                "dependency_contract": {"required_lanes": []},
+            }
+        return normalize_market_data_health_snapshot(snapshot, symbol=symbol)
+
+    def tick_feature_health(self, symbol: str | None) -> dict[str, Any]:
+        if self._tick_feature_health_fn is None:
+            return normalize_tick_feature_health_snapshot({}, symbol=symbol)
+        try:
+            snapshot = self._tick_feature_health_fn(symbol)
+        except Exception as exc:
+            logger.debug(
+                "TradeExecutor: tick feature health probe failed for %s",
+                symbol,
+                exc_info=True,
+            )
+            return {
+                "status": "critical",
+                "blocking": True,
+                "symbol": symbol,
+                "last_reasons": ["probe_failed"],
+                "error": str(exc),
+            }
+        if not isinstance(snapshot, dict):
+            return normalize_tick_feature_health_snapshot({}, symbol=symbol)
+        return normalize_tick_feature_health_snapshot(snapshot, symbol=symbol)
 
     # ------------------------------------------------------------------
     # Public listener interface
@@ -618,6 +707,22 @@ class TradeExecutor:
         if event.scope == "intrabar":
             return self._handle_intrabar_entry(event)
         return self._handle_confirmed(event)
+
+    def execute_recovery_scaling_intent(
+        self,
+        *,
+        recovery_policy: RecoveryPolicy,
+        cycle: RecoveryCycleState,
+        intent: PositionScalingIntent,
+        canary_policy: RecoveryExecutionCanaryPolicy,
+    ) -> dict[str, Any]:
+        adapter = RecoveryExecutionAdapter(trading_port=self._trading)
+        return adapter.execute_scaling_intent(
+            recovery_policy=recovery_policy,
+            cycle=cycle,
+            intent=intent,
+            canary_policy=canary_policy,
+        )
 
     def record_circuit_breaker_event(
         self,
@@ -933,6 +1038,21 @@ class TradeExecutor:
                 },
             )
 
+        if decision.reject_reason is not None:
+            cost_metrics = decision.cost_metrics or {}
+            category = reason_category(decision.reject_reason)
+            self._reject_signal(
+                event,
+                decision.reject_reason,
+                category,
+                tf,
+            )
+            return self._build_skipped_result(
+                decision.reject_reason,
+                category=category,
+                details=dict(cost_metrics),
+            )
+
         # ── Spread-to-stop 比率检查 ──
         cost_metrics = decision.cost_metrics or {}
         spread_to_stop_ratio = cost_metrics.get("spread_to_stop_ratio")
@@ -987,7 +1107,7 @@ class TradeExecutor:
         # ADR-013: entry_type 由 decision_engine 从 EntrySpecGroup 派生
         # （decision.entry_type 已是派生结果），不再从 metadata.entry_spec 读
         entry_type = decision.entry_type or "market"
-        use_market = decision.use_market or self._pending_manager is None
+        use_market = decision.use_market
 
         _emit_execution_decided_helper(
             self,
@@ -1161,6 +1281,23 @@ class TradeExecutor:
                 },
             )
 
+        if decision.reject_reason is not None:
+            category = reason_category(decision.reject_reason)
+            _emit_blocked_admission_report_helper(
+                self,
+                event,
+                code=decision.reject_reason,
+                category=category,
+                message="intrabar execution decision rejected",
+                details=dict(decision.cost_metrics or {}),
+                requested_operation="intrabar_execution",
+            )
+            return self._build_skipped_result(
+                decision.reject_reason,
+                category=category,
+                details=dict(decision.cost_metrics or {}),
+            )
+
         # 5. 成本检查
         cost_metrics = decision.cost_metrics
         if cost_metrics is not None and cost_metrics.get("blocked"):
@@ -1253,6 +1390,8 @@ class TradeExecutor:
             ),
             "last_error": self._last_error,
             "last_risk_block": self._last_risk_block,
+            "market_data_health": self.market_data_health(None),
+            "tick_feature_health": self.tick_feature_health(None),
             "circuit_breaker": {
                 "open": self._circuit_open,
                 "consecutive_failures": self._consecutive_failures,

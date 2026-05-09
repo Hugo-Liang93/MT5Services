@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, TypeVar
 
 _T = TypeVar("_T")
 
@@ -45,11 +45,20 @@ class BackgroundIngestor:
         self._backfill_cutoff: Dict[str, datetime] = {}
         self._backfill_thread: Optional[threading.Thread] = None
         self._symbol_cursor = 0
-        # MT5 调用可能因连接冻结而无限期阻塞；用单线程 executor 提交并设置超时，
-        # 超时后主循环继续，abandoned future 的底层线程最终自行结束。
+        # MT5 调用可能因连接冻结而无限期阻塞；统一通过 executor 提交并设置超时，
+        # 超时后主循环继续，避免 quote/tick/OHLC 任一调用卡死整个采集线程。
         self._fetch_timeout: float = float(ingest_settings.connection_timeout)
         self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="mt5-ohlc-fetch"
+            max_workers=self._mt5_call_workers(),
+            thread_name_prefix="mt5-market-call",
+        )
+        self._fetch_executor_workers = self._mt5_call_workers()
+        self._mt5_call_lock = threading.Lock()
+        self._abandoned_mt5_calls: set[concurrent.futures.Future] = set()
+        self._mt5_circuit_open_until = 0.0
+        self._mt5_circuit_cooldown_seconds = max(
+            self._fetch_timeout,
+            min(float(ingest_settings.symbol_cooldown_seconds), 30.0),
         )
         # 连续失败退避：品种连续采集失败 threshold 次后，
         # 进入指数退避冷却期，防止 MT5 网络抖动时日志被刷爆。
@@ -63,6 +72,12 @@ class BackgroundIngestor:
         self._symbol_error_counts: Dict[str, int] = {}
         self._symbol_backoff_until: Dict[str, float] = {}
         self._symbol_backoff_count: Dict[str, int] = {}  # 累计退避轮次
+        self._lane_lock = threading.Lock()
+        self._lane_success_at: Dict[str, datetime] = {}
+        self._lane_success_monotonic: Dict[str, float] = {}
+        self._lane_market_time: Dict[str, datetime] = {}
+        self._lane_last_error: Dict[str, str] = {}
+        self._required_market_data_lanes: set[str] = set()
         # 回补完成标志：回补线程结束后设为 True，供 SignalRuntime 判断 warmup 状态
         self._backfill_done = threading.Event()
         # Intrabar trigger: parent_tf → trigger_tf（例 {"H1": "M5"}）。
@@ -90,8 +105,13 @@ class BackgroundIngestor:
         # 检测已关 executor 并重建（_shutdown 标记反映状态）。
         if self._fetch_executor is None or getattr(self._fetch_executor, "_shutdown", False):
             self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="mt5-ohlc-fetch"
+                max_workers=self._mt5_call_workers(),
+                thread_name_prefix="mt5-market-call",
             )
+            self._fetch_executor_workers = self._mt5_call_workers()
+            with self._mt5_call_lock:
+                self._abandoned_mt5_calls.clear()
+                self._mt5_circuit_open_until = 0.0
         self._init_backfill_progress()
         if self._backfill_progress:
             self._backfill_thread = threading.Thread(
@@ -137,20 +157,62 @@ class BackgroundIngestor:
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
-    def _fetch_ohlc_with_timeout(self, fn: Callable[[], Any]) -> Any:
-        """在独立线程中执行 MT5 OHLC 调用，超时则抛出 MT5MarketError。
+    def _mt5_call_workers(self) -> int:
+        return max(2, min(8, int(self.settings.max_concurrent_symbols or 1)))
+
+    def _call_mt5_with_timeout(self, label: str, fn: Callable[[], _T]) -> _T:
+        """在独立线程中执行 MT5 market 调用，超时则抛出 MT5MarketError。
 
         MT5 底层 IPC 调用在连接冻结时可能无限阻塞；通过 Future + timeout
         让主循环在 _fetch_timeout 秒后继续处理其他品种，避免全局挂死。
         超时后 abandoned future 的后台线程会在 MT5 API 自行返回后结束。
         """
+        if self._mt5_circuit_is_open():
+            raise MT5MarketError(
+                f"MT5 {label} circuit open after abandoned market calls"
+            )
         future = self._fetch_executor.submit(fn)
         try:
             return future.result(timeout=self._fetch_timeout)
         except concurrent.futures.TimeoutError:
+            if not future.cancel():
+                self._track_abandoned_mt5_call(future)
             raise MT5MarketError(
-                f"MT5 OHLC fetch timed out after {self._fetch_timeout}s"
+                f"MT5 {label} call timed out after {self._fetch_timeout}s"
             )
+
+    def _fetch_ohlc_with_timeout(self, fn: Callable[[], Any]) -> Any:
+        return self._call_mt5_with_timeout("ohlc", fn)
+
+    def _track_abandoned_mt5_call(self, future: concurrent.futures.Future) -> None:
+        def _forget(done: concurrent.futures.Future) -> None:
+            with self._mt5_call_lock:
+                self._abandoned_mt5_calls.discard(done)
+
+        with self._mt5_call_lock:
+            self._abandoned_mt5_calls.add(future)
+            active_abandoned = sum(
+                1 for item in self._abandoned_mt5_calls if not item.done()
+            )
+            if active_abandoned >= self._fetch_executor_workers:
+                self._mt5_circuit_open_until = max(
+                    self._mt5_circuit_open_until,
+                    time.monotonic() + self._mt5_circuit_cooldown_seconds,
+                )
+        future.add_done_callback(_forget)
+
+    def _mt5_circuit_is_open(self) -> bool:
+        now = time.monotonic()
+        with self._mt5_call_lock:
+            self._abandoned_mt5_calls = {
+                future for future in self._abandoned_mt5_calls if not future.done()
+            }
+            if len(self._abandoned_mt5_calls) >= self._fetch_executor_workers:
+                self._mt5_circuit_open_until = max(
+                    self._mt5_circuit_open_until,
+                    now + self._mt5_circuit_cooldown_seconds,
+                )
+            return now < self._mt5_circuit_open_until
 
     def _run(self) -> None:
         poll_interval = self.settings.ingest_poll_interval
@@ -163,9 +225,7 @@ class BackgroundIngestor:
                 if now < self._symbol_backoff_until.get(symbol, 0.0):
                     continue
                 try:
-                    self._ingest_quote(symbol)
-                    self._ingest_ticks(symbol)
-                    self._ingest_ohlc(symbol, next_ohlc_at)
+                    self._ingest_symbol_cycle(symbol, next_ohlc_at)
                     # 本轮成功，重置错误计数和退避轮次。
                     self._symbol_error_counts.pop(symbol, None)
                     self._symbol_backoff_count.pop(symbol, None)
@@ -200,6 +260,17 @@ class BackgroundIngestor:
             sleep_for = max(0, poll_interval - elapsed)
             self._stop.wait(sleep_for)
 
+    def _ingest_symbol_cycle(
+        self,
+        symbol: str,
+        next_ohlc_at: Dict[str, float],
+    ) -> None:
+        # M1/M5 close detection is time-sensitive; keep it ahead of quote/tick
+        # lanes so a degraded tick call cannot delay confirmed-bar evaluation.
+        self._ingest_ohlc(symbol, next_ohlc_at)
+        self._ingest_quote(symbol)
+        self._ingest_ticks(symbol)
+
     def _symbols_for_cycle(self) -> List[str]:
         symbols = list(self.settings.ingest_symbols)
         if not symbols:
@@ -218,7 +289,19 @@ class BackgroundIngestor:
 
     def _ingest_quote(self, symbol: str) -> None:
         # 最新报价：用于 API 快速读取，缓存更新；写入缓存区，低频批量落库。
-        quote = self.client.get_quote(symbol)
+        try:
+            quote = self._call_mt5_with_timeout(
+                f"quote:{symbol}",
+                lambda: self.client.get_quote(symbol),
+            )
+        except MT5MarketError as exc:
+            self._record_lane_error("quote", symbol, None, exc)
+            raise
+        self._record_lane_success(
+            "quote",
+            symbol,
+            market_time=getattr(quote, "time", None),
+        )
         self.service.set_quote(symbol, quote)
         if self.storage.settings.quote_flush_enabled:
             self.storage.enqueue(
@@ -237,7 +320,23 @@ class BackgroundIngestor:
         # 增量拉取 tick：记录上次时间戳，避免重复写入。
         since = self._last_tick_time.get(symbol)
         start_time = since + timedelta(seconds=0.001) if since else None
-        ticks = self.client.get_ticks(symbol, self.settings.tick_cache_size, start_time)
+        try:
+            ticks = self._call_mt5_with_timeout(
+                f"ticks:{symbol}",
+                lambda: self.client.get_ticks(
+                    symbol,
+                    self.settings.tick_cache_size,
+                    start_time,
+                ),
+            )
+        except MT5MarketError as exc:
+            self._record_lane_error("tick", symbol, None, exc)
+            raise
+        self._record_lane_success(
+            "tick",
+            symbol,
+            market_time=ticks[-1].time if ticks else self._last_tick_time.get(symbol),
+        )
 
         new_ticks = []
         for tick in ticks:
@@ -253,9 +352,13 @@ class BackgroundIngestor:
                 (
                     tick.symbol,
                     tick.price,
+                    tick.bid,
+                    tick.ask,
+                    tick.last,
                     tick.volume,
                     tick.time.isoformat(),
                     tick.time_msc,
+                    tick.flags,
                 )
                 for tick in new_ticks
             ]:
@@ -283,7 +386,8 @@ class BackgroundIngestor:
                 if last_ts:
                     # 若长时间未采集，持 last_ts 之后补齐（含当前未收盘）
                     start_time = last_ts + timedelta(seconds=timeframe_seconds(tf))
-                    bars = self._fetch_ohlc_with_timeout(
+                    bars = self._call_mt5_with_timeout(
+                        f"ohlc:{symbol}:{tf}",
                         lambda s=symbol, t=tf, st=start_time: self.client.get_ohlc_from(
                             symbol=s,
                             timeframe=t,
@@ -298,15 +402,24 @@ class BackgroundIngestor:
                         self.service.market_settings.ohlc_cache_limit,
                     )
                     # 首次拉取从当前位置开始的 K 线数据
-                    bars = self._fetch_ohlc_with_timeout(
+                    bars = self._call_mt5_with_timeout(
+                        f"ohlc:{symbol}:{tf}",
                         lambda s=symbol, t=tf, lim=warmup_limit: self.client.get_ohlc(
                             s, t, lim
                         )
                     )
             except MT5MarketError as exc:
+                self._record_lane_error("ohlc", symbol, tf, exc)
                 logger.warning("Fetch OHLC failed for %s %s: %s", symbol, tf, exc)
                 next_ohlc_at[key] = now + tf_interval
                 continue
+
+            self._record_lane_success(
+                "ohlc",
+                symbol,
+                tf,
+                market_time=bars[-1].time if bars else last_ts,
+            )
 
             if not bars:
                 next_ohlc_at[key] = now + tf_interval
@@ -487,14 +600,306 @@ class BackgroundIngestor:
     def queue_stats(self) -> dict:
         """返回各队列长度、上限以及缓冲大小，便于监控。"""
         stats = self.storage.stats()
-        stats["threads"]["ingest_alive"] = (
+        threads = stats.setdefault("threads", {})
+        threads["ingest_alive"] = (
             self._thread.is_alive() if self._thread else False
         )
-        stats["threads"]["backfill_alive"] = (
+        threads["backfill_alive"] = (
             self._backfill_thread.is_alive() if self._backfill_thread else False
         )
         stats["intrabar_synthesis"] = self._intrabar_synthesis_stats()
+        stats["market_data_health"] = self.health_snapshot()
         return stats
+
+    @staticmethod
+    def _format_dt(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+
+    @staticmethod
+    def _lane_key(kind: str, symbol: str, timeframe: str | None = None) -> str:
+        if timeframe:
+            return f"{kind}:{symbol}:{timeframe}"
+        return f"{kind}:{symbol}"
+
+    def _normalize_lane_requirement(
+        self,
+        lane: str | tuple[str, str] | tuple[str, str, str | None],
+    ) -> str:
+        if isinstance(lane, str):
+            parts = [part.strip() for part in lane.split(":")]
+        else:
+            parts = [str(part).strip() for part in lane]
+
+        if len(parts) not in (2, 3):
+            raise ValueError(
+                "market data lane requirement must be quote:<symbol>, "
+                "tick:<symbol>, or ohlc:<symbol>:<timeframe>"
+            )
+        kind = parts[0].lower()
+        symbol = parts[1]
+        timeframe = parts[2].upper() if len(parts) == 3 and parts[2] else None
+        if kind not in {"quote", "tick", "ohlc"}:
+            raise ValueError(f"unsupported market data lane kind: {kind}")
+        if not symbol:
+            raise ValueError("market data lane requirement missing symbol")
+        if kind == "ohlc" and not timeframe:
+            raise ValueError("ohlc market data lane requirement missing timeframe")
+        if kind != "ohlc" and timeframe:
+            raise ValueError(f"{kind} market data lane must not include timeframe")
+        return self._lane_key(kind, symbol, timeframe)
+
+    def set_required_market_data_lanes(
+        self,
+        lanes: Iterable[str | tuple[str, str] | tuple[str, str, str | None]],
+    ) -> None:
+        """Declare lanes that must be healthy for runtime readiness.
+
+        Tick data is useful for research/cache by default, so tick staleness stays
+        warning unless a strategy/runtime contract explicitly requires it.
+        """
+        normalized = {
+            self._normalize_lane_requirement(lane)
+            for lane in lanes
+            if lane is not None
+        }
+        with self._lane_lock:
+            self._required_market_data_lanes = normalized
+
+    def required_market_data_lanes(self) -> tuple[str, ...]:
+        with self._lane_lock:
+            return tuple(sorted(self._required_market_data_lanes))
+
+    def _record_lane_success(
+        self,
+        kind: str,
+        symbol: str,
+        timeframe: str | None = None,
+        *,
+        market_time: datetime | None = None,
+    ) -> None:
+        key = self._lane_key(kind, symbol, timeframe)
+        now = datetime.now(timezone.utc)
+        with self._lane_lock:
+            self._lane_success_at[key] = now
+            self._lane_success_monotonic[key] = time.monotonic()
+            if market_time is not None:
+                self._lane_market_time[key] = (
+                    market_time.replace(tzinfo=timezone.utc)
+                    if market_time.tzinfo is None
+                    else market_time.astimezone(timezone.utc)
+                )
+            self._lane_last_error.pop(key, None)
+
+    def _record_lane_error(
+        self,
+        kind: str,
+        symbol: str,
+        timeframe: str | None,
+        exc: Exception,
+    ) -> None:
+        key = self._lane_key(kind, symbol, timeframe)
+        with self._lane_lock:
+            self._lane_last_error[key] = f"{type(exc).__name__}: {exc}"
+
+    def _lane_stale_threshold(self, kind: str, timeframe: str | None = None) -> float:
+        base = max(
+            float(self.settings.ingest_poll_interval) * 3.0,
+            float(self._fetch_timeout) * 2.0,
+        )
+        if kind == "ohlc" and timeframe:
+            tf_interval = timeframe_interval(
+                timeframe,
+                self.settings.ingest_ohlc_interval,
+                self.settings.ingest_ohlc_intervals,
+            )
+            return max(base, float(tf_interval) * 3.0)
+        return max(base, float(self.settings.max_allowed_delay))
+
+    def _lane_market_stale_threshold(
+        self,
+        kind: str,
+        timeframe: str | None = None,
+    ) -> float:
+        if kind == "ohlc" and timeframe:
+            return max(
+                self._lane_stale_threshold(kind, timeframe),
+                float(timeframe_seconds(timeframe)) * 2.0,
+            )
+        return self._lane_stale_threshold(kind, timeframe)
+
+    def _expected_lanes(self) -> list[tuple[str, str, str | None]]:
+        lanes: list[tuple[str, str, str | None]] = []
+        for symbol in self.settings.ingest_symbols:
+            lanes.append(("quote", symbol, None))
+            lanes.append(("tick", symbol, None))
+            for timeframe in self.settings.ingest_ohlc_timeframes:
+                lanes.append(("ohlc", symbol, timeframe))
+        return lanes
+
+    def health_snapshot(self, now: datetime | None = None) -> dict[str, Any]:
+        """公开市场采集健康事实，供 ready / monitoring / runbook 统一使用。"""
+        now_utc = (
+            now.astimezone(timezone.utc)
+            if now is not None and now.tzinfo is not None
+            else (now.replace(tzinfo=timezone.utc) if now is not None else datetime.now(timezone.utc))
+        )
+        now_monotonic = time.monotonic()
+        circuit_open = self._mt5_circuit_is_open()
+        with self._mt5_call_lock:
+            abandoned_count = sum(
+                1 for item in self._abandoned_mt5_calls if not item.done()
+            )
+            circuit_remaining = max(0.0, self._mt5_circuit_open_until - now_monotonic)
+
+        lanes: dict[str, dict[str, Any]] = {}
+        stale_count = 0
+        critical_stale_count = 0
+        warning_stale_count = 0
+        missing_count = 0
+        critical_missing_count = 0
+        last_success: dict[str, Any] = {"quote": {}, "tick": {}, "ohlc": {}}
+
+        with self._lane_lock:
+            success_at = dict(self._lane_success_at)
+            success_monotonic = dict(self._lane_success_monotonic)
+            market_time = dict(self._lane_market_time)
+            last_error = dict(self._lane_last_error)
+            required_lanes = set(self._required_market_data_lanes)
+
+        for kind, symbol, timeframe in self._expected_lanes():
+            key = self._lane_key(kind, symbol, timeframe)
+            required = key in required_lanes
+            last_seen_at = success_at.get(key)
+            last_seen_monotonic = success_monotonic.get(key)
+            age: float | None = (
+                now_monotonic - last_seen_monotonic
+                if last_seen_monotonic is not None
+                else None
+            )
+            threshold = self._lane_stale_threshold(kind, timeframe)
+            market_threshold = self._lane_market_stale_threshold(kind, timeframe)
+            lane_market_time = market_time.get(key)
+            market_age: float | None = None
+            if lane_market_time is not None:
+                market_dt = (
+                    lane_market_time.replace(tzinfo=timezone.utc)
+                    if lane_market_time.tzinfo is None
+                    else lane_market_time.astimezone(timezone.utc)
+                )
+                market_age = max(0.0, (now_utc - market_dt).total_seconds())
+            fetch_stale = age is not None and age > threshold
+            market_stale = (
+                market_age is not None and market_age > market_threshold
+            )
+            stale = bool(fetch_stale or market_stale)
+            stale_reason = (
+                "market_time_stale"
+                if market_stale
+                else "fetch_stale"
+                if fetch_stale
+                else None
+            )
+            severity = "critical" if required or kind != "tick" else "warning"
+            status = "healthy"
+            if age is None:
+                missing_count += 1
+                if required:
+                    critical_missing_count += 1
+                status = "warming_up"
+            elif stale:
+                stale_count += 1
+                if severity == "critical":
+                    critical_stale_count += 1
+                else:
+                    warning_stale_count += 1
+                status = "stale"
+
+            lane_payload = {
+                "kind": kind,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "last_success_at": self._format_dt(last_seen_at),
+                "last_market_time": self._format_dt(lane_market_time),
+                "age_seconds": round(age, 3) if age is not None else None,
+                "market_age_seconds": (
+                    round(market_age, 3) if market_age is not None else None
+                ),
+                "stale_threshold_seconds": round(market_threshold, 3),
+                "fetch_stale_threshold_seconds": round(threshold, 3),
+                "market_stale_threshold_seconds": round(market_threshold, 3),
+                "stale": stale,
+                "stale_reason": stale_reason,
+                "required": required,
+                "severity": severity,
+                "status": status,
+                "last_error": last_error.get(key),
+            }
+            lanes[key] = lane_payload
+            if kind == "ohlc":
+                last_success["ohlc"][f"{symbol}:{timeframe}"] = lane_payload[
+                    "last_success_at"
+                ]
+            else:
+                last_success[kind][symbol] = lane_payload["last_success_at"]
+
+        symbol_health: dict[str, dict[str, Any]] = {}
+        active_backoff_count = 0
+        for symbol in self.settings.ingest_symbols:
+            backoff_until = self._symbol_backoff_until.get(symbol, 0.0)
+            backoff_remaining = max(0.0, backoff_until - now_monotonic)
+            backoff_active = backoff_remaining > 0
+            if backoff_active:
+                active_backoff_count += 1
+            symbol_health[symbol] = {
+                "consecutive_error_count": int(self._symbol_error_counts.get(symbol, 0)),
+                "backoff_active": backoff_active,
+                "backoff_remaining_seconds": round(backoff_remaining, 3),
+                "backoff_round": int(self._symbol_backoff_count.get(symbol, 0)),
+            }
+
+        if (
+            circuit_open
+            or critical_stale_count > 0
+            or critical_missing_count > 0
+            or active_backoff_count > 0
+        ):
+            status = "critical"
+        elif warning_stale_count > 0 or missing_count > 0:
+            status = "warning"
+        else:
+            status = "healthy"
+
+        return {
+            "status": status,
+            "running": self.is_running(),
+            "backfilling": self.is_backfilling,
+            "mt5": {
+                "circuit_open": circuit_open,
+                "circuit_open_remaining_seconds": round(circuit_remaining, 3),
+                "abandoned_call_count": int(abandoned_count),
+                "fetch_timeout_seconds": float(self._fetch_timeout),
+                "worker_count": int(self._fetch_executor_workers),
+            },
+            "symbols": symbol_health,
+            "lanes": lanes,
+            "dependency_contract": {
+                "required_lanes": sorted(required_lanes),
+                "required_lane_count": len(required_lanes),
+            },
+            "freshness": {
+                "stale_count": int(stale_count),
+                "critical_stale_count": int(critical_stale_count),
+                "warning_stale_count": int(warning_stale_count),
+                "missing_count": int(missing_count),
+                "critical_missing_count": int(critical_missing_count),
+                "lanes": lanes,
+            },
+            "last_success": last_success,
+        }
 
     def _intrabar_synthesis_stats(self) -> dict:
         """返回每个 (symbol, parent_tf) 的 intrabar 合成状态。
@@ -607,11 +1012,14 @@ class BackgroundIngestor:
                     start_time = last_ts + timedelta(seconds=tf_seconds)
                     try:
                         # 获取limit条数据，避免一次拉取过多。
-                        bars = client.get_ohlc_from(
-                            symbol=symbol,
-                            timeframe=tf,
-                            start=start_time,
-                            limit=self.settings.ohlc_backfill_limit,
+                        bars = self._call_mt5_with_timeout(
+                            f"backfill_ohlc:{symbol}:{tf}",
+                            lambda s=symbol, t=tf, st=start_time: client.get_ohlc_from(
+                                symbol=s,
+                                timeframe=t,
+                                start=st,
+                                limit=self.settings.ohlc_backfill_limit,
+                            ),
                         )
                     except MT5MarketError as exc:
                         logger.warning(

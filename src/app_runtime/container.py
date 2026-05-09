@@ -15,6 +15,11 @@ from src.config.runtime_identity import RuntimeIdentity
 from src.indicators.manager import UnifiedIndicatorManager
 from src.ingestion.ingestor import BackgroundIngestor
 from src.market import MarketDataService
+from src.market.tick_features import (
+    TickFeatureBus,
+    TickFeatureEngine,
+    TickFeatureHealthStore,
+)
 from src.market_structure import MarketStructureAnalyzer
 from src.monitoring.pipeline import PipelineEventBus, PipelineTraceRecorder
 from src.notifications.module import NotificationModule
@@ -35,6 +40,7 @@ from src.trading.entry_policy import EntryPolicyRegistry
 from src.trading.execution.executor import TradeExecutor
 from src.trading.pending import PendingEntryManager
 from src.trading.positions import PositionManager
+from src.trading.recovery.runner import DemoBoundedRecoveryRunner
 from src.trading.runtime.registry import TradingAccountRegistry
 from src.trading.state import (
     TradingStateAlerts,
@@ -69,6 +75,9 @@ class AppContainer:
         "signal_performance_tracker",
         "execution_performance_tracker",
         "market_structure_analyzer",
+        "tick_feature_engine",
+        "tick_feature_bus",
+        "tick_feature_health_store",
         # Trading
         "trade_registry",
         "trade_module",
@@ -82,6 +91,7 @@ class AppContainer:
         "execution_intent_consumer",
         "operator_command_service",
         "operator_command_consumer",
+        "recovery_runner",
         "trading_state_store",
         "trading_state_alerts",
         "trading_state_recovery",
@@ -128,6 +138,9 @@ class AppContainer:
         self.signal_performance_tracker: Optional[StrategyPerformanceTracker] = None
         self.execution_performance_tracker: Optional[StrategyPerformanceTracker] = None
         self.market_structure_analyzer: Optional[MarketStructureAnalyzer] = None
+        self.tick_feature_engine: Optional[TickFeatureEngine] = None
+        self.tick_feature_bus: Optional[TickFeatureBus] = None
+        self.tick_feature_health_store: Optional[TickFeatureHealthStore] = None
 
         self.trade_registry: Optional[TradingAccountRegistry] = None
         self.trade_module: Optional[TradingModule] = None
@@ -141,6 +154,7 @@ class AppContainer:
         self.execution_intent_consumer: Optional[Any] = None
         self.operator_command_service: Optional[OperatorCommandService] = None
         self.operator_command_consumer: Optional[OperatorCommandConsumer] = None
+        self.recovery_runner: Optional[DemoBoundedRecoveryRunner] = None
         self.trading_state_store: Optional[TradingStateStore] = None
         self.trading_state_alerts: Optional[TradingStateAlerts] = None
         self.trading_state_recovery: Optional[TradingStateRecovery] = None

@@ -349,6 +349,47 @@ def test_signal_runtime_status_exposes_trigger_mode() -> None:
     assert "confirmed_backpressure_failures" in status
 
 
+def test_signal_runtime_exposes_required_market_data_lanes_from_scheduled_strategies() -> None:
+    class TickAwareSignalService(DummySignalService):
+        def strategy_capability_catalog(self):
+            return [
+                {
+                    "name": "tick_scalper",
+                    "valid_scopes": ["confirmed"],
+                    "needed_indicators": ["atr14"],
+                    "needs_intrabar": False,
+                    "needs_htf": False,
+                    "regime_affinity": {},
+                    "htf_requirements": {},
+                    "market_data_requirements": ["tick"],
+                },
+                {
+                    "name": "bar_follow",
+                    "valid_scopes": ["confirmed"],
+                    "needed_indicators": ["atr14"],
+                    "needs_intrabar": False,
+                    "needs_htf": False,
+                    "regime_affinity": {},
+                    "htf_requirements": {},
+                    "market_data_requirements": [],
+                },
+            ]
+
+    source = DummySnapshotSource()
+    runtime = SignalRuntime(
+        service=TickAwareSignalService(),
+        snapshot_source=source,
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M1", strategy="tick_scalper"),
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="bar_follow"),
+        ],
+        enable_confirmed_snapshot=True,
+    )
+
+    assert runtime.required_market_data_lanes() == ("tick:XAUUSD",)
+    assert runtime.status()["required_market_data_lanes"] == ["tick:XAUUSD"]
+
+
 def test_signal_runtime_processes_intrabar_snapshot_when_enabled() -> None:
     """Intrabar snapshots are evaluated but no longer produce state machine
     transitions (preview/armed removed). Only the coordinator path is active."""

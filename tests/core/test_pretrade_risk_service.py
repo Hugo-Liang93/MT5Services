@@ -8,6 +8,7 @@ import pytest
 from src.config import EconomicConfig
 from src.config.centralized import RiskConfig
 from src.risk.service import PreTradeRiskBlockedError, PreTradeRiskService
+from src.risk.rules import TradeFrequencyQuotaExceeded
 
 
 class DummyCalendar:
@@ -117,6 +118,71 @@ class DummyAccountService:
         return [order for order in self._orders if order.symbol == symbol]
 
 
+class CountingTradeFrequencyProvider:
+    def __init__(self, count: int) -> None:
+        self.count = count
+        self.calls: list[dict] = []
+
+    def count_trades_since(self, since: datetime, *, account_key: str | None = None) -> int:
+        self.calls.append({"since": since, "account_key": account_key})
+        return self.count
+
+
+class ReservingTradeFrequencyProvider:
+    def __init__(self) -> None:
+        self.reservations: list[dict] = []
+        self.finalized: list[dict] = []
+
+    def count_trades_since(self, since: datetime, *, account_key: str | None = None) -> int:
+        return len(
+            [
+                item
+                for item in self.reservations
+                if item["account_key"] == account_key and item["reserved_at"] >= since
+            ]
+        )
+
+    def reserve_trade_slot(
+        self,
+        *,
+        account_key: str,
+        at_time: datetime,
+        max_trades_per_day: int | None,
+        max_trades_per_hour: int | None,
+    ) -> str:
+        reservation_id = f"reservation-{len(self.reservations) + 1}"
+        self.reservations.append(
+            {
+                "reservation_id": reservation_id,
+                "account_key": account_key,
+                "reserved_at": at_time,
+                "max_trades_per_day": max_trades_per_day,
+                "max_trades_per_hour": max_trades_per_hour,
+            }
+        )
+        return reservation_id
+
+    def finalize_trade_slot(self, reservation_id: str, *, committed: bool) -> None:
+        self.finalized.append(
+            {"reservation_id": reservation_id, "committed": committed}
+        )
+
+
+class RejectingTradeFrequencyProvider(ReservingTradeFrequencyProvider):
+    def count_trades_since(self, since: datetime, *, account_key: str | None = None) -> int:
+        return 0
+
+    def reserve_trade_slot(
+        self,
+        *,
+        account_key: str,
+        at_time: datetime,
+        max_trades_per_day: int | None,
+        max_trades_per_hour: int | None,
+    ) -> str:
+        raise TradeFrequencyQuotaExceeded("Daily trade limit reached")
+
+
 def _settings(**overrides) -> EconomicConfig:
     payload = {
         "enabled": True,
@@ -180,6 +246,233 @@ def test_allows_healthy_calendar_without_database_driver():
 
     assert result["verdict"] == "allow"
     assert result["blocked"] is False
+
+
+def test_blocks_when_persistent_trade_frequency_reaches_account_limit():
+    provider = CountingTradeFrequencyProvider(count=3)
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        settings=_settings(),
+        risk_settings=RiskConfig(max_trades_per_day=3, market_order_protection="off"),
+        trade_frequency_provider=provider,
+        account_key="live:broker:123",
+    )
+
+    result = service.assess_trade(symbol="XAUUSD", volume=0.1, side="buy")
+
+    assert result["verdict"] == "block"
+    assert any(check["name"] == "max_trades_per_day" for check in result["checks"])
+    assert provider.calls
+    assert provider.calls[0]["account_key"] == "live:broker:123"
+
+
+def test_recovery_budgeted_profile_skips_generic_trade_frequency_checks():
+    provider = CountingTradeFrequencyProvider(count=99)
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        settings=_settings(),
+        risk_settings=RiskConfig(
+            max_trades_per_day=1,
+            max_trades_per_hour=1,
+            market_order_protection="off",
+            risk_profile_bindings={"tick_martingale_probe": "recovery_budgeted"},
+        ),
+        trade_frequency_provider=provider,
+        account_key="demo:broker:123",
+    )
+
+    result = service.assess_trade(
+        symbol="XAUUSD",
+        volume=0.01,
+        side="buy",
+        metadata={"strategy": "tick_martingale_probe"},
+    )
+
+    assert result["verdict"] == "allow"
+    assert result["risk_profile"]["name"] == "recovery_budgeted"
+    assert result["risk_profile"]["policy"] == "recovery_budgeted"
+    assert result["risk_profile"]["trade_frequency_enabled"] is False
+    assert result["risk_profile"]["source"] == "strategy_binding"
+    assert "trade_frequency" not in result["risk_profile"]["pre_trade_rules"]
+    assert provider.calls == []
+    assert not any(check["name"] == "max_trades_per_day" for check in result["checks"])
+
+
+def test_recovery_budgeted_profile_skips_trade_frequency_reservation():
+    provider = ReservingTradeFrequencyProvider()
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        settings=_settings(),
+        risk_settings=RiskConfig(
+            max_trades_per_day=1,
+            market_order_protection="off",
+            risk_profile_bindings={"tick_martingale_probe": "recovery_budgeted"},
+        ),
+        trade_frequency_provider=provider,
+        account_key="demo:broker:123",
+    )
+
+    result = service.enforce_trade_allowed(
+        symbol="XAUUSD",
+        volume=0.01,
+        side="buy",
+        metadata={"strategy": "tick_martingale_probe"},
+    )
+
+    assert "trade_frequency_reservation_id" not in result
+    assert result["risk_profile"]["name"] == "recovery_budgeted"
+    assert provider.reservations == []
+
+
+def test_custom_profile_rule_list_controls_pre_trade_pipeline():
+    provider = CountingTradeFrequencyProvider(count=99)
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        settings=_settings(),
+        risk_settings=RiskConfig.model_validate(
+            {
+                "allowed_sessions": "london",
+                "max_trades_per_day": 1,
+                "market_order_protection": "off",
+                "risk_profile_bindings": {
+                    "tick_martingale_probe": "recovery_fast"
+                },
+                "risk_profiles": {
+                    "standard_kline": {
+                        "policy": "standard_kline",
+                        "trade_frequency_enabled": True,
+                    },
+                    "recovery_fast": {
+                        "policy": "recovery_budgeted",
+                        "trade_frequency_enabled": False,
+                        "pre_trade_rules": [
+                            "account_snapshot",
+                            "daily_loss_limit",
+                            "margin_availability",
+                            "protection",
+                            "economic_event",
+                            "calendar_health",
+                        ],
+                    },
+                },
+            }
+        ),
+        trade_frequency_provider=provider,
+        account_key="demo:broker:123",
+    )
+
+    result = service.assess_trade(
+        symbol="XAUUSD",
+        volume=0.01,
+        side="buy",
+        at_time=datetime.fromisoformat("2026-03-19T23:00:00+00:00"),
+        metadata={"strategy": "tick_martingale_probe"},
+    )
+
+    assert result["verdict"] == "allow"
+    assert result["risk_profile"]["name"] == "recovery_fast"
+    assert result["risk_profile"]["pre_trade_rules"] == [
+        "account_snapshot",
+        "daily_loss_limit",
+        "margin_availability",
+        "protection",
+        "economic_event",
+        "calendar_health",
+    ]
+    assert provider.calls == []
+    assert not any(check["name"] == "allowed_sessions" for check in result["checks"])
+    assert not any(check["name"] == "max_trades_per_day" for check in result["checks"])
+
+
+def test_explicit_risk_profile_metadata_overrides_strategy_binding():
+    provider = CountingTradeFrequencyProvider(count=99)
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        settings=_settings(),
+        risk_settings=RiskConfig(
+            max_trades_per_day=1,
+            market_order_protection="off",
+            risk_profile_bindings={"tick_martingale_probe": "standard_kline"},
+        ),
+        trade_frequency_provider=provider,
+        account_key="demo:broker:123",
+    )
+
+    result = service.assess_trade(
+        symbol="XAUUSD",
+        volume=0.01,
+        side="buy",
+        metadata={
+            "strategy": "tick_martingale_probe",
+            "risk_profile": "recovery_budgeted",
+        },
+    )
+
+    assert result["verdict"] == "allow"
+    assert result["risk_profile"]["name"] == "recovery_budgeted"
+    assert result["risk_profile"]["source"] == "intent_metadata"
+    assert provider.calls == []
+
+
+def test_enforce_trade_allowed_reserves_trade_frequency_slot_before_returning():
+    provider = ReservingTradeFrequencyProvider()
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        settings=_settings(),
+        risk_settings=RiskConfig(max_trades_per_day=1, market_order_protection="off"),
+        trade_frequency_provider=provider,
+        account_key="live:broker:123",
+    )
+
+    result = service.enforce_trade_allowed(symbol="XAUUSD", volume=0.1, side="buy")
+
+    assert result["trade_frequency_reservation_id"] == "reservation-1"
+    assert provider.reservations[0]["account_key"] == "live:broker:123"
+
+    with pytest.raises(PreTradeRiskBlockedError):
+        service.enforce_trade_allowed(symbol="XAUUSD", volume=0.1, side="buy")
+
+
+def test_finalize_trade_frequency_reservation_delegates_to_provider():
+    provider = ReservingTradeFrequencyProvider()
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        settings=_settings(),
+        risk_settings=RiskConfig(max_trades_per_day=1, market_order_protection="off"),
+        trade_frequency_provider=provider,
+        account_key="live:broker:123",
+    )
+    assessment = service.enforce_trade_allowed(
+        symbol="XAUUSD",
+        volume=0.1,
+        side="buy",
+    )
+
+    service.finalize_trade_frequency_reservation(assessment, committed=True)
+
+    assert provider.finalized == [
+        {"reservation_id": "reservation-1", "committed": True}
+    ]
+
+
+def test_trade_frequency_quota_reservation_rejection_always_blocks():
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        settings=_settings(),
+        risk_settings=RiskConfig(
+            max_trades_per_day=1,
+            market_order_protection="off",
+            data_unavailable_policy="warn_only",
+        ),
+        trade_frequency_provider=RejectingTradeFrequencyProvider(),
+        account_key="live:broker:123",
+    )
+
+    with pytest.raises(PreTradeRiskBlockedError) as exc_info:
+        service.enforce_trade_allowed(symbol="XAUUSD", volume=0.1, side="buy")
+
+    assert exc_info.value.assessment["verdict"] == "block"
+    assert exc_info.value.assessment["reason"] == "Daily trade limit reached"
 
 
 def test_blocks_when_position_limit_is_reached():

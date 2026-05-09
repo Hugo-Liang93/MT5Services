@@ -455,3 +455,4 @@ class QueueRunner:
     def clear_queues(self) -> None:
         self._clear_queue(self._runtime._confirmed_events)
         self._clear_queue(self._runtime._intrabar_events)
+        self._clear_queue(self._runtime._tick_derived_events)

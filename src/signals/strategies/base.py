@@ -35,7 +35,8 @@ class SignalStrategy(Protocol):
     preferred_scopes:
         接收快照的 scope 范围。
         "confirmed" = 仅 bar 收盘快照（指标完整）；
-        "intrabar"  = 实时盘中快照（仅策略推导出的 intrabar 指标）。
+        "intrabar"  = 实时盘中快照（仅策略推导出的 intrabar 指标）；
+        "tick_derived" = tick 特征快照（由 TickFeatureEngine 计算的短窗口特征）。
         默认两者都接收。
     regime_affinity:
         该策略在不同市场状态（Regime）下的置信度乘数（0.0–1.0）。
@@ -52,6 +53,7 @@ class SignalStrategy(Protocol):
     name: str
     required_indicators: tuple[str, ...]
     preferred_scopes: tuple[str, ...]
+    market_data_requirements: tuple[str, ...]
     regime_affinity: Dict[RegimeType, float]
 
     def evaluate(self, context: SignalContext) -> SignalDecision: ...

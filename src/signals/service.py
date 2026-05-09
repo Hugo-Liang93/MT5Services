@@ -11,7 +11,11 @@ from .analytics import (
     DiagnosticThresholds,
     SignalDiagnosticsAnalyzer,
 )
-from .contracts import StrategyCapability
+from .contracts import (
+    StrategyCapability,
+    normalize_market_data_requirements,
+    normalize_signal_scopes,
+)
 from .evaluation.calibrator import ConfidenceCalibrator
 from .evaluation.performance import StrategyPerformanceTracker
 from .evaluation.regime import MarketRegimeDetector, RegimeType, SoftRegimeResult
@@ -307,7 +311,7 @@ class SignalModule:
             impl = self._strategies[name]
             affinity_map = self.strategy_affinity_map(name) or {}
             needed_indicators = tuple(str(item) for item in impl.required_indicators)
-            valid_scopes = tuple(str(scope) for scope in impl.preferred_scopes)
+            valid_scopes = normalize_signal_scopes(impl.preferred_scopes)
             raw_htf_requirements = getattr(impl, "htf_required_indicators", {})
             if isinstance(raw_htf_requirements, dict):
                 htf_requirements = {
@@ -330,6 +334,9 @@ class SignalModule:
                     needs_htf=bool(htf_requirements),
                     regime_affinity=affinity_payload,
                     htf_requirements=htf_requirements,
+                    market_data_requirements=normalize_market_data_requirements(
+                        getattr(impl, "market_data_requirements", ())
+                    ),
                 )
             )
         return tuple(capabilities)
@@ -607,6 +614,7 @@ class SignalModule:
             confidence=calibrated,
             confidence_trace=trace,
             metadata={
+                **context_metadata,
                 **decision.metadata,
                 "category": getattr(strategy_impl, "category", ""),
                 "regime": regime.value,

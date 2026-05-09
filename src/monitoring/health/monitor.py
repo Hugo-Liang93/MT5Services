@@ -83,6 +83,11 @@ class HealthMonitor:
             "data_latency": {"warning": 10.0, "critical": 30.0},
             "indicator_freshness": {"warning": 60.0, "critical": 300.0},
             "queue_depth": {"warning": 1000, "critical": 5000},
+            "mt5_circuit_open": {"warning": 0.5, "critical": 0.5},
+            "mt5_abandoned_call_count": {"warning": 1.0, "critical": 4.0},
+            "market_data_stale_count": {"warning": 1.0, "critical": 999.0},
+            "market_data_critical_stale_count": {"warning": 1.0, "critical": 1.0},
+            "market_data_lane_stale": {"warning": 0.5, "critical": 0.5},
             "indicator_compute_p99_ms": {"warning": 500.0, "critical": 2000.0},
             "intrabar_drop_rate_1m": {"warning": 1.0, "critical": 5.0},
             "intrabar_queue_age_p95_ms": {"warning": 2500.0, "critical": 5000.0},
@@ -96,6 +101,8 @@ class HealthMonitor:
             "circuit_breaker_open": {"warning": 0.5, "critical": 0.5},
             "execution_failure_rate": {"warning": 0.1, "critical": 0.3},
             "execution_queue_overflows": {"warning": 1.0, "critical": 5.0},
+            "consumer_stalled": {"warning": 0.5, "critical": 0.5},
+            "consumer_consecutive_errors": {"warning": 1.0, "critical": 3.0},
             # §0w P2：pending_runtime_down 1=down/0=up（与 circuit_breaker_open
             # 同方向），fill worker 或 monitor 任一线程死即整体 down → critical
             "pending_runtime_down": {"warning": 0.5, "critical": 0.5},
@@ -206,6 +213,13 @@ class HealthMonitor:
             alert_level = self._check_alert_level(component, metric_name, metric_value)
         else:
             alert_level = None
+        if (
+            check_alert
+            and metric_name in self.alerts
+            and alert_level is None
+            and f"{component}.{metric_name}" in self.active_alerts
+        ):
+            self.resolve_alert(component, metric_name, resolved_by="metric_recovered")
 
         # 1. 内存快查缓存（最后 100 条 per key）
         key = f"{component}.{metric_name}"
@@ -261,6 +275,7 @@ class HealthMonitor:
                 "message": message,
             }
             self.active_alerts[alert_key] = alert_payload
+            self._invalidate_report_cache()
             logger.warning("New alert: %s", message)
             listener = self._alert_listener
             if listener is not None:
@@ -330,6 +345,11 @@ class HealthMonitor:
             "economic_calendar_staleness",
             "economic_provider_failures",
             "queue_depth",
+            "mt5_circuit_open",
+            "mt5_abandoned_call_count",
+            "market_data_stale_count",
+            "market_data_critical_stale_count",
+            "market_data_lane_stale",
         }:
             if value >= thresholds["critical"]:
                 return "critical"
@@ -354,6 +374,8 @@ class HealthMonitor:
             "circuit_breaker_open",
             "execution_failure_rate",
             "execution_queue_overflows",
+            "consumer_stalled",
+            "consumer_consecutive_errors",
             # §0w P2：down 方向指标（与 circuit_breaker_open 同 0/1 语义）
             "pending_runtime_down",
         }:
@@ -455,8 +477,13 @@ class HealthMonitor:
             return False
         self._store.resolve_alert(component, metric_name, resolved_by)
         del self.active_alerts[alert_key]
+        self._invalidate_report_cache()
         logger.info("Resolved alert: %s.%s", component, metric_name)
         return True
+
+    def _invalidate_report_cache(self) -> None:
+        self._report_cache = None
+        self._report_cache_at = 0.0
 
     # ─── 代理检查方法（委托给 health_checks 模块） ─────────────────────────
 

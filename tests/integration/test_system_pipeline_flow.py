@@ -125,10 +125,13 @@ def test_ingestor_cycle_updates_cache_persists_closed_bar_and_emits_event() -> N
     )
     tick = Tick(
         symbol="XAUUSD",
-        price=2320.3,
+        bid=2320.2,
+        ask=2320.4,
+        last=2320.3,
         volume=1.5,
         time=now - timedelta(seconds=5),
         time_msc=int((now - timedelta(seconds=5)).timestamp() * 1000),
+        flags=6,
     )
     closed_bar = OHLC(
         symbol="XAUUSD",

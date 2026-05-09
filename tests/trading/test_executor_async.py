@@ -71,6 +71,29 @@ class DummyTradingModule:
         return []
 
 
+def _market_group(close_price: float):
+    from src.trading.entry_policy import (
+        EntrySpecGroup,
+        EntrySpecMember,
+        EntryType,
+        new_group_id,
+    )
+
+    return EntrySpecGroup(
+        group_id=new_group_id(),
+        members=(
+            EntrySpecMember(
+                member_id="market",
+                entry_type=EntryType.MARKET,
+                trigger_price=close_price,
+                entry_low=close_price,
+                entry_high=close_price,
+            ),
+        ),
+        metadata={"policy_name": "market", "branch": "market"},
+    )
+
+
 def _build_event(
     *,
     direction: str = "buy",
@@ -95,6 +118,22 @@ def _build_event(
             "spread_price": 0.20,
             "symbol_point": 0.01,
             "close_price": 3000.0,
+            "entry_intent": {
+                "strategy_name": "sma_trend",
+                "timeframe": "M5",
+                "direction": direction,
+                "pattern_type": "none",
+            },
+            "pattern_type": "none",
+            "recent_bars": [
+                {
+                    "open": 2999.0,
+                    "high": 3001.0,
+                    "low": 2998.0,
+                    "close": 3000.0,
+                }
+            ],
+            "entry_spec_group": _market_group(3000.0),
         },
         generated_at=datetime.now(timezone.utc),
         signal_id=signal_id,

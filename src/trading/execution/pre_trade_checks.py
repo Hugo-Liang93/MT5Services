@@ -35,6 +35,7 @@ from .reasons import (
     REASON_INVALID_DIRECTION,
     REASON_LIMIT_REACHED,
     REASON_MARGIN_GUARD_BLOCK,
+    REASON_MARKET_DATA_UNHEALTHY,
     REASON_MIN_CONFIDENCE,
     REASON_PERFORMANCE_PAUSED,
     REASON_QUOTE_STALE,
@@ -45,6 +46,8 @@ from .reasons import (
     REASON_STRATEGY_LOCKED_TIMEFRAME,
     REASON_STRATEGY_MAX_LIVE_POSITIONS,
     REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
+    REASON_TICK_FEATURE_HEALTH_BLOCKED,
+    REASON_TICK_FEATURE_HEALTH_UNAVAILABLE,
     SKIP_CATEGORY_CONFIDENCE,
     SKIP_CATEGORY_COOLDOWN,
     SKIP_CATEGORY_DUPLICATE_GUARD,
@@ -303,6 +306,34 @@ def check_quote_health(
     return True
 
 
+def check_market_data_health(
+    executor: TradeExecutor,
+    event: SignalEvent,
+    tf: str,
+) -> bool:
+    """检查 required market data lane 健康。返回 True = 应拒绝新开仓。"""
+    health = executor.market_data_health(event.symbol)
+    if not bool(health.get("blocking", False)):
+        return False
+    executor.last_risk_block = REASON_MARKET_DATA_UNHEALTHY
+    blocked_lanes = list(health.get("blocked_lanes") or [])
+    reject_signal(
+        executor,
+        event,
+        REASON_MARKET_DATA_UNHEALTHY,
+        SKIP_CATEGORY_MARKET_DATA,
+        tf,
+        log_level="warning",
+        extra_log=(
+            f"blocked_lanes={blocked_lanes}"
+            if blocked_lanes
+            else str(health.get("source_status") or health.get("status") or "")
+        ),
+        admission_details={"market_data_health": health},
+    )
+    return True
+
+
 def check_intrabar_synthesis_health(
     executor: TradeExecutor,
     event: SignalEvent,
@@ -343,6 +374,36 @@ def check_intrabar_synthesis_health(
         log_level="warning",
         extra_log=", ".join(extra_parts),
         admission_details={"intrabar_synthesis": intrabar_health},
+    )
+    return reason
+
+
+def check_tick_feature_health(
+    executor: TradeExecutor,
+    event: SignalEvent,
+    tf: str,
+) -> str | None:
+    if event.scope != "tick_derived":
+        return None
+    health = executor.tick_feature_health(event.symbol)
+    if not bool(health.get("blocking", False)):
+        return None
+    status = str(health.get("status") or "").lower()
+    reason = (
+        REASON_TICK_FEATURE_HEALTH_BLOCKED
+        if status in {"blocked", "sparse", "critical"}
+        else REASON_TICK_FEATURE_HEALTH_UNAVAILABLE
+    )
+    executor.last_risk_block = reason
+    reject_signal(
+        executor,
+        event,
+        reason,
+        SKIP_CATEGORY_MARKET_DATA,
+        tf,
+        log_level="warning",
+        extra_log=status,
+        admission_details={"tick_feature_health": health},
     )
     return reason
 
@@ -472,6 +533,13 @@ def run_pre_trade_filters(
     # ④ 行情 freshness
     if check_quote_health(executor, event, tf):
         return REASON_QUOTE_STALE
+
+    if check_market_data_health(executor, event, tf):
+        return REASON_MARKET_DATA_UNHEALTHY
+
+    tick_feature_reason = check_tick_feature_health(executor, event, tf)
+    if tick_feature_reason:
+        return tick_feature_reason
 
     # ④.5 intrabar 合成 freshness
     intrabar_reason = check_intrabar_synthesis_health(executor, event, tf)

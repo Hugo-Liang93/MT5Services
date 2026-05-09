@@ -1,9 +1,9 @@
 """EntryPolicyRegistry — strategy×tf → policy 解析中枢。
 
-三级 fallback：
+显式映射：
   1. config.strategy_tf_mapping[(strategy, tf)]   per-(strategy, tf) override
   2. config.strategy_mapping[strategy]            per-strategy
-  3. config.default_policy                        全局兜底
+  3. 未命中即拒绝，不使用 default_policy 兜底下单
 
 参数解析两级 merge：
   - policy_tf_params[(policy_name, tf)] over policy_params[policy_name]
@@ -26,6 +26,10 @@ class EntryPolicyNotFoundError(KeyError):
     """请求的 policy 名未在 registry 中注册。"""
 
 
+class EntryPolicyMappingError(KeyError):
+    """策略未声明 EntryPolicy mapping。"""
+
+
 class EntryPolicyRegistry:
     """注册中心 + 解析器。"""
 
@@ -41,7 +45,7 @@ class EntryPolicyRegistry:
     # ── 公开端口 ────────────────────────────────────────────────────────
 
     def resolve(self, strategy: str, timeframe: str) -> EntryPolicy:
-        """按三级 fallback 解析 (strategy, tf) → policy 实例。"""
+        """按显式映射解析 (strategy, tf) → policy 实例。"""
         name = self._resolve_policy_name(strategy, timeframe)
         try:
             return self._policies[name]
@@ -109,7 +113,10 @@ class EntryPolicyRegistry:
         per_strategy = self._config.strategy_mapping.get(strategy)
         if per_strategy is not None:
             return per_strategy
-        return self._config.default_policy
+        raise EntryPolicyMappingError(
+            "no entry policy mapping declared for "
+            f"strategy={strategy!r}, timeframe={timeframe!r}"
+        )
 
     def _validate_invariants(self) -> None:
         """装配期 fail-fast：mapping/参数引用的 policy 都必须已注册。"""
@@ -153,6 +160,7 @@ class EntryPolicyRegistry:
 
 
 __all__ = [
+    "EntryPolicyMappingError",
     "EntryPolicyNotFoundError",
     "EntryPolicyRegistry",
 ]

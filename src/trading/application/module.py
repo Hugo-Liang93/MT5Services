@@ -38,6 +38,14 @@ PRECHECK_TRADE_FIELDS = {
     "metadata",
 }
 
+EXECUTION_ENVELOPE_FIELDS = {
+    "trace_id",
+    "signal_id",
+    "intent_id",
+    "action_id",
+    "scope",
+}
+
 _IDEMPOTENT_LOOKBACK_LIMIT = 200
 _OPERATOR_ACTION_OPERATION_TYPES = {
     "close_position",
@@ -439,7 +447,7 @@ class TradingModule:
     ):
         started = time.monotonic()
         resolved_alias = self.registry.resolve_alias(account_alias)
-        trace_id = str(payload.get("request_id") or payload.get("trace_id") or "")
+        trace_id = str(payload.get("trace_id") or payload.get("request_id") or "")
         operator_action_requested = self._operator_action_requested(operation_type, payload)
         resolved_operation_id = str(operation_id or payload.get("action_id") or "").strip() or None
         if operator_action_requested and not resolved_operation_id:
@@ -662,7 +670,12 @@ class TradingModule:
             return account_service.orders(symbol)
 
     def execute_trade(self, **kwargs: Any):
-        request_id = str(kwargs.get("request_id") or "").strip()
+        execution_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in EXECUTION_ENVELOPE_FIELDS
+        }
+        request_id = str(execution_kwargs.get("request_id") or "").strip()
         if request_id:
             replayed = self._find_idempotent_trade_result(request_id)
             if replayed is not None:
@@ -674,7 +687,12 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute_command("execute_trade", alias, payload, lambda: trading_service.execute_trade(**kwargs))
+            return self._execute_command(
+                "execute_trade",
+                alias,
+                payload,
+                lambda: trading_service.execute_trade(**execution_kwargs),
+            )
 
     def precheck_trade(self, **kwargs: Any):
         with self._active_scope() as (

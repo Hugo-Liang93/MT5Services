@@ -11,6 +11,7 @@ class DummyStateStore:
         self.warm_started = False
         self.trade_control_state = None
         self.pending_rows = []
+        self.position_rows = []
         self.events = []
 
     def warm_start(self) -> None:
@@ -21,6 +22,13 @@ class DummyStateStore:
 
     def list_active_pending_orders(self):
         return list(self.pending_rows)
+
+    def list_position_runtime_states(self, *, statuses=None, limit=100):
+        rows = list(self.position_rows)
+        if statuses:
+            allowed = set(statuses)
+            rows = [row for row in rows if row.get("status") in allowed]
+        return rows[:limit]
 
     def mark_pending_order_filled(self, info, *, state=None):
         self.events.append(("filled", info["ticket"], dict(state or {})))
@@ -36,6 +44,9 @@ class DummyStateStore:
 
     def mark_pending_order_cancelled(self, info, *, reason):
         self.events.append(("cancelled", info["ticket"], reason))
+
+    def mark_position_missing(self, row, *, reason):
+        self.events.append(("position_missing", row["position_ticket"], reason))
 
 
 class DummyPendingEntryManager:
@@ -54,8 +65,9 @@ class DummyPendingEntryManager:
 
 
 class DummyTradingModule:
-    def __init__(self, orders=None):
+    def __init__(self, orders=None, positions=None):
         self.orders = list(orders or [])
+        self.positions = list(positions or [])
         self.applied_control = None
         self.cancelled = []
 
@@ -65,6 +77,9 @@ class DummyTradingModule:
 
     def get_orders(self):
         return list(self.orders)
+
+    def get_positions(self):
+        return list(self.positions)
 
     def cancel_orders_by_tickets(self, tickets):
         self.cancelled.extend(list(tickets))
@@ -163,6 +178,40 @@ def test_trading_state_recovery_marks_missing_orders_when_not_found() -> None:
 
     assert result["missing"] == 1
     assert ("missing", 1002, "startup_missing") in store.events
+
+
+def test_trading_state_recovery_closes_open_position_states_missing_from_mt5() -> (
+    None
+):
+    store = DummyStateStore()
+    store.position_rows = [
+        {
+            "position_ticket": 11,
+            "status": "open",
+            "symbol": "XAUUSD",
+            "direction": "buy",
+        },
+        {
+            "position_ticket": 12,
+            "status": "open",
+            "symbol": "XAUUSD",
+            "direction": "sell",
+        },
+    ]
+    trading = DummyTradingModule(positions=[SimpleNamespace(ticket=11)])
+    recovery = TradingStateRecovery(store)
+
+    result = recovery.reconcile_position_runtime_states(trading_module=trading)
+
+    assert result == {
+        "live": 1,
+        "open_states": 2,
+        "kept_open": 1,
+        "closed_missing": 1,
+        "skipped": 0,
+    }
+    assert ("position_missing", 12, "startup_mt5_missing") in store.events
+    assert ("position_missing", 11, "startup_mt5_missing") not in store.events
 
 
 def test_trading_state_recovery_uses_policy_for_orphan_and_missing_actions() -> None:

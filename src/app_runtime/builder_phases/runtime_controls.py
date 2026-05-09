@@ -315,6 +315,16 @@ def build_runtime_component_registry(
                     "PositionManager mode sync: %s",
                     recovery_result,
                 )
+                recovery = container.trading_state_recovery
+                trading = container.trade_module
+                if recovery is not None and trading is not None:
+                    state_result = recovery.reconcile_position_runtime_states(
+                        trading_module=trading,
+                    )
+                    logging.getLogger(__name__).info(
+                        "Position runtime state recovery: %s",
+                        state_result,
+                    )
             except Exception:
                 import logging
 

@@ -87,6 +87,23 @@ def _parse_cli_strategy_params(args: argparse.Namespace) -> Dict[str, Any]:
     return params
 
 
+def _build_deployment_gate_from_args(args: argparse.Namespace) -> Any:
+    mode = str(getattr(args, "deployment_gate_mode", "config") or "config").strip()
+    if mode == "config":
+        return None
+    if mode != "research_disabled":
+        raise ValueError(f"Unsupported deployment gate mode: {mode}")
+    reason = str(getattr(args, "deployment_gate_reason", "") or "").strip()
+    if not reason:
+        raise ValueError(
+            "--deployment-gate-reason is required when "
+            "--deployment-gate-mode=research_disabled"
+        )
+    from .engine import BacktestDeploymentGate
+
+    return BacktestDeploymentGate.research_disabled(reason)
+
+
 def _persist_result(result: Any, writer: Any = None) -> None:
     # docstring removed during encoding normalization
     try:
@@ -259,6 +276,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             )
 
     components = _build_components(args)
+    deployment_gate = _build_deployment_gate_from_args(args)
     try:
         engine = BacktestEngine(
             config=config,
@@ -268,6 +286,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             regime_detector=components["regime_detector"],
             performance_tracker=components.get("performance_tracker"),
             htf_cache=components.get("htf_cache"),
+            deployment_gate=deployment_gate,
         )
 
         result = engine.run()
@@ -342,6 +361,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     )
 
     components = _build_components(args)
+    deployment_gate = _build_deployment_gate_from_args(args)
     try:
         base_module = components["signal_module"]
 
@@ -356,6 +376,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             signal_module_factory=module_factory,
             regime_detector=components["regime_detector"],
             sort_metric=args.sort,
+            deployment_gate=deployment_gate,
         )
 
         def progress(current: int, total: int, result: Any) -> None:
@@ -389,6 +410,7 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
     results_by_tf: Dict[str, Any] = {}
     for timeframe in timeframes:
         components = _build_components(args)
+        deployment_gate = _build_deployment_gate_from_args(args)
         try:
             config = BacktestConfig.from_flat(
                 symbol=args.symbol,
@@ -446,6 +468,7 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
                 indicator_pipeline=components["pipeline"],
                 regime_detector=components["regime_detector"],
                 performance_tracker=components.get("performance_tracker"),
+                deployment_gate=deployment_gate,
             )
             logger.info("Running baseline backtest for timeframe=%s", timeframe)
             result = engine.run()
@@ -559,6 +582,18 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         action="append",
         metavar="KEY=VALUE",
         help="Override strategy param, e.g. --param rsi_reversion__overbought=72",
+    )
+    parser.add_argument(
+        "--deployment-gate-mode",
+        choices=["config", "research_disabled"],
+        default="config",
+        help="Deployment gate source. research_disabled requires --deployment-gate-reason.",
+    )
+    parser.add_argument(
+        "--deployment-gate-reason",
+        type=str,
+        default=None,
+        help="Audit reason when --deployment-gate-mode=research_disabled.",
     )
 
 

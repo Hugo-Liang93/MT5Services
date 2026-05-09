@@ -279,6 +279,29 @@ def test_trading_module_dispatch_trade_filters_execute_only_fields_from_precheck
     assert result["ticket"] == 123
 
 
+def test_trading_module_dispatch_trade_uses_trace_id_without_sending_to_broker():
+    registry = DummyRegistry()
+    module = TradingModule(registry=registry, db_writer=DummyDBWriter())
+
+    result = module.dispatch_operation(
+        "trade",
+        {
+            "symbol": "XAUUSD",
+            "volume": 0.2,
+            "side": "buy",
+            "request_id": "req_dispatch",
+            "trace_id": "trace_dispatch",
+        },
+    )
+
+    assert result["trace_id"] == "trace_dispatch"
+    assert registry.trading_service.execute_calls[-1]["request_id"] == "req_dispatch"
+    assert "trace_id" not in registry.trading_service.execute_calls[-1]
+    assert module.db_writer.rows[-1][15]["request_id"] == "req_dispatch"
+    assert module.db_writer.rows[-1][15]["trace_id"] == "trace_dispatch"
+    assert module.db_writer.rows[-1][16]["trace_id"] == "trace_dispatch"
+
+
 def test_trading_module_replays_same_request_id_from_memory_cache() -> None:
     registry = DummyRegistry()
     module = TradingModule(registry=registry, db_writer=DummyDBWriter())

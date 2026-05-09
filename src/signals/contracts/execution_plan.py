@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
 
-from .capability import StrategyCapability
+from .capability import StrategyCapability, normalize_market_data_requirements
 
 
 def _normalize_capability_row(
@@ -43,6 +43,9 @@ def _normalize_capability_row(
         for key, value in dict(raw.get("htf_requirements") or {}).items()
         if str(key).strip() and str(value).strip()
     }
+    market_data_requirements = normalize_market_data_requirements(
+        raw.get("market_data_requirements")
+    )
 
     return {
         "name": name,
@@ -52,6 +55,7 @@ def _normalize_capability_row(
         "needs_htf": bool(raw.get("needs_htf")),
         "regime_affinity": regime_affinity,
         "htf_requirements": htf_requirements,
+        "market_data_requirements": list(market_data_requirements),
     }
 
 
@@ -111,6 +115,8 @@ def build_strategy_capability_summary(
 
     required_indicators_by_strategy: dict[str, list[str]] = {}
     required_union: set[str] = set()
+    required_market_data_by_strategy: dict[str, list[str]] = {}
+    required_market_data_union: set[str] = set()
     for strategy in scheduled:
         row = capability_by_name.get(strategy)
         if row is None:
@@ -122,6 +128,13 @@ def build_strategy_capability_summary(
         )
         required_indicators_by_strategy[strategy] = needed
         required_union.update(needed)
+        market_data_requirements = sorted(
+            str(name).strip().lower()
+            for name in (row.get("market_data_requirements") or [])
+            if str(name).strip()
+        )
+        required_market_data_by_strategy[strategy] = market_data_requirements
+        required_market_data_union.update(market_data_requirements)
 
     def _scope_strategies(scope: str) -> list[str]:
         result: list[str] = []
@@ -164,6 +177,8 @@ def build_strategy_capability_summary(
         ),
         "required_indicators_by_strategy": required_indicators_by_strategy,
         "required_indicators_union": sorted(required_union),
+        "required_market_data_by_strategy": required_market_data_by_strategy,
+        "required_market_data_union": sorted(required_market_data_union),
         "strategy_timeframes_policy": _normalize_timeframes_policy(
             strategy_timeframes_policy
         ),

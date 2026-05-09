@@ -56,6 +56,7 @@ class FakeTick:
     """Minimal Tick stub."""
     def __init__(self, t: datetime, bid: float, ask: float):
         self.time = t
+        self.time_msc = int(t.timestamp() * 1000)
         self.bid = bid
         self.ask = ask
         self.last = bid

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -117,6 +118,26 @@ def test_stop_is_safe_when_never_started() -> None:
     """从未 start 直接 stop 不应抛异常。"""
     consumer = _make_consumer()
     consumer.stop(timeout=0.5)  # 不抛 = 通过
+
+
+def test_operator_command_consumer_health_snapshot_reports_stalled_progress() -> None:
+    """operator command ready 需要使用与 intent consumer 同口径的推进健康快照。"""
+    now = datetime(2026, 5, 5, 12, 0, tzinfo=timezone.utc)
+    consumer = _make_consumer(poll_interval_seconds=0.5)
+    consumer.is_running = lambda: True
+    consumer._last_poll_at = now - timedelta(seconds=12)
+    consumer._consecutive_errors = 3
+    consumer._last_error = "RuntimeError: command queue unavailable"
+
+    snapshot = consumer.health_snapshot(now=now)
+
+    assert snapshot["running"] is True
+    assert snapshot["stalled"] is True
+    assert "poll_stalled" in snapshot["stall_reasons"]
+    assert "consecutive_errors" in snapshot["stall_reasons"]
+    assert snapshot["last_poll_at"] == "2026-05-05T11:59:48+00:00"
+    assert snapshot["last_error"] == "RuntimeError: command queue unavailable"
+    assert consumer.status()["stalled"] is True
 
 
 # ── _process_command 异常恢复 ───────────────────────────────────────────

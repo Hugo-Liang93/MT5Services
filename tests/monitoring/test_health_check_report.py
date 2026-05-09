@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.monitoring.health import HealthMonitor, close_health_monitor, get_health_monitor
+from src.monitoring.health.checks import check_queue_stats
 from src.monitoring.manager import (
     MonitoringManager,
     close_monitoring_manager,
@@ -18,6 +19,87 @@ def test_health_report_skips_non_finite_metrics(tmp_path: Path) -> None:
 
     assert report["summary"]["total_metrics"] == 0
     assert report["overall_status"] == "healthy"
+
+
+def test_check_queue_stats_records_market_data_health_metrics(tmp_path: Path) -> None:
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+
+    class _Ingestor:
+        def queue_stats(self):
+            return {
+                "queues": {},
+                "market_data_health": {
+                    "status": "critical",
+                    "mt5": {
+                        "circuit_open": True,
+                        "abandoned_call_count": 2,
+                    },
+                    "freshness": {
+                        "stale_count": 1,
+                        "lanes": {
+                            "ohlc:XAUUSD:M1": {
+                                "stale": True,
+                                "age_seconds": 12.0,
+                                "market_age_seconds": 180.0,
+                                "stale_threshold_seconds": 6.0,
+                                "symbol": "XAUUSD",
+                                "timeframe": "M1",
+                            }
+                        },
+                    },
+                },
+            }
+
+    stats = check_queue_stats(monitor, "data_ingestion", _Ingestor())
+    report = monitor.generate_report(hours=1)
+
+    assert stats["market_data_health"]["mt5"]["circuit_open"] is True
+    assert report["components"]["data_ingestion"]["mt5_circuit_open"]["status"] == "critical"
+    assert report["components"]["data_ingestion"]["market_data_stale_count"]["status"] == "warning"
+    assert "market_data_lane_market_age_seconds" in report["components"]["data_ingestion"]
+    assert report["components"]["data_ingestion"]["market_data_lane_stale"]["status"] == "critical"
+
+
+def test_check_queue_stats_does_not_raise_optional_tick_stale_to_critical(
+    tmp_path: Path,
+) -> None:
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+
+    class _Ingestor:
+        def queue_stats(self):
+            return {
+                "queues": {},
+                "market_data_health": {
+                    "status": "warning",
+                    "freshness": {
+                        "stale_count": 1,
+                        "critical_stale_count": 0,
+                        "lanes": {
+                            "tick:XAUUSD": {
+                                "kind": "tick",
+                                "symbol": "XAUUSD",
+                                "stale": True,
+                                "required": False,
+                                "severity": "warning",
+                                "status": "stale",
+                                "stale_reason": "market_time_stale",
+                                "age_seconds": 0.1,
+                                "market_age_seconds": 600.0,
+                            }
+                        },
+                    },
+                },
+            }
+
+    check_queue_stats(monitor, "data_ingestion", _Ingestor())
+    report = monitor.generate_report(hours=1)
+
+    component = report["components"]["data_ingestion"]
+    assert component["market_data_stale_count"]["status"] == "healthy"
+    assert component["market_data_lane_stale"]["status"] == "healthy"
+    assert report["overall_status"] == "healthy"
+    assert "data_ingestion.market_data_stale_count" not in monitor.active_alerts
+    assert "data_ingestion.market_data_lane_stale" not in monitor.active_alerts
 
 
 def test_cache_hit_rate_no_longer_triggers_alert(tmp_path: Path) -> None:
@@ -201,6 +283,24 @@ def test_generate_report_overall_status_reflects_active_warning_alert(
     assert report["overall_status"] in ("warning", "critical"), (
         f"active warning alert 必须把 overall_status 抬到 warning+；got {report['overall_status']!r}"
     )
+
+
+def test_record_metric_resolves_active_alert_when_metric_recovers(
+    tmp_path: Path,
+) -> None:
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+
+    monitor.record_metric("recovery_runner", "consumer_stalled", 1.0)
+    critical_report = monitor.generate_report(hours=1)
+    assert "recovery_runner.consumer_stalled" in monitor.active_alerts
+    assert critical_report["overall_status"] == "critical"
+
+    monitor.record_metric("recovery_runner", "consumer_stalled", 0.0)
+    recovered_report = monitor.generate_report(hours=1)
+
+    assert "recovery_runner.consumer_stalled" not in monitor.active_alerts
+    assert recovered_report["components"]["recovery_runner"]["consumer_stalled"]["status"] == "healthy"
+    assert recovered_report["overall_status"] == "healthy"
 
 
 # ── §0v P2 回归：trading 域 critical metric 必须算 blocking_critical（非 advisory）──

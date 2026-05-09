@@ -13,6 +13,7 @@ class HealthLiveView(BaseModel):
 class ReadyProbeView(BaseModel):
     status: str
     checks: Dict[str, str] = Field(default_factory=dict)
+    details: Dict[str, Any] = Field(default_factory=dict)
     startup_phase: Optional[str] = None
     timestamp: Optional[str] = None
 

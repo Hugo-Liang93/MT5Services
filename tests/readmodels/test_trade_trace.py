@@ -112,8 +112,178 @@ class _TradeRepo:
     def fetch_trace_operations_by_trace_id(self, *, account_alias: str, trace_id: str, limit: int = 100):
         return []
 
+    def fetch_trace_operations_by_action_id(self, *, account_alias: str, action_id: str, limit: int = 100):
+        if action_id != "act-close":
+            return []
+        return [
+            {
+                "recorded_at": datetime(2026, 1, 1, 8, 20, tzinfo=timezone.utc),
+                "operation_id": "op-close",
+                "command_type": "close_position",
+                "status": "success",
+                "request_payload": {
+                    "action_id": action_id,
+                    "ticket": 7002,
+                    "command_id": "cmd-close",
+                },
+                "response_payload": {
+                    "trace_id": "close-trace",
+                    "action_id": action_id,
+                    "ticket": 7002,
+                },
+                "ticket": None,
+                "order_id": None,
+                "deal_id": None,
+            }
+        ]
+
+    def fetch_trace_operations_by_command_id(self, *, account_alias: str, command_id: str, limit: int = 100):
+        if command_id != "cmd-close":
+            return []
+        return [
+            {
+                "recorded_at": datetime(2026, 1, 1, 8, 20, tzinfo=timezone.utc),
+                "operation_id": "op-close",
+                "command_id": command_id,
+                "action_id": "act-close",
+                "command_type": "close_position",
+                "status": "success",
+                "request_payload": {
+                    "action_id": "act-close",
+                    "ticket": 7002,
+                },
+                "response_payload": {
+                    "trace_id": "close-trace",
+                    "action_id": "act-close",
+                    "ticket": 7002,
+                },
+                "ticket": None,
+                "order_id": None,
+                "deal_id": None,
+            }
+        ]
+
+
+class _RecoveryTraceTradeRepo(_TradeRepo):
+    def fetch_trace_operations(self, *, account_alias: str, signal_id: str, limit: int = 100):
+        if signal_id != "sig-1":
+            return []
+        return [self._recovery_operation()]
+
+    def fetch_trace_operations_by_trace_id(self, *, account_alias: str, trace_id: str, limit: int = 100):
+        if trace_id != "sig-1":
+            return []
+        return [self._recovery_operation()]
+
+    @staticmethod
+    def _recovery_operation():
+        return {
+            "recorded_at": datetime(2026, 1, 1, 8, 16, 30, tzinfo=timezone.utc),
+            "operation_id": "recovery:cycle-1:step:1",
+            "command_type": "execute_trade",
+            "status": "success",
+            "request_payload": {
+                "request_id": "recovery:cycle-1:step:1",
+                "trace_id": "sig-1",
+                "metadata": {
+                    "execution_scope": "recovery_scaling",
+                    "source_signal_id": "sig-1",
+                    "recovery_cycle_id": "cycle-1",
+                    "recovery_step_index": 1,
+                },
+            },
+            "response_payload": {
+                "request_id": "recovery:cycle-1:step:1",
+                "trace_id": "sig-1",
+            },
+            "ticket": None,
+            "order_id": None,
+            "deal_id": None,
+        }
+
+
+class _ClosedRecoveryTraceTradeRepo(_TradeRepo):
+    def fetch_trace_operations(self, *, account_alias: str, signal_id: str, limit: int = 100):
+        if signal_id != "sig-1":
+            return []
+        return self._operations()
+
+    def fetch_trace_operations_by_trace_id(self, *, account_alias: str, trace_id: str, limit: int = 100):
+        if trace_id != "sig-1":
+            return []
+        return self._operations()
+
+    @staticmethod
+    def _operations():
+        return [
+            {
+                "recorded_at": datetime(2026, 1, 1, 8, 16, tzinfo=timezone.utc),
+                "operation_id": "recovery:cycle-1:initial",
+                "command_type": "execute_trade",
+                "status": "success",
+                "request_payload": {
+                    "request_id": "recovery:cycle-1:initial",
+                    "trace_id": "sig-1",
+                    "metadata": {
+                        "execution_scope": "recovery_initial",
+                        "source_signal_id": "sig-1",
+                        "recovery_cycle_id": "cycle-1",
+                    },
+                },
+                "response_payload": {"trace_id": "sig-1", "ticket": 7001},
+                "ticket": 7001,
+                "order_id": 7001,
+                "deal_id": 9001,
+            },
+            {
+                "recorded_at": datetime(2026, 1, 1, 8, 17, tzinfo=timezone.utc),
+                "operation_id": "recovery:cycle-1:step:1",
+                "command_type": "execute_trade",
+                "status": "success",
+                "request_payload": {
+                    "request_id": "recovery:cycle-1:step:1",
+                    "trace_id": "sig-1",
+                    "metadata": {
+                        "execution_scope": "recovery_scaling",
+                        "source_signal_id": "sig-1",
+                        "recovery_cycle_id": "cycle-1",
+                        "recovery_step_index": 1,
+                    },
+                },
+                "response_payload": {"trace_id": "sig-1", "ticket": 7002},
+                "ticket": 7002,
+                "order_id": 7002,
+                "deal_id": 9002,
+            },
+            {
+                "recorded_at": datetime(2026, 1, 1, 8, 18, tzinfo=timezone.utc),
+                "operation_id": "recovery:cycle-1:close_initial",
+                "command_type": "close_position",
+                "status": "success",
+                "request_payload": {"trace_id": "sig-1", "ticket": 7001},
+                "response_payload": {"trace_id": "sig-1", "ticket": 7001},
+                "ticket": 7001,
+                "order_id": None,
+                "deal_id": None,
+            },
+            {
+                "recorded_at": datetime(2026, 1, 1, 8, 19, tzinfo=timezone.utc),
+                "operation_id": "recovery:cycle-1:close_step_1",
+                "command_type": "close_position",
+                "status": "success",
+                "request_payload": {"trace_id": "sig-1", "ticket": 7002},
+                "response_payload": {"trace_id": "sig-1", "ticket": 7002},
+                "ticket": 7002,
+                "order_id": None,
+                "deal_id": None,
+            },
+        ]
+
 
 class _PipelineTraceRepo:
+    def __init__(self) -> None:
+        self.last_summary_query = None
+
     def fetch_pipeline_trace_events(self, *, trace_ids, limit: int = 500):
         assert trace_ids == ["trace-1"]
         return [
@@ -179,11 +349,19 @@ class _PipelineTraceRepo:
                 "scope": "confirmed",
                 "event_type": "admission_report_appended",
                 "recorded_at": datetime(2026, 1, 1, 8, 15, 20, tzinfo=timezone.utc),
+                "account_key": "demo:server:123",
+                "signal_id": "sig-1",
+                "intent_id": "intent-1",
+                "command_id": "cmd-1",
+                "action_id": "act-1",
                 "payload": {
                     "decision": "allow",
                     "stage": "account_risk",
                     "trace_id": "trace-1",
                     "signal_id": "sig-1",
+                    "intent_id": "intent-1",
+                    "command_id": "cmd-1",
+                    "action_id": "act-1",
                     "reasons": [{"code": "checks_passed", "message": "ok"}],
                 },
             },
@@ -209,6 +387,11 @@ class _PipelineTraceRepo:
                 "scope": "confirmed",
                 "event_type": "execution_submitted",
                 "recorded_at": datetime(2026, 1, 1, 8, 16, tzinfo=timezone.utc),
+                "account_key": "demo:server:123",
+                "signal_id": "sig-1",
+                "intent_id": "intent-1",
+                "command_id": "cmd-1",
+                "action_id": "act-1",
                 "payload": {
                     "strategy": "trendline",
                     "direction": "buy",
@@ -219,12 +402,24 @@ class _PipelineTraceRepo:
             },
         ]
 
+    def fetch_pipeline_trace_filtered(self, **kwargs):
+        rows = self.fetch_pipeline_trace_events(trace_ids=["trace-1"])
+        for key in ("trace_id", "signal_id", "intent_id", "command_id", "action_id"):
+            value = str(kwargs.get(key) or "").strip()
+            if value:
+                rows = [row for row in rows if str(row.get(key) or "").strip() == value]
+        return rows
+
     def query_trace_summaries(self, **kwargs):
+        self.last_summary_query = dict(kwargs)
         return {
             "items": [
                 {
                     "trace_id": kwargs.get("trace_id") or "trace-1",
                     "signal_id": kwargs.get("signal_id") or "sig-1",
+                    "intent_id": kwargs.get("intent_id") or "intent-1",
+                    "command_id": kwargs.get("command_id") or "cmd-1",
+                    "action_id": kwargs.get("action_id") or "act-1",
                     "symbol": kwargs.get("symbol") or "XAUUSD",
                     "timeframe": kwargs.get("timeframe") or "M15",
                     "strategy": kwargs.get("strategy") or "trendline",
@@ -268,6 +463,192 @@ class _TradingStateRepo:
             }
         ]
 
+    def fetch_position_sl_tp_history(
+        self,
+        *,
+        account_alias=None,
+        position_tickets=None,
+        limit=500,
+    ):
+        tickets = set(position_tickets or [])
+        if tickets and 8001 not in tickets:
+            return []
+        return [
+            {
+                "recorded_at": datetime(2026, 1, 1, 8, 25, tzinfo=timezone.utc),
+                "account_alias": account_alias or "live",
+                "position_ticket": 8001,
+                "signal_id": "sig-1",
+                "symbol": "XAUUSD",
+                "action_type": "modify_sl",
+                "reason": "chandelier_trail",
+                "old_stop_loss": 2388.0,
+                "new_stop_loss": 2395.0,
+                "old_take_profit": 2420.0,
+                "new_take_profit": 2420.0,
+                "current_price": 2406.0,
+                "success": True,
+            },
+            {
+                "recorded_at": datetime(2026, 1, 1, 8, 40, tzinfo=timezone.utc),
+                "account_alias": account_alias or "live",
+                "position_ticket": 8001,
+                "signal_id": "sig-1",
+                "symbol": "XAUUSD",
+                "action_type": "modify_tp",
+                "reason": "risk_reward_cap",
+                "old_stop_loss": 2395.0,
+                "new_stop_loss": 2395.0,
+                "old_take_profit": 2420.0,
+                "new_take_profit": 2416.0,
+                "current_price": 2412.0,
+                "success": True,
+            },
+        ]
+
+
+class _RecoveryTradingStateRepo(_TradingStateRepo):
+    def __init__(self) -> None:
+        self.recovery_fetches = []
+
+    def fetch_recovery_cycle_states(
+        self,
+        *,
+        account_alias=None,
+        account_key=None,
+        statuses=None,
+        symbol=None,
+        strategy=None,
+        cycle_id=None,
+        source_signal_id=None,
+        limit=500,
+    ):
+        self.recovery_fetches.append(
+            {
+                "account_alias": account_alias,
+                "account_key": account_key,
+                "statuses": statuses,
+                "symbol": symbol,
+                "strategy": strategy,
+                "cycle_id": cycle_id,
+                "source_signal_id": source_signal_id,
+                "limit": limit,
+            }
+        )
+        if source_signal_id != "sig-1":
+            return []
+        return [
+            {
+                "account_alias": account_alias or "live",
+                "account_key": "demo:server:123",
+                "cycle_id": "cycle-1",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "strategy": "tick_martingale_probe",
+                "timeframe": "TICK",
+                "source_signal_id": "sig-1",
+                "status": "open",
+                "status_reason": "initial_opened",
+                "base_volume": 0.01,
+                "total_volume": 0.03,
+                "step_count": 2,
+                "average_entry_price": 2298.5,
+                "last_entry_price": 2297.0,
+                "started_at": datetime(2026, 1, 1, 8, 16, tzinfo=timezone.utc),
+                "last_step_at": datetime(2026, 1, 1, 8, 17, tzinfo=timezone.utc),
+                "closed_at": None,
+                "close_price": None,
+                "realized_pnl": None,
+                "metadata": {"spread": 0.2},
+                "updated_at": datetime(2026, 1, 1, 8, 18, tzinfo=timezone.utc),
+            }
+        ]
+
+
+class _ClosedRecoveryTradingStateRepo(_RecoveryTradingStateRepo):
+    def fetch_pending_order_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+        return []
+
+    def fetch_position_runtime_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+        return []
+
+    def fetch_position_sl_tp_history(
+        self,
+        *,
+        account_alias=None,
+        position_tickets=None,
+        limit=500,
+    ):
+        return []
+
+    def fetch_recovery_cycle_states(
+        self,
+        *,
+        account_alias=None,
+        account_key=None,
+        statuses=None,
+        symbol=None,
+        strategy=None,
+        cycle_id=None,
+        source_signal_id=None,
+        limit=500,
+    ):
+        rows = super().fetch_recovery_cycle_states(
+            account_alias=account_alias,
+            account_key=account_key,
+            statuses=statuses,
+            symbol=symbol,
+            strategy=strategy,
+            cycle_id=cycle_id,
+            source_signal_id=source_signal_id,
+            limit=limit,
+        )
+        if not rows:
+            return []
+        return [
+            {
+                **rows[0],
+                "status": "closed",
+                "status_reason": "canary_recovery_cycle_cleanup_closed",
+                "step_count": 1,
+                "closed_at": datetime(2026, 1, 1, 8, 20, tzinfo=timezone.utc),
+                "close_price": 2300.0,
+                "updated_at": datetime(2026, 1, 1, 8, 20, tzinfo=timezone.utc),
+            }
+        ]
+
+
+class _NoPipelineTraceRepo:
+    def fetch_pipeline_trace_filtered(self, **kwargs):
+        return []
+
+    def fetch_pipeline_trace_events(self, *, trace_ids, limit: int = 500):
+        return []
+
+    def query_trace_summaries(self, **kwargs):
+        return {"items": [], "total": 0, "page": 1, "page_size": 100}
+
+
+class _NoSignalRepo:
+    def fetch_signal_event_by_id(self, *, signal_id: str, scope: str = "confirmed"):
+        return None
+
+    def fetch_signal_events_by_trace_id(self, *, trace_id: str, scope="confirmed", limit=50):
+        return []
+
+    def fetch_auto_executions(
+        self, *, signal_id: str, limit: int = 50, account_alias=None
+    ):
+        return []
+
+    def fetch_signal_outcomes(self, *, signal_id: str, limit: int = 20):
+        return []
+
+    def fetch_trade_outcomes(
+        self, *, signal_id: str, limit: int = 20, account_alias=None
+    ):
+        return []
+
 
 def test_trade_trace_projection_aggregates_signal_to_outcome_chain() -> None:
     read_model = TradingFlowTraceReadModel(
@@ -310,6 +691,94 @@ def test_trade_trace_projection_aggregates_signal_to_outcome_chain() -> None:
     assert len(trace["graph"]["edges"]) == len(trace["timeline"]) - 1
 
 
+def test_trade_trace_projection_builds_trade_lifecycle_from_position_and_audits() -> None:
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_SignalRepo(),
+        command_audit_repo=_TradeRepo(),
+        pipeline_trace_repo=_PipelineTraceRepo(),
+        trading_state_repo=_TradingStateRepo(),
+        account_alias_getter=lambda: "live",
+    )
+
+    trace = read_model.trace_by_signal_id("sig-1")
+
+    lifecycle = trace["lifecycle"]
+    assert lifecycle["summary"]["status"] == "closed"
+    assert lifecycle["summary"]["order_ticket"] == 7001
+    assert lifecycle["summary"]["position_ticket"] == 8001
+    assert lifecycle["entry"]["status"] == "filled"
+    assert lifecycle["entry"]["order_ticket"] == 7001
+    assert lifecycle["entry"]["position_ticket"] == 8001
+    assert lifecycle["management"]["update_count"] == 2
+    assert lifecycle["management"]["latest_stop_loss"] == 2395.0
+    assert lifecycle["management"]["latest_take_profit"] == 2416.0
+    assert lifecycle["exit"]["status"] == "closed"
+    assert lifecycle["exit"]["closed_at"] == "2026-01-01T09:00:00+00:00"
+    assert lifecycle["outcome"]["won"] is True
+    assert lifecycle["timeline"][0]["stage"] == "entry"
+    assert any(item["stage"] == "management" for item in lifecycle["timeline"])
+    assert lifecycle["data_gaps"] == []
+
+
+def test_trade_trace_projection_includes_recovery_cycle_state_for_signal() -> None:
+    state_repo = _RecoveryTradingStateRepo()
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_SignalRepo(),
+        command_audit_repo=_TradeRepo(),
+        pipeline_trace_repo=_PipelineTraceRepo(),
+        trading_state_repo=state_repo,
+        account_alias_getter=lambda: "live",
+    )
+
+    trace = read_model.trace_by_signal_id("sig-1")
+
+    assert state_repo.recovery_fetches[0]["source_signal_id"] == "sig-1"
+    assert trace["facts"]["recovery_cycles"][0]["cycle_id"] == "cycle-1"
+    assert trace["identifiers"]["recovery_cycle_ids"] == ["cycle-1"]
+    assert trace["summary"]["stages"]["recovery_cycle"] == "present"
+    assert trace["summary"]["recovery_cycle_status_counts"] == {"open": 1}
+    assert any(item["stage"] == "recovery.open" for item in trace["timeline"])
+
+
+def test_trade_trace_projection_links_recovery_trace_id_to_cycle_and_audit() -> None:
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_NoSignalRepo(),
+        command_audit_repo=_RecoveryTraceTradeRepo(),
+        pipeline_trace_repo=_NoPipelineTraceRepo(),
+        trading_state_repo=_RecoveryTradingStateRepo(),
+        account_alias_getter=lambda: "live",
+    )
+
+    trace = read_model.trace_by_trace_id("sig-1")
+
+    assert trace["found"] is True
+    assert trace["identifiers"]["operation_ids"] == ["recovery:cycle-1:step:1"]
+    assert trace["identifiers"]["recovery_cycle_ids"] == ["cycle-1"]
+    assert trace["summary"]["stages"]["trade_command_audit"] == "present"
+    assert trace["summary"]["stages"]["recovery_cycle"] == "present"
+
+
+def test_trade_trace_projection_marks_closed_recovery_cycle_completed() -> None:
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_NoSignalRepo(),
+        command_audit_repo=_ClosedRecoveryTraceTradeRepo(),
+        pipeline_trace_repo=_NoPipelineTraceRepo(),
+        trading_state_repo=_ClosedRecoveryTradingStateRepo(),
+        account_alias_getter=lambda: "live",
+    )
+
+    trace = read_model.trace_by_trace_id("sig-1")
+
+    assert trace["found"] is True
+    assert trace["summary"]["status"] == "completed"
+    assert trace["summary"]["last_stage"] == "recovery.closed"
+    assert trace["summary"]["command_counts"] == {
+        "execute_trade": 2,
+        "close_position": 2,
+    }
+    assert trace["summary"]["recovery_cycle_status_counts"] == {"closed": 1}
+
+
 def test_trade_trace_projection_supports_trace_id_only_chain() -> None:
     read_model = TradingFlowTraceReadModel(
         signal_repo=_SignalRepo(),
@@ -332,6 +801,58 @@ def test_trade_trace_projection_supports_trace_id_only_chain() -> None:
     assert trace["summary"]["stages"]["pipeline_execution_decision"] == "present"
     assert trace["summary"]["status"] == "completed"
     assert trace["summary"]["admission"]["decision"] == "allow"
+
+
+def test_trade_trace_projection_supports_execution_identifier_lookup() -> None:
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_SignalRepo(),
+        command_audit_repo=_TradeRepo(),
+        pipeline_trace_repo=_PipelineTraceRepo(),
+        trading_state_repo=_TradingStateRepo(),
+        account_alias_getter=lambda: "live",
+    )
+
+    trace = read_model.trace_by_intent_id("intent-1")
+
+    assert trace["found"] is True
+    assert trace["trace_id"] == "trace-1"
+    assert trace["signal_id"] == "sig-1"
+    assert trace["identifiers"]["trace_ids"] == ["trace-1"]
+    assert trace["identifiers"]["signal_ids"] == ["sig-1"]
+    assert trace["identifiers"]["intent_ids"] == ["intent-1"]
+    assert trace["identifiers"]["command_ids"] == ["cmd-1"]
+    assert trace["identifiers"]["action_ids"] == ["act-1"]
+    assert trace["identifiers"]["account_keys"] == ["demo:server:123"]
+    assert trace["summary"]["stages"]["pipeline_admission"] == "present"
+    assert trace["summary"]["admission"]["intent_id"] == "intent-1"
+
+
+def test_trade_trace_projection_resolves_action_and_command_from_command_audits() -> None:
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_NoSignalRepo(),
+        command_audit_repo=_TradeRepo(),
+        pipeline_trace_repo=_NoPipelineTraceRepo(),
+        trading_state_repo=_TradingStateRepo(),
+        account_alias_getter=lambda: "live",
+    )
+
+    by_action = read_model.trace_by_action_id("act-close")
+    by_command = read_model.trace_by_command_id("cmd-close")
+
+    assert by_action["found"] is True
+    assert by_action["trace_id"] == "close-trace"
+    assert by_action["identifiers"]["action_ids"] == ["act-close"]
+    assert by_action["identifiers"]["command_ids"] == ["cmd-close"]
+    assert by_action["identifiers"]["order_tickets"] == [7002]
+    assert by_action["summary"]["command_counts"] == {"close_position": 1}
+    assert by_action["summary"]["status"] == "completed"
+    assert by_action["timeline"][0]["stage"] == "trade.close_position"
+    assert by_command["found"] is True
+    assert by_command["trace_id"] == "close-trace"
+    assert by_command["identifiers"]["command_ids"] == ["cmd-close"]
+    assert by_command["identifiers"]["action_ids"] == ["act-close"]
+    assert by_command["identifiers"]["order_tickets"] == [7002]
+    assert by_command["summary"]["status"] == "completed"
 
 
 def test_trade_trace_directory_projection_exposes_trace_summary_list() -> None:
@@ -359,6 +880,47 @@ def test_trade_trace_directory_projection_exposes_trace_summary_list() -> None:
     assert result["items"][0]["last_stage"] == "pipeline.execution_submitted"
     assert result["items"][0]["admission"]["decision"] == "allow"
     assert result["items"][0]["admission"]["stage"] == "account_risk"
+
+
+def test_trade_trace_directory_projection_filters_execution_identifiers() -> None:
+    pipeline_repo = _PipelineTraceRepo()
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_SignalRepo(),
+        command_audit_repo=_TradeRepo(),
+        pipeline_trace_repo=pipeline_repo,
+        trading_state_repo=_TradingStateRepo(),
+        account_alias_getter=lambda: "live",
+    )
+
+    result = read_model.list_traces(
+        intent_id="intent-1",
+        command_id="cmd-1",
+        action_id="act-1",
+    )
+
+    assert result["items"][0]["intent_id"] == "intent-1"
+    assert result["items"][0]["command_id"] == "cmd-1"
+    assert result["items"][0]["action_id"] == "act-1"
+    assert result["items"][0]["admission"]["intent_id"] == "intent-1"
+    assert result["items"][0]["admission"]["command_id"] == "cmd-1"
+    assert result["items"][0]["admission"]["action_id"] == "act-1"
+    assert pipeline_repo.last_summary_query["from_time"] is None
+
+
+def test_trade_trace_directory_defaults_to_recent_window_for_broad_queries() -> None:
+    pipeline_repo = _PipelineTraceRepo()
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_SignalRepo(),
+        command_audit_repo=_TradeRepo(),
+        pipeline_trace_repo=pipeline_repo,
+        trading_state_repo=_TradingStateRepo(),
+        account_alias_getter=lambda: "live",
+    )
+
+    read_model.list_traces()
+
+    assert pipeline_repo.last_summary_query["from_time"] is not None
+    assert pipeline_repo.last_summary_query["to_time"] is None
 
 
 def test_trade_trace_reason_extractor_reads_nested_execution_skip_result() -> None:

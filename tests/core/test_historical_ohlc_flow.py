@@ -192,6 +192,11 @@ def test_backfill_writes_closed_bars_into_cache_and_event_flow() -> None:
         ingest_ohlc_timeframes=["M1"],
         ohlc_backfill_limit=10,
         connection_timeout=10.0,
+        max_concurrent_symbols=1,
+        ingest_poll_interval=0.5,
+        ingest_ohlc_interval=30.0,
+        ingest_ohlc_intervals={},
+        max_allowed_delay=60.0,
         symbol_error_threshold=5,
         symbol_cooldown_seconds=60.0,
         symbol_max_cooldown_seconds=300.0,
@@ -711,6 +716,5 @@ def test_indicator_manager_computes_only_eligible_indicators_for_short_history()
     selected = manager._select_indicator_names_for_history(available_bars=20)
 
     assert selected == ["rsi14"]
-
 
 

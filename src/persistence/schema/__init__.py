@@ -80,6 +80,8 @@ from .position_sl_tp_history import INSERT_SQL as INSERT_POSITION_SL_TP_HISTORY_
 from .quotes import DDL as QUOTES_DDL
 from .quotes import INSERT_SQL as INSERT_QUOTES_SQL
 from .recommendation import DDL as RECOMMENDATION_DDL
+from .recovery_cycle_states import DDL as RECOVERY_CYCLE_STATES_DDL
+from .recovery_cycle_states import UPSERT_SQL as UPSERT_RECOVERY_CYCLE_STATES_SQL
 from .runtime_tasks import DDL as RUNTIME_TASKS_DDL
 from .runtime_tasks import MIGRATION_SQL as RUNTIME_TASKS_MIGRATION_SQL
 from .runtime_tasks import UPSERT_SQL as UPSERT_RUNTIME_TASK_STATUS_SQL
@@ -98,10 +100,12 @@ from .signals import UPDATE_ADMISSION_SQL as UPDATE_SIGNAL_ADMISSION_SQL
 # ── Market Data ──────────────────────────────────────────────────
 from .ticks import DDL as TICKS_DDL
 from .ticks import INSERT_SQL as INSERT_TICKS_SQL
+from .ticks import MIGRATION_SQL as TICKS_MIGRATION_SQL
 
 # ── Trading State ────────────────────────────────────────────────
 from .trade_command_audits import DDL as TRADE_COMMAND_AUDITS_DDL
 from .trade_command_audits import INSERT_SQL as INSERT_TRADE_COMMAND_AUDITS_SQL
+from .trade_frequency_reservations import DDL as TRADE_FREQUENCY_RESERVATIONS_DDL
 from .trade_control_state import DDL as TRADE_CONTROL_STATE_DDL
 from .trade_control_state import MIGRATION_SQL as TRADE_CONTROL_STATE_MIGRATION_SQL
 from .trade_control_state import UPSERT_SQL as UPSERT_TRADE_CONTROL_STATE_SQL
@@ -137,6 +141,7 @@ DDL_STATEMENTS = [
     TRADE_OUTCOMES_DDL,
     # Trading state
     TRADE_COMMAND_AUDITS_DDL,
+    TRADE_FREQUENCY_RESERVATIONS_DDL,
     OPERATOR_COMMANDS_DDL,
     # §0dm P2 #4+#5：幂等 ledger 表（hypertable 唯一约束限制下的工程化方案）
     IDEMPOTENCY_LEDGER_DDL,
@@ -144,6 +149,7 @@ DDL_STATEMENTS = [
     ENTRY_POLICY_DECISIONS_DDL,
     POSITION_RUNTIME_STATES_DDL,
     POSITION_SL_TP_HISTORY_DDL,
+    RECOVERY_CYCLE_STATES_DDL,
     TRADE_CONTROL_STATE_DDL,
     CIRCUIT_BREAKER_HISTORY_DDL,
     ACCOUNT_RISK_STATE_DDL,
@@ -160,6 +166,7 @@ DDL_STATEMENTS = [
 ]
 
 POST_INIT_DDL_STATEMENTS = [
+    TICKS_MIGRATION_SQL,
     ECONOMIC_CALENDAR_MIGRATION_SQL,
     EXECUTION_INTENTS_MIGRATION_SQL,
     OPERATOR_COMMANDS_MIGRATION_SQL,
@@ -179,6 +186,7 @@ __all__ = [
     "POST_INIT_DDL_STATEMENTS",
     # Market data
     "INSERT_TICKS_SQL",
+    "TICKS_MIGRATION_SQL",
     "INSERT_QUOTES_SQL",
     "INSERT_OHLC_SQL",
     "UPSERT_OHLC_SQL",
@@ -212,6 +220,7 @@ __all__ = [
     "UPDATE_ENTRY_POLICY_DECISION_FILL_SQL",
     "UPSERT_POSITION_RUNTIME_STATES_SQL",
     "INSERT_POSITION_SL_TP_HISTORY_SQL",
+    "UPSERT_RECOVERY_CYCLE_STATES_SQL",
     "UPSERT_TRADE_CONTROL_STATE_SQL",
     "INSERT_CIRCUIT_BREAKER_HISTORY_SQL",
     "UPSERT_ACCOUNT_RISK_STATE_SQL",

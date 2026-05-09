@@ -27,6 +27,9 @@ def build_runtime_read_models(container: AppContainer) -> None:
         trading_state_store=container.trading_state_store,
         trading_state_alerts=container.trading_state_alerts,
         exposure_closeout_controller=container.exposure_closeout_controller,
+        recovery_runner=container.recovery_runner,
+        tick_feature_health_store=container.tick_feature_health_store,
+        tick_feature_bus=container.tick_feature_bus,
         runtime_mode_controller=container.runtime_mode_controller,
         runtime_identity=container.runtime_identity,
         db_writer=(

@@ -3,6 +3,7 @@
 用法：
     python -m src.ops.cli.live_preflight --environment live
     python -m src.ops.cli.live_preflight --environment demo
+    python -m src.ops.cli.live_preflight --environment demo --auto-launch-terminal
     python -m src.ops.cli.live_preflight --environment live --check-api    # 同时检查 API 是否在运行
 
 功能：
@@ -12,7 +13,9 @@
     4. TimescaleDB 连接与 schema 完整性
     5. 实盘 vs 回测参数差异对比表
 
-设计原则：不启动服务、不执行交易，只做只读检查。
+设计原则：默认不启动服务、不执行交易，只做只读检查。
+显式传入 --auto-launch-terminal 时，允许 MT5 Python API 用 mt5.local.ini 凭据
+拉起 terminal 并建立 session；该模式仍不启动本服务、不下单。
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ import warnings
 
 import logging
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from src.ops.mt5_session_gate import (
     ensure_mt5_session_gate_or_raise,
@@ -45,7 +48,11 @@ def _configure_cli_logging() -> None:
     logging.getLogger("src").setLevel(logging.WARNING)
 
 
-def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str, str]]:
+def _check_mt5_instance(
+    instance_name: str | None = None,
+    *,
+    auto_launch_terminal: bool = False,
+) -> List[Tuple[str, str, str]]:
     """检查单个实例的 MT5 会话门禁和账户。返回 [(check_name, status, detail)]。"""
     results: List[Tuple[str, str, str]] = []
     label_prefix = f"[{instance_name}] " if instance_name else ""
@@ -66,7 +73,7 @@ def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str
 
         client = MT5BaseClient(settings=mt5_cfg)
         state = client.inspect_session_state(
-            require_terminal_process=True,
+            require_terminal_process=not auto_launch_terminal,
             attempt_initialize=True,
             attempt_login=True,
             shutdown_after_probe=False,
@@ -210,7 +217,11 @@ def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str
     return results
 
 
-def _check_mt5(environment: str | None = None) -> List[Tuple[str, str, str]]:
+def _check_mt5(
+    environment: str | None = None,
+    *,
+    auto_launch_terminal: bool = False,
+) -> List[Tuple[str, str, str]]:
     try:
         from src.config.topology import load_topology_group
 
@@ -219,11 +230,16 @@ def _check_mt5(environment: str | None = None) -> List[Tuple[str, str, str]]:
             group = load_topology_group(group_name)
             results: List[Tuple[str, str, str]] = []
             for instance_name in [group.main, *group.workers]:
-                results.extend(_check_mt5_instance(instance_name))
+                results.extend(
+                    _check_mt5_instance(
+                        instance_name,
+                        auto_launch_terminal=auto_launch_terminal,
+                    )
+                )
             return results
     except Exception:
         pass
-    return _check_mt5_instance()
+    return _check_mt5_instance(auto_launch_terminal=auto_launch_terminal)
 
 
 def _check_database() -> List[Tuple[str, str, str]]:
@@ -378,6 +394,189 @@ def _check_config_consistency() -> (
     return results, diff_table
 
 
+def _check_effective_strategy_routing(environment: str) -> List[Tuple[str, str, str]]:
+    """审计 auto-trade 下可执行策略是否有正式账户路由。"""
+    results: List[Tuple[str, str, str]] = []
+    env = str(environment or "").strip().lower()
+
+    try:
+        from src.config.signal import get_signal_config
+        from src.signals.strategies.catalog import build_named_strategy_catalog
+
+        signal_cfg = get_signal_config()
+        catalog = build_named_strategy_catalog()
+        known_strategies = {str(name).strip() for name in catalog if str(name).strip()}
+        deployments = dict(getattr(signal_cfg, "strategy_deployments", {}) or {})
+        account_bindings = _normalize_account_bindings(
+            getattr(signal_cfg, "account_bindings", {}) or {}
+        )
+        account_aliases = _environment_account_aliases(env)
+        if account_aliases:
+            account_bindings = {
+                alias: strategies
+                for alias, strategies in account_bindings.items()
+                if alias in account_aliases
+            }
+
+        if not bool(getattr(signal_cfg, "auto_trade_enabled", False)):
+            results.append(
+                (
+                    "Effective strategy routing",
+                    "OK",
+                    "auto_trade_enabled=false; execution routing not required",
+                )
+            )
+            return results
+
+        bound_pairs = [
+            (account_alias, strategy_name)
+            for account_alias, strategies in account_bindings.items()
+            for strategy_name in strategies
+        ]
+        bound_strategies = {strategy_name for _, strategy_name in bound_pairs}
+
+        unknown_bound = sorted(
+            strategy_name
+            for strategy_name in bound_strategies
+            if strategy_name not in known_strategies
+        )
+        if unknown_bound:
+            results.append(
+                (
+                    "Effective strategy routing",
+                    "FAIL",
+                    "account_bindings reference unregistered strategies: "
+                    + ", ".join(unknown_bound),
+                )
+            )
+
+        missing_deployments = sorted(
+            strategy_name
+            for strategy_name in bound_strategies
+            if strategy_name in known_strategies and strategy_name not in deployments
+        )
+        if missing_deployments:
+            results.append(
+                (
+                    "Effective strategy routing",
+                    "FAIL",
+                    "account_bindings reference strategies without deployment "
+                    "contracts: "
+                    + ", ".join(missing_deployments),
+                )
+            )
+
+        executable_strategies: list[str] = []
+        non_executable_bound: list[str] = []
+        for strategy_name, deployment in deployments.items():
+            if strategy_name not in known_strategies:
+                results.append(
+                    (
+                        "Effective strategy routing",
+                        "FAIL",
+                        "strategy_deployments reference unregistered strategy: "
+                        f"{strategy_name}",
+                    )
+                )
+                continue
+            if deployment.is_executable_in(env):
+                executable_strategies.append(strategy_name)
+            elif strategy_name in bound_strategies:
+                non_executable_bound.append(strategy_name)
+
+        if non_executable_bound:
+            results.append(
+                (
+                    "Effective strategy routing",
+                    "FAIL",
+                    f"bound strategies not executable in {env}: "
+                    + ", ".join(sorted(non_executable_bound)),
+                )
+            )
+
+        unrouted = sorted(
+            strategy_name
+            for strategy_name in executable_strategies
+            if strategy_name not in bound_strategies
+        )
+        if unrouted:
+            results.append(
+                (
+                    "Effective strategy routing",
+                    "FAIL",
+                    "auto_trade_enabled=true but executable strategies are not "
+                    "bound to any account: "
+                    + ", ".join(unrouted),
+                )
+            )
+
+        if results:
+            return results
+
+        if not executable_strategies:
+            results.append(
+                (
+                    "Effective strategy routing",
+                    "OK",
+                    f"auto_trade_enabled=true; no strategy executable in {env}",
+                )
+            )
+            return results
+
+        routed = ", ".join(
+            f"{account_alias}:{strategy_name}"
+            for account_alias, strategy_name in bound_pairs
+            if strategy_name in executable_strategies
+        )
+        results.append(
+            (
+                "Effective strategy routing",
+                "OK",
+                f"auto_trade_enabled=true; routed={routed}",
+            )
+        )
+    except Exception as e:
+        results.append(("Effective strategy routing", "FAIL", str(e)))
+
+    return results
+
+
+def _normalize_account_bindings(
+    raw_bindings: Mapping[str, Sequence[str]],
+) -> dict[str, list[str]]:
+    normalized: dict[str, list[str]] = {}
+    for raw_alias, raw_strategies in raw_bindings.items():
+        account_alias = str(raw_alias).strip()
+        if not account_alias:
+            continue
+        strategies: list[str] = []
+        for raw_strategy in raw_strategies:
+            strategy_name = str(raw_strategy).strip()
+            if strategy_name and strategy_name not in strategies:
+                strategies.append(strategy_name)
+        if strategies:
+            normalized[account_alias] = strategies
+    return normalized
+
+
+def _environment_account_aliases(environment: str) -> set[str]:
+    try:
+        from src.config.topology import load_topology_group
+
+        group = load_topology_group(environment)
+    except Exception:
+        return set()
+
+    aliases: set[str] = set()
+    for raw_instance in tuple(getattr(group, "instances", (group.main, *group.workers))):
+        instance_name = str(raw_instance).strip()
+        if not instance_name:
+            continue
+        aliases.add(instance_name)
+        aliases.add(instance_name.replace("-", "_"))
+    return aliases
+
+
 def _check_risk_safety() -> List[Tuple[str, str, str]]:
     """风控参数安全性审查。"""
     results: List[Tuple[str, str, str]] = []
@@ -440,6 +639,151 @@ def _check_risk_safety() -> List[Tuple[str, str, str]]:
 
     except Exception as e:
         results.append(("Risk config", "FAIL", str(e)))
+
+    return results
+
+
+def _load_instance_risk_config(instance_name: str):
+    from src.config.models import RiskConfig
+    from src.config.risk import normalize_risk_config_payload
+    from src.config.utils import load_config_with_base
+
+    _, parser = load_config_with_base("risk.ini", instance_name=instance_name)
+    if parser is None or not parser.has_section("risk"):
+        return RiskConfig()
+    preflight_policy = (
+        dict(parser.items("preflight_risk_policy"))
+        if parser.has_section("preflight_risk_policy")
+        else {}
+    )
+    return RiskConfig.model_validate(
+        normalize_risk_config_payload(dict(parser.items("risk")), preflight_policy)
+    )
+
+
+def _check_instance_risk_safety(environment: str) -> List[Tuple[str, str, str]]:
+    """按 topology 实例审计 local 覆盖后的有效风控。"""
+    env = str(environment or "").strip().lower()
+
+    try:
+        from src.config.topology import load_topology_group
+
+        group = load_topology_group(env)
+        instance_names = tuple(
+            getattr(group, "instances", (group.main, *group.workers))
+        )
+    except Exception as e:
+        return [("Instance risk topology", "FAIL", str(e))]
+
+    results: List[Tuple[str, str, str]] = []
+    for instance_name in instance_names:
+        try:
+            risk_cfg = _load_instance_risk_config(str(instance_name))
+        except Exception as e:
+            results.append((f"[{instance_name}] Risk config", "FAIL", str(e)))
+            continue
+
+        results.extend(_evaluate_instance_risk(str(instance_name), risk_cfg, env))
+
+    return results
+
+
+def _evaluate_instance_risk(
+    instance_name: str,
+    risk_cfg: Any,
+    environment: str,
+) -> List[Tuple[str, str, str]]:
+    label = f"[{instance_name}] "
+    live_env = str(environment or "").strip().lower() == "live"
+    results: List[Tuple[str, str, str]] = []
+    from src.config.models import PreflightRiskPolicy
+
+    policy = getattr(risk_cfg, "preflight_policy", None) or PreflightRiskPolicy()
+
+    data_policy = str(
+        getattr(risk_cfg, "data_unavailable_policy", "") or ""
+    ).strip().lower()
+    if not data_policy:
+        status = "FAIL" if live_env else "WARN"
+        detail = "not set; live hard-risk fact sources must fail closed"
+    elif live_env and data_policy != "fail_closed":
+        status = "FAIL"
+        detail = f"{data_policy}; live hard-risk fact sources must use fail_closed"
+    else:
+        status = "OK"
+        detail = data_policy
+    results.append((f"{label}Risk: data_unavailable_policy", status, detail))
+
+    max_positions = getattr(risk_cfg, "max_positions_per_symbol", None)
+    if max_positions is None:
+        status = "FAIL" if live_env else "WARN"
+        detail = "not set; instance can accumulate unlimited same-symbol positions"
+    elif live_env and int(max_positions) > int(policy.live_max_positions_per_symbol):
+        status = "FAIL"
+        detail = (
+            f"{max_positions}; live limit must be "
+            f"<={policy.live_max_positions_per_symbol}"
+        )
+    else:
+        status = "OK"
+        detail = f"{max_positions}"
+    results.append((f"{label}Risk: max_positions_per_symbol", status, detail))
+
+    max_order_volume = getattr(risk_cfg, "max_volume_per_order", None)
+    if max_order_volume is None:
+        status = "FAIL" if live_env else "WARN"
+        detail = "not set; per-order lot cap is required"
+    elif live_env and float(max_order_volume) > float(policy.live_max_volume_per_order):
+        status = "FAIL"
+        detail = (
+            f"{max_order_volume} lots; live cap must be "
+            f"<={policy.live_max_volume_per_order}"
+        )
+    else:
+        status = "OK"
+        detail = f"{max_order_volume} lots"
+    results.append((f"{label}Risk: max_volume_per_order", status, detail))
+
+    max_symbol_volume = getattr(risk_cfg, "max_volume_per_symbol", None)
+    if max_symbol_volume is None:
+        status = "FAIL" if live_env else "WARN"
+        detail = "not set; per-symbol aggregate lot cap is required"
+    elif live_env and float(max_symbol_volume) > float(
+        policy.live_max_volume_per_symbol
+    ):
+        status = "FAIL"
+        detail = (
+            f"{max_symbol_volume} lots; live aggregate cap must be "
+            f"<={policy.live_max_volume_per_symbol}"
+        )
+    else:
+        status = "OK"
+        detail = f"{max_symbol_volume} lots"
+    results.append((f"{label}Risk: max_volume_per_symbol", status, detail))
+
+    daily_limit = getattr(risk_cfg, "daily_loss_limit_pct", None)
+    if daily_limit is None:
+        status = "FAIL" if live_env else "WARN"
+        detail = "not set; daily loss circuit breaker is required"
+    elif live_env and float(daily_limit) > float(policy.live_max_daily_loss_limit_pct):
+        status = "FAIL"
+        detail = (
+            f"{daily_limit}%; live cap must be "
+            f"<={policy.live_max_daily_loss_limit_pct}%"
+        )
+    else:
+        status = "OK"
+        detail = f"{daily_limit}%"
+    results.append((f"{label}Risk: daily_loss_limit_pct", status, detail))
+
+    max_trades = getattr(risk_cfg, "max_trades_per_day", None)
+    if max_trades is None:
+        status = "WARN"
+        detail = "not set; daily trade count is unlimited"
+    else:
+        status = "OK"
+        detail = f"{max_trades}"
+    results.append((f"{label}Risk: max_trades_per_day", status, detail))
 
     return results
 
@@ -577,13 +921,26 @@ def main() -> None:
     parser.add_argument(
         "--check-api", action="store_true", help="Also check API service"
     )
+    parser.add_argument(
+        "--auto-launch-terminal",
+        action="store_true",
+        help=(
+            "Allow MT5 Python API to launch terminal and login using mt5.local.ini "
+            "credentials during the MT5 session check"
+        ),
+    )
     args = parser.parse_args()
     set_current_environment(args.environment)
 
     all_checks: List[Tuple[str, str, str]] = []
 
     sys.stderr.write("Checking MT5 connection...\n")
-    all_checks.extend(_check_mt5(args.environment))
+    all_checks.extend(
+        _check_mt5(
+            args.environment,
+            auto_launch_terminal=args.auto_launch_terminal,
+        )
+    )
 
     sys.stderr.write("Checking database...\n")
     all_checks.extend(_check_database())
@@ -592,8 +949,12 @@ def main() -> None:
     config_checks, diff_table = _check_config_consistency()
     all_checks.extend(config_checks)
 
+    sys.stderr.write("Checking effective strategy routing...\n")
+    all_checks.extend(_check_effective_strategy_routing(args.environment))
+
     sys.stderr.write("Checking risk safety...\n")
     all_checks.extend(_check_risk_safety())
+    all_checks.extend(_check_instance_risk_safety(args.environment))
 
     if args.check_api:
         sys.stderr.write("Checking API service...\n")

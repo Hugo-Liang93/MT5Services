@@ -75,6 +75,9 @@ LIMIT %s
         timeframe: str | None = None,
         strategy: str | None = None,
         signal_id: str | None = None,
+        intent_id: str | None = None,
+        command_id: str | None = None,
+        action_id: str | None = None,
         status: str | None = None,
         from_time: Any = None,
         to_time: Any = None,
@@ -227,6 +230,15 @@ WHERE 1=1
         if signal_id:
             sql += " AND signal_id = %s"
             params.append(signal_id)
+        if intent_id:
+            sql += " AND intent_id = %s"
+            params.append(intent_id)
+        if command_id:
+            sql += " AND command_id = %s"
+            params.append(command_id)
+        if action_id:
+            sql += " AND action_id = %s"
+            params.append(action_id)
         if status:
             sql += """
  AND CASE
@@ -274,6 +286,10 @@ WHERE 1=1
         trace_id: str | None = None,
         instance_id: str | None = None,
         account_key: str | None = None,
+        signal_id: str | None = None,
+        intent_id: str | None = None,
+        command_id: str | None = None,
+        action_id: str | None = None,
         symbol: str | None = None,
         timeframe: str | None = None,
         event_type: str | None = None,
@@ -293,6 +309,18 @@ WHERE 1=1
         if account_key:
             conditions.append("account_key = %s")
             params.append(account_key)
+        if signal_id:
+            conditions.append("signal_id = %s")
+            params.append(signal_id)
+        if intent_id:
+            conditions.append("intent_id = %s")
+            params.append(intent_id)
+        if command_id:
+            conditions.append("command_id = %s")
+            params.append(command_id)
+        if action_id:
+            conditions.append("action_id = %s")
+            params.append(action_id)
         if symbol:
             conditions.append("symbol = %s")
             params.append(symbol)

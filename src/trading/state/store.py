@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
 from src.signals.metadata_keys import MetadataKey as MK
+from src.trading.recovery import RecoveryCycleState, RecoveryCycleStateRecord
 
 from ..positions.manager import TrackedPosition
 from ..reasons import (
@@ -12,7 +13,7 @@ from ..reasons import (
     REASON_PLACED_BY_EXECUTOR,
     REASON_RECOVERED_FROM_MT5_WITHOUT_LOCAL_STATE,
 )
-from ..trade_events import POSITION_TRACKED
+from ..trade_events import POSITION_CLOSE_SOURCE_MT5_MISSING, POSITION_TRACKED
 from .models import (
     PendingOrderStateRecord,
     PositionRuntimeStateRecord,
@@ -129,6 +130,75 @@ class TradingStateStore:
             statuses=statuses,
             limit=limit,
         )
+
+    def record_recovery_cycle_state(
+        self,
+        cycle: RecoveryCycleState,
+        *,
+        status_reason: str | None = None,
+        closed_at: datetime | None = None,
+        close_price: float | None = None,
+        realized_pnl: float | None = None,
+    ) -> None:
+        account_key = self._account_key_getter()
+        if not account_key:
+            raise ValueError("account_key is required for recovery_cycle_state")
+        if cycle.account_key != account_key:
+            raise ValueError(
+                f"recovery_cycle_state account_key mismatch: "
+                f"cycle={cycle.account_key!r}, store={account_key!r}"
+            )
+        record = RecoveryCycleStateRecord.from_cycle(
+            cycle,
+            account_alias=self._account_alias_getter(),
+            account_key=account_key,
+            status_reason=status_reason,
+            closed_at=closed_at,
+            close_price=close_price,
+            realized_pnl=realized_pnl,
+        )
+        self._db.write_recovery_cycle_states([record.to_row()])
+
+    def list_recovery_cycle_states(
+        self,
+        *,
+        statuses: Optional[list[str]] = None,
+        symbol: str | None = None,
+        strategy: str | None = None,
+        cycle_id: str | None = None,
+        source_signal_id: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        account_key = self._account_key_getter()
+        if not account_key:
+            raise ValueError("account_key is required for recovery_cycle_state")
+        return self._db.fetch_recovery_cycle_states(
+            account_key=account_key,
+            statuses=statuses,
+            symbol=symbol,
+            strategy=strategy,
+            cycle_id=cycle_id,
+            source_signal_id=source_signal_id,
+            limit=limit,
+        )
+
+    def load_open_recovery_cycle(
+        self,
+        *,
+        symbol: str,
+        strategy: str | None = None,
+        cycle_id: str | None = None,
+    ) -> RecoveryCycleState | None:
+        rows = self.list_recovery_cycle_states(
+            statuses=["open"],
+            symbol=symbol,
+            strategy=strategy,
+            cycle_id=cycle_id,
+            limit=1,
+        )
+        if not rows:
+            return None
+        return self._recovery_cycle_from_row(dict(rows[0]))
 
     def record_pending_order_placed(self, info: dict[str, Any]) -> None:
         now = self._now()
@@ -369,6 +439,51 @@ class TradingStateStore:
         )
         self._db.write_position_runtime_states([record.to_row()])
         self._position_cache.pop(int(pos.ticket), None)
+
+    def mark_position_missing(self, row: dict[str, Any], *, reason: str) -> None:
+        ticket = self._int_or_none(row.get("position_ticket"))
+        if ticket is None or ticket <= 0:
+            return
+        now = self._now()
+        metadata = dict(row.get("metadata") or {})
+        metadata.update({"source": "state_recovery", "reason": reason})
+        record = PositionRuntimeStateRecord(
+            account_alias=str(row.get("account_alias") or self._account_alias_getter()),
+            account_key=str(row.get("account_key") or self._account_key_getter()),
+            position_ticket=ticket,
+            signal_id=self._str_or_none(row.get("signal_id")),
+            order_ticket=self._int_or_none(row.get("order_ticket")),
+            symbol=str(row.get("symbol") or ""),
+            direction=str(row.get("direction") or ""),
+            timeframe=str(row.get("timeframe") or ""),
+            strategy=str(row.get("strategy") or ""),
+            comment=str(row.get("comment") or ""),
+            entry_price=self._float_or_none(row.get("entry_price")),
+            initial_stop_loss=self._float_or_none(row.get("initial_stop_loss")),
+            initial_take_profit=self._float_or_none(row.get("initial_take_profit")),
+            current_stop_loss=self._float_or_none(row.get("current_stop_loss")),
+            current_take_profit=self._float_or_none(row.get("current_take_profit")),
+            volume=self._float_or_none(row.get("volume")),
+            atr_at_entry=self._float_or_none(row.get("atr_at_entry")),
+            confidence=self._float_or_none(row.get("confidence")),
+            regime=self._str_or_none(row.get("regime")),
+            opened_at=self._datetime_or_none(row.get("opened_at")),
+            last_seen_at=now,
+            last_managed_at=self._datetime_or_none(row.get("last_managed_at")),
+            highest_price=self._float_or_none(row.get("highest_price")),
+            lowest_price=self._float_or_none(row.get("lowest_price")),
+            current_price=self._float_or_none(row.get("current_price")),
+            breakeven_applied=bool(row.get("breakeven_applied", False)),
+            trailing_active=bool(row.get("trailing_active", False)),
+            status="closed",
+            closed_at=now,
+            close_source=POSITION_CLOSE_SOURCE_MT5_MISSING,
+            close_price=None,
+            metadata=metadata,
+            updated_at=now,
+        )
+        self._db.write_position_runtime_states([record.to_row()])
+        self._position_cache.pop(ticket, None)
 
     def sync_trade_control(self, state: dict[str, Any]) -> None:
         metadata = {
@@ -626,6 +741,34 @@ class TradingStateStore:
         if isinstance(row, dict):
             return row.get(field, default)
         return getattr(row, field, default)
+
+    @staticmethod
+    def _recovery_cycle_from_row(row: dict[str, Any]) -> RecoveryCycleState:
+        started_at = TradingStateStore._datetime_or_none(row.get("started_at"))
+        updated_at = TradingStateStore._datetime_or_none(row.get("updated_at"))
+        if started_at is None or updated_at is None:
+            raise ValueError("recovery_cycle_state row is missing required timestamps")
+        return RecoveryCycleState(
+            cycle_id=str(row.get("cycle_id") or ""),
+            account_key=str(row.get("account_key") or ""),
+            symbol=str(row.get("symbol") or ""),
+            direction=str(row.get("direction") or ""),
+            status=str(row.get("status") or ""),
+            base_volume=float(row.get("base_volume") or 0),
+            total_volume=float(row.get("total_volume") or 0),
+            step_count=int(row.get("step_count") or 0),
+            average_entry_price=float(row.get("average_entry_price") or 0),
+            last_entry_price=float(row.get("last_entry_price") or 0),
+            started_at=started_at,
+            updated_at=updated_at,
+            last_step_at=TradingStateStore._datetime_or_none(row.get("last_step_at")),
+            strategy=str(row.get("strategy") or ""),
+            timeframe=str(row.get("timeframe") or ""),
+            source_signal_id=TradingStateStore._str_or_none(
+                row.get("source_signal_id")
+            ),
+            metadata=dict(row.get("metadata") or {}),
+        )
 
     @staticmethod
     def _direction_from_order(order_row: Any) -> str:

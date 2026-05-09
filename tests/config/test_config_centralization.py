@@ -5,6 +5,7 @@ from src.config import (
     get_ingest_config,
     get_interval_config,
     get_limit_config,
+    get_tick_feature_config,
     get_runtime_ingest_settings,
     get_runtime_market_settings,
     get_shared_default_symbol,
@@ -34,10 +35,18 @@ def test_centralized_config():
     intervals = get_interval_config()
     assert intervals.poll_interval == 0.5
     assert intervals.ohlc_interval == 30.0
+    assert intervals.ohlc_intervals["M1"] <= 5.0
+    assert intervals.ohlc_intervals["M5"] <= 10.0
+    assert intervals.ohlc_intervals["D1"] >= 60.0
 
     limits = get_limit_config()
     assert limits.tick_limit == 200
     assert limits.ohlc_limit == 200
+
+    tick_features = get_tick_feature_config()
+    assert tick_features.point_size_by_symbol["XAUUSD"] == 0.01
+    assert tick_features.max_spread_points_by_symbol["XAUUSD"] >= 50.0
+    assert tick_features.emit_interval_seconds <= 1.0
 
     api = get_api_config()
     assert api.host == "0.0.0.0"
@@ -64,6 +73,9 @@ def test_runtime_views_align_with_centralized_config():
     assert ingest_settings.ingest_symbols == ["XAUUSD"]
     assert ingest_settings.ingest_poll_interval == 0.5
     assert "M5" in ingest_settings.ingest_ohlc_timeframes or "H1" in ingest_settings.ingest_ohlc_timeframes
+    assert ingest_settings.ingest_ohlc_intervals["M1"] <= 5.0
+    assert ingest_settings.ingest_ohlc_intervals["M5"] <= 10.0
+    assert ingest_settings.ingest_ohlc_intervals["D1"] >= 60.0
     assert hasattr(ingest_settings, "intrabar_enabled")
 
     assert market_settings.default_symbol == "XAUUSD"

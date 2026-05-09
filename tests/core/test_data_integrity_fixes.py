@@ -782,9 +782,35 @@ def test_timescale_writer_normalizes_tick_rows_with_time_msc() -> None:
     captured = []
     writer._batch = lambda sql, rows, page_size=1000: captured.extend(rows)
 
-    writer.write_ticks([("XAUUSD", 100.0, 1.0, "2026-01-01T00:00:00.123000+00:00")])
+    writer.write_ticks(
+        [
+            (
+                "XAUUSD",
+                100.0,
+                99.9,
+                100.1,
+                100.0,
+                1.0,
+                "2026-01-01T00:00:00.123000+00:00",
+                1767225600123,
+                6,
+            )
+        ]
+    )
 
-    assert captured == [("XAUUSD", 100.0, 1.0, "2026-01-01T00:00:00.123000+00:00", 1767225600123)]
+    assert captured == [
+        (
+            "XAUUSD",
+            100.0,
+            99.9,
+            100.1,
+            100.0,
+            1.0,
+            "2026-01-01T00:00:00.123000+00:00",
+            1767225600123,
+            6,
+        )
+    ]
 
 
 def test_storage_writer_stats_include_queue_summary() -> None:
@@ -865,17 +891,23 @@ def test_tick_schema_includes_time_msc_backfill_migration() -> None:
 def test_market_service_merge_ticks_orders_by_time_msc() -> None:
     tick_late = Tick(
         symbol="XAUUSD",
-        price=1.0,
+        bid=0.9,
+        ask=1.1,
+        last=1.0,
         volume=1.0,
         time=datetime(2026, 1, 1, 0, 0, 0, 200000, tzinfo=timezone.utc),
         time_msc=1767225600200,
+        flags=6,
     )
     tick_early = Tick(
         symbol="XAUUSD",
-        price=1.0,
+        bid=0.9,
+        ask=1.1,
+        last=1.0,
         volume=1.0,
         time=datetime(2026, 1, 1, 0, 0, 0, 100000, tzinfo=timezone.utc),
         time_msc=1767225600100,
+        flags=6,
     )
 
     merged = MarketDataService._merge_ticks([tick_late], [tick_early])

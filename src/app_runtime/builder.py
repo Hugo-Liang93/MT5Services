@@ -16,6 +16,7 @@ from src.app_runtime.builder_phases import (
     build_market_layer,
     build_monitoring_layer,
     build_notifications_layer,
+    build_recovery_runtime_layer,
     build_runtime_controls,
     build_runtime_read_models,
     build_signal_layer,
@@ -116,6 +117,7 @@ def build_app_container(
     ingest_settings = get_runtime_ingest_settings()
     market_settings = get_runtime_market_settings()
     signal_config = signal_config_loader()
+    risk_config = get_risk_config()
     runtime_identity = container.runtime_identity
     is_executor = runtime_identity.instance_role == "executor"
 
@@ -149,6 +151,12 @@ def build_app_container(
             signal_config_loader=signal_config_loader,
             signal_config=signal_config,
         )
+    if risk_config.recovery_runtime_runner.enabled and is_executor:
+        raise RuntimeError("recovery_runtime_runner must run on a market-data instance")
+    build_recovery_runtime_layer(
+        container,
+        risk_config=risk_config,
+    )
 
     # Runtime control plane
     build_runtime_controls(
@@ -181,7 +189,7 @@ def build_app_container(
         json.dumps(
             {
                 **get_effective_config_snapshot(),
-                "risk": get_risk_config().model_dump(),
+                "risk": risk_config.model_dump(),
                 "active_trading_account": active_account_alias,
                 "runtime_identity": (
                     container.runtime_identity.__dict__

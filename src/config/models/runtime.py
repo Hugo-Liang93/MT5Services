@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TradingConfig(BaseModel):
@@ -14,6 +14,7 @@ class TradingConfig(BaseModel):
 class IntervalConfig(BaseModel):
     poll_interval: float = 0.5
     ohlc_interval: float = 30.0
+    ohlc_intervals: Dict[str, float] = Field(default_factory=dict)
     stream_interval: float = 1.0
     indicator_reload_interval: float = 60.0
 
@@ -24,6 +25,19 @@ class LimitConfig(BaseModel):
     tick_cache_size: int = 5000
     ohlc_cache_limit: int = 500
     quote_stale_seconds: float = 1.0
+
+
+class TickFeatureRuntimeConfig(BaseModel):
+    window_seconds: float = 5.0
+    emit_interval_seconds: float = 1.0
+    max_quote_age_ms: int = 1500
+    max_spread_points: float = 30.0
+    min_ticks_per_window: int = 3
+    point_size: float = 0.00001
+    max_snapshot_age_seconds: float = 3.0
+    bus_maxlen: int = 4096
+    point_size_by_symbol: Dict[str, float] = Field(default_factory=dict)
+    max_spread_points_by_symbol: Dict[str, float] = Field(default_factory=dict)
 
 
 class SystemConfig(BaseModel):
@@ -179,6 +193,172 @@ class EconomicConfig(BaseModel):
     market_impact_med_spike_buffer_minutes: int = 45
 
 
+class PreflightRiskPolicy(BaseModel):
+    live_max_positions_per_symbol: int = 3
+    live_max_volume_per_order: float = 0.03
+    live_max_volume_per_symbol: float = 0.03
+    live_max_daily_loss_limit_pct: float = 5.0
+
+
+class RecoveryExecutionCanaryConfig(BaseModel):
+    enabled: bool = False
+    dry_run: bool = True
+    order_kind: Literal["market", "limit", "stop"] = "market"
+    deviation: int = 20
+    magic: int = 0
+    comment_prefix: str = "recovery"
+    protective_stop_points: float | None = None
+
+
+class RecoveryRuntimeRunnerConfig(BaseModel):
+    enabled: bool = False
+    dry_run: bool = True
+    demo_only: bool = True
+    symbol: str = "XAUUSD"
+    direction: Literal["buy", "sell"] = "buy"
+    strategy: str = "tick_martingale_probe"
+    timeframe: str = "TICK"
+    base_volume: float = 0.01
+    multiplier: float = 2.0
+    max_steps: int = 1
+    max_total_volume: float = 0.03
+    max_next_volume: float | None = 0.02
+    step_distance_points: float = 80.0
+    max_step_adverse_move_points: float = 0.0
+    recovery_target_points: float = 5.0
+    point: float = 0.01
+    min_step_interval_ms: int = 0
+    volume_step: float = 0.01
+    contract_size: float = 100.0
+    direction_mode: Literal["fixed", "auto"] = "fixed"
+    min_directional_move_points: float = 0.0
+    max_directional_move_points: float = 0.0
+    min_pressure_delta: float = 0.0
+    max_entry_spread_points: float | None = None
+    slippage_budget_points: float = 0.0
+    commission_points: float = 0.0
+    min_net_profit_points: float = 0.0
+    max_cycle_loss_points: float = 0.0
+    max_cycle_duration_seconds: float = 0.0
+    max_steps_exit_mode: Literal["hold", "close_cycle"] = "hold"
+    max_steps_hold_seconds: float = 0.0
+    entry_confirmation_snapshots: int = 1
+    entry_confirmation_max_gap_seconds: float = 3.0
+    order_kind: Literal["market", "limit", "stop"] = "market"
+    deviation: int = 20
+    magic: int = 0
+    comment_prefix: str = "recovery-runner"
+    protective_stop_points: float | None = 80.0
+    max_cycles_per_session: int = 1
+    max_cycles_per_day: int = 0
+    min_cycle_interval_seconds: float = 0.0
+    cooldown_after_cycle_close_seconds: float = 0.0
+    max_cycles_per_hour: int = 0
+    snapshot_stale_seconds: float = 5.0
+    blocked_dispatch_retry_seconds: float = 30.0
+    real_trade_calibration_guard_enabled: bool = True
+    real_trade_calibration_min_samples: int = 50
+    real_trade_calibration_max_target_shortfall_p90_points: float = 0.0
+    real_trade_calibration_min_net_margin_p50_points: float = 0.0
+    risk_profile: str = "recovery_budgeted"
+    max_daily_recovery_loss_amount: float = 0.0
+    max_rolling_recovery_loss_amount: float = 0.0
+    rolling_loss_window_minutes: int = 60
+    max_consecutive_loss_cycles: int = 0
+    loss_lockout_minutes: int = 0
+
+
+RiskPreTradeRuleName = Literal[
+    "account_snapshot",
+    "daily_loss_limit",
+    "margin_availability",
+    "trade_frequency",
+    "protection",
+    "session_window",
+    "market_structure",
+    "economic_event",
+    "calendar_health",
+]
+
+
+def _standard_kline_pre_trade_rules() -> List[RiskPreTradeRuleName]:
+    return [
+        "account_snapshot",
+        "daily_loss_limit",
+        "margin_availability",
+        "trade_frequency",
+        "protection",
+        "session_window",
+        "market_structure",
+        "economic_event",
+        "calendar_health",
+    ]
+
+
+def _recovery_budgeted_pre_trade_rules() -> List[RiskPreTradeRuleName]:
+    return [
+        "account_snapshot",
+        "daily_loss_limit",
+        "margin_availability",
+        "protection",
+        "session_window",
+        "economic_event",
+        "calendar_health",
+    ]
+
+
+class RiskProfileConfig(BaseModel):
+    policy: Literal["standard_kline", "recovery_budgeted"] = "standard_kline"
+    trade_frequency_enabled: bool = True
+    pre_trade_rules: List[RiskPreTradeRuleName] = Field(
+        default_factory=_standard_kline_pre_trade_rules
+    )
+    max_daily_recovery_loss_amount: float | None = None
+    max_rolling_recovery_loss_amount: float | None = None
+    rolling_loss_window_minutes: int = 60
+    max_consecutive_loss_cycles: int = 0
+    loss_lockout_minutes: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_policy_rule_defaults(cls, data):
+        if not isinstance(data, dict):
+            return data
+        if "pre_trade_rules" in data:
+            return data
+        policy = str(data.get("policy") or "standard_kline").strip()
+        payload = dict(data)
+        if policy == "recovery_budgeted":
+            payload["pre_trade_rules"] = _recovery_budgeted_pre_trade_rules()
+        else:
+            payload["pre_trade_rules"] = _standard_kline_pre_trade_rules()
+        return payload
+
+    @model_validator(mode="after")
+    def _validate_trade_frequency_flag(self):
+        enabled_by_rules = "trade_frequency" in set(self.pre_trade_rules)
+        if bool(self.trade_frequency_enabled) != enabled_by_rules:
+            raise ValueError(
+                "trade_frequency_enabled must match pre_trade_rules"
+            )
+        return self
+
+
+def _default_risk_profiles() -> Dict[str, RiskProfileConfig]:
+    return {
+        "standard_kline": RiskProfileConfig(
+            policy="standard_kline",
+            trade_frequency_enabled=True,
+            pre_trade_rules=_standard_kline_pre_trade_rules(),
+        ),
+        "recovery_budgeted": RiskProfileConfig(
+            policy="recovery_budgeted",
+            trade_frequency_enabled=False,
+            pre_trade_rules=_recovery_budgeted_pre_trade_rules(),
+        ),
+    }
+
+
 class RiskConfig(BaseModel):
     enabled: bool = True
     allowed_sessions: str = ""
@@ -193,6 +373,19 @@ class RiskConfig(BaseModel):
     market_order_protection: Literal["off", "sl", "sl_or_tp"] = "sl"
     # 保证金安全系数（1.2 = 要求可用保证金 >= 预估保证金 × 1.2）
     margin_safety_factor: float | None = 1.2
+    # 风控事实源不可用时的策略：warn_only=记录告警后放行；fail_closed=拒绝新单。
+    data_unavailable_policy: Literal["warn_only", "fail_closed"] = "warn_only"
+    preflight_policy: PreflightRiskPolicy = Field(default_factory=PreflightRiskPolicy)
+    recovery_execution_canary: RecoveryExecutionCanaryConfig = Field(
+        default_factory=RecoveryExecutionCanaryConfig
+    )
+    recovery_runtime_runner: RecoveryRuntimeRunnerConfig = Field(
+        default_factory=RecoveryRuntimeRunnerConfig
+    )
+    risk_profiles: Dict[str, RiskProfileConfig] = Field(
+        default_factory=_default_risk_profiles
+    )
+    risk_profile_bindings: Dict[str, str] = Field(default_factory=dict)
     # 交易频率限制（None 或 0 = 不限制）
     max_trades_per_day: int | None = None
     max_trades_per_hour: int | None = None

@@ -11,6 +11,8 @@ from .params import compute_params as _compute_params_helper
 from .params import estimate_cost_metrics as _estimate_cost_metrics_helper
 from .pending_orders import submit_pending_entry as _submit_pending_entry_helper
 from .reasons import (
+    REASON_ENTRY_POLICY_UNAVAILABLE,
+    REASON_PENDING_ENTRY_MANAGER_UNAVAILABLE,
     REASON_SINGLE_TRADE_LOSS_CAP,
     REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH,
     REASON_TRADE_PARAMS_UNAVAILABLE,
@@ -81,15 +83,31 @@ class ExecutionDecisionEngine:
         # ADR-013: 单次 derive，落地到 event.metadata[ENTRY_SPEC_GROUP]，
         # 后续 pre_trade_checks / submit_pending_entry / readmodel 全部复用。
         group = ensure_entry_spec_group(self._executor, event, trade_params)
+        if group is None:
+            return ExecutionDecision(
+                trade_params=trade_params,
+                cost_metrics=cost_metrics,
+                use_market=False,
+                entry_type="",
+                reject_reason=REASON_ENTRY_POLICY_UNAVAILABLE,
+                spread_to_stop_ratio=spread_to_stop_ratio,
+            )
         if group is not None and group.is_oco:
             entry_type = "oco"
         elif group is not None and len(group.members) == 1:
             entry_type = group.members[0].entry_type.value
         else:
             entry_type = "market"
-        use_market = (
-            group_is_market_only(group) or self._executor.pending_manager is None
-        )
+        use_market = group_is_market_only(group)
+        if not use_market and self._executor.pending_manager is None:
+            return ExecutionDecision(
+                trade_params=trade_params,
+                cost_metrics=cost_metrics,
+                use_market=False,
+                entry_type=entry_type,
+                reject_reason=REASON_PENDING_ENTRY_MANAGER_UNAVAILABLE,
+                spread_to_stop_ratio=spread_to_stop_ratio,
+            )
         return ExecutionDecision(
             trade_params=trade_params,
             cost_metrics=cost_metrics,
@@ -131,7 +149,7 @@ class ExecutionDecisionEngine:
     def execute(self, event: "SignalEvent", decision: ExecutionDecision) -> Any | None:
         if decision.trade_params is None:
             return None
-        if decision.use_market or self._executor.pending_manager is None:
+        if decision.use_market:
             return _execute_market_order_helper(
                 self._executor,
                 event,
@@ -167,16 +185,32 @@ class ExecutionDecisionEngine:
                 reject_reason=REASON_SINGLE_TRADE_LOSS_CAP,
             )
         group = ensure_entry_spec_group(self._executor, event, trade_params)
+        if group is None:
+            return ExecutionDecision(
+                trade_params=trade_params,
+                cost_metrics=cost_metrics,
+                use_market=False,
+                entry_type="",
+                reject_reason=REASON_ENTRY_POLICY_UNAVAILABLE,
+            )
         if group is not None and group.is_oco:
             entry_type = "oco"
         elif group is not None and len(group.members) == 1:
             entry_type = group.members[0].entry_type.value
         else:
             entry_type = "market"
+        use_market = group_is_market_only(group)
+        if not use_market and self._executor.pending_manager is None:
+            return ExecutionDecision(
+                trade_params=trade_params,
+                cost_metrics=cost_metrics,
+                use_market=False,
+                entry_type=entry_type,
+                reject_reason=REASON_PENDING_ENTRY_MANAGER_UNAVAILABLE,
+            )
         return ExecutionDecision(
             trade_params=trade_params,
             cost_metrics=cost_metrics,
-            use_market=group_is_market_only(group)
-            or self._executor.pending_manager is None,
+            use_market=use_market,
             entry_type=entry_type,
         )

@@ -17,6 +17,44 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class SignalScopeError(ValueError):
+    """Raised when an event uses an unsupported SignalRuntime scope."""
+
+
+def _dequeue_non_confirmed_nowait(runtime: "SignalRuntime") -> tuple | None:
+    queues = (
+        (runtime._intrabar_events, runtime._tick_derived_events)
+        if runtime._non_confirmed_turn % 2 == 0
+        else (runtime._tick_derived_events, runtime._intrabar_events)
+    )
+    runtime._non_confirmed_turn += 1
+    for candidate in queues:
+        try:
+            return candidate.get_nowait()
+        except queue.Empty:
+            continue
+    return None
+
+
+def _dequeue_non_confirmed(runtime: "SignalRuntime", timeout: float) -> tuple | None:
+    event = _dequeue_non_confirmed_nowait(runtime)
+    if event is not None:
+        return event
+    queues = (
+        (runtime._intrabar_events, runtime._tick_derived_events)
+        if runtime._non_confirmed_turn % 2 == 0
+        else (runtime._tick_derived_events, runtime._intrabar_events)
+    )
+    runtime._non_confirmed_turn += 1
+    try:
+        return queues[0].get(timeout=timeout)
+    except queue.Empty:
+        try:
+            return queues[1].get_nowait()
+        except queue.Empty:
+            return None
+
+
 def dequeue_event(runtime: "SignalRuntime", timeout: float) -> tuple | None:
     try:
         event = runtime._confirmed_events.get_nowait()
@@ -24,23 +62,22 @@ def dequeue_event(runtime: "SignalRuntime", timeout: float) -> tuple | None:
         if runtime._confirmed_burst_count >= runtime._CONFIRMED_BURST_LIMIT:
             runtime._confirmed_burst_count = 0
             try:
-                intrabar_event = runtime._intrabar_events.get_nowait()
+                non_confirmed_event = _dequeue_non_confirmed_nowait(runtime)
+                if non_confirmed_event is None:
+                    raise queue.Empty
                 try:
                     runtime._confirmed_events.put_nowait(event)
                 except queue.Full:
                     logger.warning(
                         "Confirmed event queue full, dropping re-queued event"
                     )
-                event = intrabar_event
+                event = non_confirmed_event
             except queue.Empty:
                 pass
         return event
     except queue.Empty:
         runtime._confirmed_burst_count = 0
-        try:
-            return runtime._intrabar_events.get(timeout=timeout)
-        except queue.Empty:
-            return None
+        return _dequeue_non_confirmed(runtime, timeout)
 
 
 def is_stale_intrabar(
@@ -227,6 +264,9 @@ def process_next_event(runtime: "SignalRuntime", timeout: float = 0.5) -> bool:
     )
 
     runtime._processed_events += 1
+    if scope == "tick_derived":
+        runtime._tick_derived_processed += 1
+        runtime._tick_derived_last_snapshot_at = snapshot_time
     runtime._run_count += 1
     runtime._last_run_at = datetime.now(timezone.utc)
     runtime._last_error = None
@@ -266,9 +306,14 @@ def enqueue_event(
 ) -> None:
     item[4]["_enqueued_at"] = time.monotonic()
     scope = item[0]
-    target_queue = (
-        runtime._confirmed_events if scope == "confirmed" else runtime._intrabar_events
-    )
+    if scope == "confirmed":
+        target_queue = runtime._confirmed_events
+    elif scope == "intrabar":
+        target_queue = runtime._intrabar_events
+    elif scope == "tick_derived":
+        target_queue = runtime._tick_derived_events
+    else:
+        raise SignalScopeError(f"unsupported signal runtime scope: {scope}")
     try:
         target_queue.put_nowait(item)
     except queue.Full:
@@ -314,8 +359,11 @@ def enqueue_event(
                 runtime._dropped_confirmed,
             )
         else:
-            runtime._dropped_intrabar += 1
-            if runtime._intrabar_trade_coordinator is not None:
+            if scope == "tick_derived":
+                runtime._dropped_tick_derived += 1
+            else:
+                runtime._dropped_intrabar += 1
+            if scope == "intrabar" and runtime._intrabar_trade_coordinator is not None:
                 symbol, timeframe = item[1], item[2]
                 logger.warning(
                     "INTRABAR event DROPPED for %s/%s while intrabar_trading "

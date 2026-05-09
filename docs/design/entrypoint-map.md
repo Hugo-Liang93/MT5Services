@@ -1,6 +1,6 @@
 # 运行入口映射
 
-> 更新日期：2026-04-26（追加 §0aa/§0bb 启动链生命周期约束；2026-04-12 初版）
+> 更新日期：2026-05-05（追加 preflight 显式自动拉起 MT5 terminal 模式；追加 demo canary 启动状态恢复与 startup_summary 口径；追加 ready 探针市场数据/执行消费推进口径；2026-04-26 追加 §0aa/§0bb 启动链生命周期约束；2026-04-12 初版）
 > 本文只回答“从哪里启动”和“启动后先看哪里”；全量运行时链路请对照 `docs/design/full-runtime-dataflow.md`。
 
 该文档用于统一记录当前项目启动/脚本入口，避免新同学与运维在入口上产生歧义。
@@ -41,6 +41,7 @@
 若要做正式 live 启动，仍应先执行：
 
 - `python -m src.ops.cli.live_preflight --environment <live|demo>`
+- 若需要由工具预热 terminal 或验证 local 凭据自动登录，显式执行 `python -m src.ops.cli.live_preflight --environment <live|demo> --auto-launch-terminal`。默认 preflight 不隐式启动 GUI；裸 `Start-Process terminal64.exe` 不会读取项目 `mt5.local.ini`，不作为正式预热入口。
 
 ### 1.3 多实例配置目录
 
@@ -77,6 +78,16 @@ config/
   - `data/runtime/<instance>/`
   - `GET /health`
   - `GET /v1/monitoring/health/ready`
+
+`/v1/monitoring/health/ready` 的当前阻断口径：
+
+- main 实例：除 `storage_writer / ingestion / indicator_engine` 外，必须检查 `market_data_health`；MT5 market circuit 打开、M1/M5 OHLC stale 或任一 critical stale 都返回 503。
+- executor 实例：必须检查 `execution_intent_consumer / operator_command_consumer` 的 progress health；线程存活但 `stalled=true`、连续错误或长期无 poll/complete 也返回 503。
+
+启动日志的当前一致性口径：
+
+- `startup_summary mode=<mode>` 读取 `RuntimeModeController.current_mode` 正式属性，必须与 `/v1/trade/state.runtime_mode.current_mode` 一致。
+- `runtime_controls` 首轮启动会执行 `TradingStateRecovery.reconcile_position_runtime_states()`：以 MT5 当前持仓为事实源，把本地仍为 open 但 MT5 已不存在的 position runtime state 标记为 `closed / mt5_missing`，避免 stale 仓位污染启动后交易状态。
 
 ## 2. 交易与运维 CLI 入口
 
@@ -116,12 +127,14 @@ config/
   - 其中交易入口已开始按正式合同收口：
     - `/v1/trade/precheck` 统一返回 `AdmissionReport`
     - `/v1/trade/dispatch` 返回 `ActionResult` 主体及附属 `admission_report`
-    - `/v1/trade/traces` 现在会把 `admission_report_appended` 提升成业务解释视图，而不只是裸 pipeline 事件时间线
+    - `/v1/trade/traces` 现在会把 `admission_report_appended` 提升成业务解释视图，并支持 `intent_id / command_id / action_id` 过滤，而不只是裸 pipeline 事件时间线；无时间范围、无精确标识的宽列表默认只投影最近 6 小时，并通过 `metadata.default_window_applied` 明示
+    - `/v1/trade/trace/by-intent/{intent_id}`、`/v1/trade/trace/by-command/{command_id}`、`/v1/trade/trace/by-action/{action_id}` 与 `by-trace` 共用 `TradingFlowTraceReadModel`，不新增第二套执行状态投影
     - `/v1/trade/state/stream` 已开始直接消费正式 `pipeline_trace_events` 事实源，向前端推送 admission / command / risk / unmanaged-position 关键事件，而不再只依赖本地状态 diff
     - 后台消费链也开始复用同一份 trace 合同：`ExecutionIntentConsumer` 与 `OperatorCommandConsumer` 现在会为 `claim / reclaim / dead-letter / complete / fail` 等生命周期节点补齐统一的 `trace_id / instance / account` 标识，避免 trace 与 SSE 在后台执行阶段丢失业务链上下文
 - `src/app_runtime/*`：运行时装配与生命周期。当前已按角色收口为：
   - `main`：构造 `SharedComputeRuntime`（市场采集、指标、信号、calendar sync），并只在显式把 `live_main` 绑定为执行账户时才附带本地 `AccountRuntime`。ADR-010（2026-04-25）后 `build_signal_layer()` 内置 environment-aware 策略过滤——live-main 只装配 `ACTIVE/ACTIVE_GUARDED`，demo-main 额外装配 `DEMO_VALIDATION` 候选
   - `executor`：只构造 `AccountRuntime`，不再在 build 阶段创建 `UnifiedIndicatorManager / SignalRuntime / economic calendar sync`
+  - `runtime_controls`：拥有运行时 mode 切换与启动恢复编排；交易状态修复只通过 `TradingStateRecovery / TradingStateStore` 公开端口写入，不直接在装配层拼持仓状态。
 
 ## 4. 本次同步点
 
@@ -135,7 +148,7 @@ config/
 4. 启动后日志位置统一锚定项目根目录 `data/logs/<instance>/`，运行期 SQLite/WAL 统一落到 `data/runtime/<instance>/`。
 5. 当前正式多账户部署建议改为“单代码目录 + 多实例配置 + supervisor”，而不是复制多份代码目录。
 6. `web` 与 `supervisor` 入口现已统一给每条日志注入 `environment / instance / role`，多实例并行时控制台与文件日志均可直接区分来源。
-7. 交易主链路的准入、trace 与状态流已开始收口为正式合同：`AdmissionReport` 负责统一解释“为什么没进交易”，`/v1/trade/traces` 负责把 admission、intent、command、execution 等事件串成业务因果链，`/v1/trade/state/stream` 则开始消费同一份正式 pipeline 事实源；后续执行入口与 worker 自消费链将继续复用同一套 admission/trace 模型。
+7. 交易主链路的准入、trace 与状态流已开始收口为正式合同：`AdmissionReport` 负责统一解释“为什么没进交易”，`/v1/trade/traces` 与 `/v1/trade/trace/by-*` 负责把 admission、intent、command、execution 等事件串成业务因果链，`/v1/trade/state/stream` 则开始消费同一份正式 pipeline 事实源；后续执行入口与 worker 自消费链将继续复用同一套 admission/trace 模型。
 
 8. **2026-04-26 启动链生命周期收口（§0aa + §0bb）** — 三个 P1/P2 已修：
    - `src/indicators/engine/pipeline.py`：`shutdown()` 与 `shutdown_global_pipeline()` 现在显式清模块全局 `_global_executor` / `_global_pipeline`。runtime mode 切到 `ingest_only/risk_off` 再切回 `full` 不再拿到已 shutdown 的全局 executor（旧实现"永久毒化"指标主链）。

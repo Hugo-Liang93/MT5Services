@@ -47,6 +47,10 @@ from src.signals.strategies.adapters import UnifiedIndicatorSourceAdapter
 from src.signals.strategies.catalog import build_default_strategy_set
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.tracking.repository import TimescaleSignalRepository
+from src.signals.orchestration.intrabar_contract import (
+    intrabar_enabled_strategies,
+    intrabar_trading_active,
+)
 from src.trading.closeout import ExposureCloseoutController, ExposureCloseoutService
 from src.trading.execution.eventing import execute_market_order
 from src.trading.execution.executor import ExecutorConfig, TradeExecutor
@@ -299,11 +303,10 @@ def build_executor_config(signal_config: "SignalConfig") -> ExecutorConfig:
 
 
 def build_execution_gate_config(signal_config: "SignalConfig") -> ExecutionGateConfig:
+    enabled_strategies = intrabar_enabled_strategies(signal_config)
     return ExecutionGateConfig(
-        intrabar_trading_enabled=signal_config.intrabar_trading_enabled,
-        intrabar_enabled_strategies=frozenset(
-            s for s in signal_config.intrabar_trading_enabled_strategies if s
-        ),
+        intrabar_trading_enabled=intrabar_trading_active(signal_config),
+        intrabar_enabled_strategies=enabled_strategies,
     )
 
 
@@ -969,16 +972,12 @@ def build_signal_components(
     )
     from src.trading.execution.intrabar_guard import IntrabarTradeGuard
 
-    if (
-        signal_config.intrabar_trading_enabled
-        and signal_config.intrabar_trading_enabled_strategies
-    ):
+    if intrabar_trading_active(signal_config):
+        enabled_strategies = intrabar_enabled_strategies(signal_config)
         intrabar_policy = IntrabarTradingPolicy(
             min_stable_bars=signal_config.intrabar_trading_min_stable_bars,
             min_confidence=signal_config.intrabar_trading_min_confidence,
-            enabled_strategies=frozenset(
-                signal_config.intrabar_trading_enabled_strategies
-            ),
+            enabled_strategies=enabled_strategies,
         )
         intrabar_coordinator = IntrabarTradeCoordinator(policy=intrabar_policy)
         signal_runtime.set_intrabar_trade_coordinator(intrabar_coordinator)
@@ -1130,6 +1129,7 @@ def register_signal_hot_reload(
     execution_intent_publisher=None,
     pending_entry_manager=None,
     calibrator=None,
+    ingestor=None,
 ) -> Callable[[], None]:
     if economic_config_loader is None:
         economic_config_loader = get_economic_config
@@ -1162,6 +1162,12 @@ def register_signal_hot_reload(
                 signal_config, new_decay_service
             )
             signal_runtime.set_economic_decay_service(new_decay_service)
+            if ingestor is not None:
+                from src.app_runtime.builder_phases.signal import (
+                    _wire_required_market_data_lanes,
+                )
+
+                _wire_required_market_data_lanes(ingestor, signal_runtime)
         if filename == "economic.ini":
             _factory_logger.info("economic.ini hot reload complete")
             return

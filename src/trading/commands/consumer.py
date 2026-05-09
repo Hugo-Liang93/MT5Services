@@ -13,6 +13,10 @@ from src.trading.commands.results import (
     build_operator_command_result,
 )
 from src.trading.runtime.lifecycle import OwnedThreadLifecycle
+from src.trading.runtime.progress_health import (
+    build_progress_health_snapshot,
+    utc_now,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +63,15 @@ class OperatorCommandConsumer:
         self._pipeline_event_bus = pipeline_event_bus
         # §0dn C4：takeover 计数器，dashboard 可读，生产事故立即可见。
         self._total_takeovers: int = 0
+        self._total_processed: int = 0
+        self._total_failed: int = 0
+        self._in_flight_command_id: str | None = None
+        self._in_flight_since: float | None = None
+        self._last_poll_at: datetime | None = None
+        self._last_claim_at: datetime | None = None
+        self._last_complete_at: datetime | None = None
+        self._last_error: str | None = None
+        self._consecutive_errors: int = 0
         self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self._batch_size = max(1, int(batch_size))
         self._lease_seconds = max(5, int(lease_seconds))
@@ -96,7 +109,8 @@ class OperatorCommandConsumer:
         while not self._stop_event.is_set():
             try:
                 self._worker_iteration()
-            except Exception:
+            except Exception as exc:
+                self._record_progress_error(exc)
                 logger.exception(
                     "OperatorCommandConsumer: unexpected error in worker loop; "
                     "continuing after %.2fs poll interval",
@@ -106,6 +120,7 @@ class OperatorCommandConsumer:
                 self._stop_event.wait(self._poll_interval_seconds)
 
     def _worker_iteration(self) -> None:
+        self._last_poll_at = utc_now()
         transitions = self._claim_fn(
             target_account_key=self._runtime_identity.account_key,
             claimed_by_instance_id=self._runtime_identity.instance_id,
@@ -114,6 +129,7 @@ class OperatorCommandConsumer:
             lease_seconds=self._lease_seconds,
             max_attempts=self._max_attempts,
         )
+        self._clear_progress_error()
         if isinstance(transitions, dict):
             claimed = list(transitions.get("claimed") or [])
             dead_lettered = list(transitions.get("dead_lettered") or [])
@@ -135,6 +151,7 @@ class OperatorCommandConsumer:
         if not claimed:
             self._stop_event.wait(self._poll_interval_seconds)
             return
+        self._last_claim_at = utc_now()
         for item in claimed:
             if self._stop_event.is_set():
                 return
@@ -146,6 +163,8 @@ class OperatorCommandConsumer:
         # ExecutionIntentConsumer (§0dm) 同模式——慢命令 (close_all_positions
         # / cancel_orders) 期间 lease 续租，不被 30s 超时 dead_letter。
         command_id = str(item.get("command_id") or "")
+        self._in_flight_command_id = command_id
+        self._in_flight_since = time.monotonic()
         heartbeat_stop = threading.Event()
         heartbeat_thread = self._start_heartbeat_renewer(command_id, heartbeat_stop)
         try:
@@ -175,10 +194,13 @@ class OperatorCommandConsumer:
                 audit_id=audit_id,
                 last_error_code=None,
             )
+            self._total_processed += 1
             self._safe_project_risk_state()
             self._safe_emit_event("command_completed", item, extra_payload=response_payload)
         except Exception as exc:
             logger.exception("Operator command processing failed: %s", command_id)
+            self._total_processed += 1
+            self._total_failed += 1
             error_payload = self._build_failed_response(item, exc)
             audit_id = self._extract_audit_id(error_payload)
             self._safe_complete(
@@ -196,6 +218,8 @@ class OperatorCommandConsumer:
             heartbeat_stop.set()
             if heartbeat_thread is not None:
                 heartbeat_thread.join(timeout=2.0)
+            self._in_flight_command_id = None
+            self._in_flight_since = None
 
     def _start_heartbeat_renewer(
         self, command_id: str, stop_event: threading.Event
@@ -266,7 +290,11 @@ class OperatorCommandConsumer:
                             "OperatorCommandConsumer: takeover pipeline emit "
                             "runtime degradation (counter still incremented)"
                         )
-        except Exception:
+            else:
+                self._last_complete_at = utc_now()
+                self._clear_progress_error()
+        except Exception as exc:
+            self._record_progress_error(exc)
             logger.exception(
                 "OperatorCommandConsumer: complete_fn failed for command_id=%s; "
                 "command will retry on next claim cycle (lease will expire)",
@@ -301,6 +329,44 @@ class OperatorCommandConsumer:
             claimed_by_run_id=self._runtime_identity.run_id,
             lease_seconds=self._lease_seconds,
         )
+
+    def health_snapshot(self, now: datetime | None = None) -> dict[str, Any]:
+        """返回消费者推进健康快照，供 ready / monitoring 使用。"""
+        return build_progress_health_snapshot(
+            running=self.is_running(),
+            poll_interval_seconds=self._poll_interval_seconds,
+            lease_seconds=self._lease_seconds,
+            last_poll_at=self._last_poll_at,
+            last_claim_at=self._last_claim_at,
+            last_complete_at=self._last_complete_at,
+            last_error=self._last_error,
+            consecutive_errors=self._consecutive_errors,
+            in_flight_id_field="in_flight_command_id",
+            in_flight_id=self._in_flight_command_id,
+            in_flight_since=self._in_flight_since,
+            totals={
+                "total_processed": self._total_processed,
+                "total_failed": self._total_failed,
+                "total_takeovers": self._total_takeovers,
+            },
+            config={
+                "poll_interval_seconds": self._poll_interval_seconds,
+                "batch_size": self._batch_size,
+                "lease_seconds": self._lease_seconds,
+                "max_attempts": self._max_attempts,
+            },
+            now=now,
+        )
+
+    def status(self) -> dict[str, Any]:
+        return self.health_snapshot()
+
+    def _record_progress_error(self, exc: Exception) -> None:
+        self._last_error = f"{type(exc).__name__}: {exc}"
+        self._consecutive_errors += 1
+
+    def _clear_progress_error(self) -> None:
+        self._consecutive_errors = 0
 
     def _execute_command(self, item: dict[str, Any]) -> dict[str, Any]:
         command_type = str(item.get("command_type") or "").strip()

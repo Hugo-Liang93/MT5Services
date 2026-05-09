@@ -129,10 +129,121 @@ def check_queue_stats(monitor, component: str, ingestor: Any) -> Dict[str, Any]:
                 depth,
                 {"queue_name": queue_name, "stats": queue_info},
             )
+        market_health = stats.get("market_data_health")
+        if isinstance(market_health, dict):
+            mt5 = market_health.get("mt5") or {}
+            if isinstance(mt5, dict):
+                monitor.record_metric(
+                    component,
+                    "mt5_circuit_open",
+                    1.0 if mt5.get("circuit_open") else 0.0,
+                    {"mt5": mt5, "status": market_health.get("status")},
+                )
+                monitor.record_metric(
+                    component,
+                    "mt5_abandoned_call_count",
+                    float(mt5.get("abandoned_call_count") or 0),
+                    {"mt5": mt5, "status": market_health.get("status")},
+                )
+
+            freshness = market_health.get("freshness") or {}
+            if isinstance(freshness, dict):
+                blocking_stale_lane_keys: list[str] = []
+                advisory_stale_lane_keys: list[str] = []
+                lanes = freshness.get("lanes") or {}
+                if isinstance(lanes, dict):
+                    for lane_key, lane in lanes.items():
+                        if not isinstance(lane, dict):
+                            continue
+                        age_seconds = lane.get("age_seconds")
+                        if isinstance(age_seconds, (int, float)):
+                            monitor.record_metric(
+                                component,
+                                "market_data_lane_age_seconds",
+                                float(age_seconds),
+                                {"lane_key": lane_key, **lane},
+                                check_alert=False,
+                            )
+                        market_age_seconds = lane.get("market_age_seconds")
+                        if isinstance(market_age_seconds, (int, float)):
+                            monitor.record_metric(
+                                component,
+                                "market_data_lane_market_age_seconds",
+                                float(market_age_seconds),
+                                {"lane_key": lane_key, **lane},
+                                check_alert=False,
+                            )
+                        if lane.get("stale"):
+                            if _market_data_lane_stale_blocks(lane_key, lane):
+                                blocking_stale_lane_keys.append(str(lane_key))
+                            else:
+                                advisory_stale_lane_keys.append(str(lane_key))
+                blocking_stale_count = (
+                    len(blocking_stale_lane_keys)
+                    if isinstance(lanes, dict)
+                    else int(freshness.get("critical_stale_count") or 0)
+                )
+                advisory_stale_count = len(advisory_stale_lane_keys)
+                monitor.record_metric(
+                    component,
+                    "market_data_stale_count",
+                    float(blocking_stale_count),
+                    {
+                        "blocking_stale_lanes": blocking_stale_lane_keys,
+                        "advisory_stale_lanes": advisory_stale_lane_keys,
+                        "freshness": freshness,
+                        "status": market_health.get("status"),
+                    },
+                )
+                monitor.record_metric(
+                    component,
+                    "market_data_advisory_stale_count",
+                    float(advisory_stale_count),
+                    {
+                        "advisory_stale_lanes": advisory_stale_lane_keys,
+                        "freshness": freshness,
+                        "status": market_health.get("status"),
+                    },
+                    check_alert=False,
+                )
+                monitor.record_metric(
+                    component,
+                    "market_data_critical_stale_count",
+                    float(freshness.get("critical_stale_count") or 0),
+                    {"freshness": freshness, "status": market_health.get("status")},
+                )
+                monitor.record_metric(
+                    component,
+                    "market_data_lane_stale",
+                    1.0 if blocking_stale_lane_keys else 0.0,
+                    {
+                        "blocking_stale_lanes": blocking_stale_lane_keys,
+                        "advisory_stale_lanes": advisory_stale_lane_keys,
+                        "freshness": freshness,
+                        "status": market_health.get("status"),
+                    },
+                )
         return stats
     except Exception as exc:
         logger.error("Failed to check queue stats: %s", exc)
         return {}
+
+
+def _market_data_lane_stale_blocks(lane_key: str, lane: Dict[str, Any]) -> bool:
+    if not lane.get("stale"):
+        return False
+    if lane.get("required") is True:
+        return True
+    severity = str(lane.get("severity") or "").strip().lower()
+    if severity in {"warning", "advisory", "optional"}:
+        return False
+    if severity == "critical":
+        return True
+    kind = str(lane.get("kind") or "").strip().lower()
+    key = str(lane_key or "").strip().lower()
+    if kind == "tick" or key.startswith("tick:"):
+        return False
+    return True
 
 
 def _collect_worker_stats(worker: Any) -> Dict[str, Any]:

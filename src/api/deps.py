@@ -358,6 +358,18 @@ def get_trade_executor() -> TradeExecutor:
     return _container.trade_executor
 
 
+def get_execution_intent_consumer():
+    _ensure_initialized()
+    assert _container is not None and _container.execution_intent_consumer is not None
+    return _container.execution_intent_consumer
+
+
+def get_operator_command_consumer():
+    _ensure_initialized()
+    assert _container is not None and _container.operator_command_consumer is not None
+    return _container.operator_command_consumer
+
+
 def get_position_manager() -> PositionManager:
     _ensure_initialized()
     assert _container is not None and _container.position_manager is not None

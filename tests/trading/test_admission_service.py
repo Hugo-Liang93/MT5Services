@@ -63,6 +63,7 @@ def _stub_runtime_views(
     circuit_open: bool = False,
     tradable: bool = True,
     quote_stale: bool = False,
+    market_data_health: dict | None = None,
     margin_guard: dict | None = None,
     last_risk_block: str = "",
     should_block_new_trades: bool = False,
@@ -77,6 +78,7 @@ def _stub_runtime_views(
         "circuit_open": circuit_open,
         "tradable": tradable,
         "quote_health": {"stale": quote_stale} if quote_stale else {},
+        "market_data_health": market_data_health or {},
         "margin_guard": margin_guard or {},
     }
     views.account_risk_state_summary.return_value = {
@@ -117,6 +119,125 @@ def test_clean_payload_yields_allow_decision() -> None:
     )
     assert result["report"]["decision"] == "allow"
     assert result["report"]["reasons"] == []
+
+
+def test_market_data_health_critical_blocks_admission() -> None:
+    """required market data lane critical 时，API/admission 必须 fail-closed。"""
+    health = {
+        "status": "critical",
+        "blocking": True,
+        "blocked_lanes": ["tick:XAUUSD"],
+        "dependency_contract": {"required_lanes": ["tick:XAUUSD"]},
+        "freshness": {"critical_stale_count": 1, "critical_missing_count": 0},
+    }
+    svc = _make_service(
+        runtime_views=_stub_runtime_views(
+            tradable=False,
+            market_data_health=health,
+        )
+    )
+
+    result = svc.evaluate_trade_payload(
+        {"symbol": "XAUUSD", "strategy": "structured_trend_continuation"},
+        requested_operation="market",
+    )
+
+    report = result["report"]
+    assert report["decision"] == "block"
+    assert report["stage"] == "market_tradability"
+    reason = next(
+        item for item in report["reasons"] if item["code"] == "market_data_unhealthy"
+    )
+    assert reason["stage"] == "market_tradability"
+    assert reason["details"]["market_data_health"]["blocked_lanes"] == ["tick:XAUUSD"]
+    assert report["market_data_health"]["status"] == "critical"
+
+
+def test_precheck_payload_uses_formal_command_contract() -> None:
+    """admission 只向 precheck 传递正式入参，执行/trace 字段保留给报告层。"""
+
+    class _StrictCommandService:
+        active_account_alias = "demo_main"
+
+        def __init__(self) -> None:
+            self.received: dict[str, Any] = {}
+
+        def precheck_trade(
+            self,
+            *,
+            symbol: str,
+            volume: float | None = None,
+            side: str | None = None,
+            order_kind: str = "market",
+            price: float | None = None,
+            sl: float | None = None,
+            tp: float | None = None,
+            deviation: int = 20,
+            comment: str = "",
+            magic: int = 0,
+            metadata: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            self.received = {
+                "symbol": symbol,
+                "volume": volume,
+                "side": side,
+                "order_kind": order_kind,
+                "price": price,
+                "sl": sl,
+                "tp": tp,
+                "deviation": deviation,
+                "comment": comment,
+                "magic": magic,
+                "metadata": metadata,
+            }
+            return {
+                "verdict": "allow",
+                "checks": [],
+                "reason": None,
+                "event_blocked": False,
+                "calendar_health_degraded": False,
+                "calendar_health_mode": "warn_only",
+                "calendar_health": {},
+                "active_windows": [],
+                "upcoming_windows": [],
+                "warnings": [],
+                "request_id": "precheck_req_1",
+            }
+
+    command_svc = _StrictCommandService()
+    svc = _make_service(command_svc=command_svc)
+
+    result = svc.evaluate_trade_payload(
+        {
+            "symbol": "XAUUSD",
+            "volume": 0.01,
+            "direction": "buy",
+            "dry_run": False,
+            "request_id": "api_req_1",
+            "strategy": "structured_price_action",
+            "timeframe": "M15",
+            "account_alias": "demo_main",
+            "metadata": {"account_key": "demo:key"},
+        },
+        requested_operation="trade_precheck",
+    )
+
+    assert result["report"]["decision"] == "allow"
+    assert command_svc.received == {
+        "symbol": "XAUUSD",
+        "volume": 0.01,
+        "side": "buy",
+        "order_kind": "market",
+        "price": None,
+        "sl": None,
+        "tp": None,
+        "deviation": 20,
+        "comment": "",
+        "magic": 0,
+        "metadata": {"account_key": "demo:key"},
+    }
+    assert result["report"]["deployment_contract"]["strategy"] == "structured_price_action"
+    assert result["report"]["deployment_contract"]["timeframe"] == "M15"
 
 
 def test_failed_check_produces_warn_reason() -> None:

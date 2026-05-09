@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple
+from uuid import uuid4
 
 from src.persistence.schema import INSERT_TRADE_COMMAND_AUDITS_SQL
 
 if TYPE_CHECKING:
     from src.persistence.db import TimescaleWriter
+
+
+_REAL_TRADE_AUDIT_PREDICATE = (
+    "AND LOWER(COALESCE("
+    "response_payload->>'dry_run', "
+    "request_payload->>'dry_run', "
+    "'false'"
+    ")) NOT IN ('true', '1', 'yes', 'on') "
+)
 
 
 class TradeCommandAuditRepository:
@@ -78,6 +89,158 @@ class TradeCommandAuditRepository:
         with self._writer.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()
+
+    def count_successful_trade_commands_since(
+        self,
+        *,
+        since: Any,
+        account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
+    ) -> int:
+        sql = (
+            "SELECT COUNT(*)::bigint "
+            "FROM trade_command_audits "
+            "WHERE recorded_at >= %s "
+            "AND command_type = %s "
+            "AND status = %s "
+            f"{_REAL_TRADE_AUDIT_PREDICATE}"
+        )
+        params: List[Any] = [since, "execute_trade", "success"]
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def count_trade_frequency_reservations_since(
+        self,
+        *,
+        since: Any,
+        account_key: str,
+    ) -> int:
+        sql = (
+            "SELECT COUNT(*)::bigint "
+            "FROM trade_frequency_reservations "
+            "WHERE account_key = %s "
+            "AND reserved_at >= %s "
+            "AND expires_at > NOW() "
+            "AND status IN ('active', 'committed')"
+        )
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, [account_key, since])
+            row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def reserve_trade_frequency_quota(
+        self,
+        *,
+        account_key: str,
+        account_alias: Optional[str] = None,
+        at_time: datetime,
+        max_trades_per_day: Optional[int] = None,
+        max_trades_per_hour: Optional[int] = None,
+    ) -> str:
+        resolved_account_key = str(account_key or "").strip()
+        if not resolved_account_key:
+            raise ValueError("account_key is required for trade frequency reservation")
+        at_time = at_time if at_time.tzinfo else at_time.replace(tzinfo=timezone.utc)
+        reservation_id = uuid4().hex
+        expires_at = at_time + timedelta(minutes=5)
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [resolved_account_key])
+            cur.execute(
+                "UPDATE trade_frequency_reservations "
+                "SET status = 'expired', finalized_at = NOW() "
+                "WHERE account_key = %s AND status = 'active' AND expires_at <= NOW()",
+                [resolved_account_key],
+            )
+            if max_trades_per_day is not None:
+                day_start = at_time.astimezone(timezone.utc).replace(
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+                day_count = self._count_frequency_window_locked(
+                    cur,
+                    account_key=resolved_account_key,
+                    since=day_start,
+                )
+                if day_count >= int(max_trades_per_day):
+                    raise RuntimeError("Daily trade limit reached")
+            if max_trades_per_hour is not None:
+                hour_start = at_time - timedelta(hours=1)
+                hour_count = self._count_frequency_window_locked(
+                    cur,
+                    account_key=resolved_account_key,
+                    since=hour_start,
+                )
+                if hour_count >= int(max_trades_per_hour):
+                    raise RuntimeError("Hourly trade limit reached")
+            cur.execute(
+                "INSERT INTO trade_frequency_reservations "
+                "(reservation_id, account_key, account_alias, reserved_at, expires_at, status) "
+                "VALUES (%s, %s, %s, %s, %s, 'active')",
+                [
+                    reservation_id,
+                    resolved_account_key,
+                    account_alias,
+                    at_time,
+                    expires_at,
+                ],
+            )
+        return reservation_id
+
+    def finalize_trade_frequency_reservation(
+        self,
+        *,
+        reservation_id: str,
+        committed: bool,
+    ) -> None:
+        normalized_id = str(reservation_id or "").strip()
+        if not normalized_id:
+            return
+        status = "committed" if committed else "released"
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE trade_frequency_reservations "
+                "SET status = %s, finalized_at = NOW(), "
+                "expires_at = CASE "
+                "WHEN %s THEN LEAST(expires_at, NOW() + INTERVAL '30 seconds') "
+                "ELSE NOW() END "
+                "WHERE reservation_id = %s",
+                [status, bool(committed), normalized_id],
+            )
+
+    def _count_frequency_window_locked(
+        self,
+        cur: Any,
+        *,
+        account_key: str,
+        since: datetime,
+    ) -> int:
+        cur.execute(
+            "SELECT "
+            "(SELECT COUNT(*)::bigint FROM trade_command_audits "
+            " WHERE account_key = %s "
+              " AND recorded_at >= %s "
+              " AND command_type = 'execute_trade' "
+              " AND status = 'success' "
+              f"{_REAL_TRADE_AUDIT_PREDICATE}) + "
+              "(SELECT COUNT(*)::bigint FROM trade_frequency_reservations "
+            " WHERE account_key = %s "
+            " AND reserved_at >= %s "
+            " AND expires_at > NOW() "
+            " AND status IN ('active', 'committed'))",
+            [account_key, since, account_key, since],
+        )
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
 
     def summarize_trade_command_audits(
         self,
@@ -404,6 +567,14 @@ WHERE account_alias = %s
   AND (
         COALESCE(request_payload->>'request_id', '') = %s
         OR COALESCE(response_payload->>'request_id', '') = %s
+        OR COALESCE(request_payload->>'trace_id', '') = %s
+        OR COALESCE(response_payload->>'trace_id', '') = %s
+        OR COALESCE(request_payload #>> '{request_context,trace_id}', '') = %s
+        OR COALESCE(response_payload #>> '{request_context,trace_id}', '') = %s
+        OR COALESCE(request_payload->>'signal_id', '') = %s
+        OR COALESCE(response_payload->>'signal_id', '') = %s
+        OR COALESCE(request_payload #>> '{metadata,source_signal_id}', '') = %s
+        OR COALESCE(response_payload #>> '{metadata,source_signal_id}', '') = %s
         OR COALESCE(request_payload #>> '{metadata,signal,signal_id}', '') = %s
         OR COALESCE(response_payload #>> '{metadata,signal,signal_id}', '') = %s
       )
@@ -414,6 +585,14 @@ LIMIT %s
             sql,
             [
                 account_alias,
+                signal_id,
+                signal_id,
+                signal_id,
+                signal_id,
+                signal_id,
+                signal_id,
+                signal_id,
+                signal_id,
                 signal_id,
                 signal_id,
                 signal_id,
@@ -438,6 +617,8 @@ WHERE account_alias = %s
   AND (
         COALESCE(request_payload->>'trace_id', '') = %s
         OR COALESCE(response_payload->>'trace_id', '') = %s
+        OR COALESCE(request_payload #>> '{request_context,trace_id}', '') = %s
+        OR COALESCE(response_payload #>> '{request_context,trace_id}', '') = %s
       )
 ORDER BY recorded_at ASC
 LIMIT %s
@@ -448,6 +629,110 @@ LIMIT %s
                 account_alias,
                 trace_id,
                 trace_id,
+                trace_id,
+                trace_id,
+                max(1, int(limit)),
+            ],
+        )
+
+    def fetch_trace_operations_by_action_id(
+        self,
+        *,
+        account_alias: str,
+        action_id: str,
+        limit: int = 100,
+    ) -> List[dict[str, Any]]:
+        sql = """
+SELECT audits.recorded_at,
+       audits.operation_id,
+       audits.account_alias,
+       audits.command_type,
+       audits.status,
+       audits.symbol,
+       audits.side,
+       audits.order_kind,
+       audits.volume,
+       audits.ticket,
+       audits.order_id,
+       audits.deal_id,
+       audits.magic,
+       audits.duration_ms,
+       audits.error_message,
+       audits.request_payload,
+       audits.response_payload,
+       audits.account_key,
+       commands.command_id,
+       commands.action_id
+FROM trade_command_audits audits
+LEFT JOIN operator_commands commands
+       ON commands.audit_id = audits.operation_id
+WHERE audits.account_alias = %s
+  AND (
+        COALESCE(audits.request_payload->>'action_id', '') = %s
+        OR COALESCE(audits.response_payload->>'action_id', '') = %s
+        OR commands.action_id = %s
+      )
+ORDER BY audits.recorded_at ASC
+LIMIT %s
+"""
+        return self._fetch_dicts(
+            sql,
+            [
+                account_alias,
+                action_id,
+                action_id,
+                action_id,
+                max(1, int(limit)),
+            ],
+        )
+
+    def fetch_trace_operations_by_command_id(
+        self,
+        *,
+        account_alias: str,
+        command_id: str,
+        limit: int = 100,
+    ) -> List[dict[str, Any]]:
+        sql = """
+SELECT audits.recorded_at,
+       audits.operation_id,
+       audits.account_alias,
+       audits.command_type,
+       audits.status,
+       audits.symbol,
+       audits.side,
+       audits.order_kind,
+       audits.volume,
+       audits.ticket,
+       audits.order_id,
+       audits.deal_id,
+       audits.magic,
+       audits.duration_ms,
+       audits.error_message,
+       audits.request_payload,
+       audits.response_payload,
+       audits.account_key,
+       commands.command_id,
+       commands.action_id
+FROM trade_command_audits audits
+LEFT JOIN operator_commands commands
+       ON commands.audit_id = audits.operation_id
+WHERE audits.account_alias = %s
+  AND (
+        COALESCE(audits.request_payload->>'command_id', '') = %s
+        OR COALESCE(audits.response_payload->>'command_id', '') = %s
+        OR commands.command_id = %s
+      )
+ORDER BY audits.recorded_at ASC
+LIMIT %s
+"""
+        return self._fetch_dicts(
+            sql,
+            [
+                account_alias,
+                command_id,
+                command_id,
+                command_id,
                 max(1, int(limit)),
             ],
         )

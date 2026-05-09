@@ -29,6 +29,8 @@ from src.trading.execution.reasons import (
     REASON_INTRABAR_SYNTHESIS_UNAVAILABLE,
     REASON_INTRABAR_TRADING_DISABLED,
     REASON_LIMIT_REACHED,
+    REASON_MARKET_DATA_UNHEALTHY,
+    REASON_PENDING_ENTRY_MANAGER_UNAVAILABLE,
     REASON_QUOTE_STALE,
     REASON_STRATEGY_CANDIDATE_ONLY,
     REASON_STRATEGY_DEMO_VALIDATION,
@@ -37,6 +39,7 @@ from src.trading.execution.reasons import (
     REASON_STRATEGY_MAX_LIVE_POSITIONS,
     REASON_STRATEGY_NOT_INTRABAR_ENABLED,
     REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
+    REASON_ENTRY_POLICY_UNAVAILABLE,
     REASON_TRADE_PARAMS_UNAVAILABLE,
 )
 from src.trading.execution.sizing import TradeParameters
@@ -174,6 +177,57 @@ class DummyPendingManager:
         self.tracked_orders.append(kwargs)
 
 
+def _market_group(close_price: float):
+    from src.trading.entry_policy import (
+        EntrySpecGroup,
+        EntrySpecMember,
+        EntryType,
+        new_group_id,
+    )
+
+    return EntrySpecGroup(
+        group_id=new_group_id(),
+        members=(
+            EntrySpecMember(
+                member_id="market",
+                entry_type=EntryType.MARKET,
+                trigger_price=close_price,
+                entry_low=close_price,
+                entry_high=close_price,
+            ),
+        ),
+        metadata={"policy_name": "market", "branch": "market"},
+    )
+
+
+def _market_registry():
+    from src.config.models.entry_policy import EntryPolicyConfig
+    from src.trading.entry_policy import EntryPolicyRegistry, MarketEntryPolicy
+
+    return EntryPolicyRegistry(
+        policies={"market": MarketEntryPolicy()},
+        config=EntryPolicyConfig(
+            enabled_policies=["market"],
+            default_policy="market",
+            strategy_mapping={"sma_trend": "market"},
+        ),
+    )
+
+
+def _empty_mapping_registry():
+    from src.config.models.entry_policy import EntryPolicyConfig
+    from src.trading.entry_policy import EntryPolicyRegistry, MarketEntryPolicy
+
+    return EntryPolicyRegistry(
+        policies={"market": MarketEntryPolicy()},
+        config=EntryPolicyConfig(
+            enabled_policies=["market"],
+            default_policy="market",
+            strategy_mapping={},
+        ),
+    )
+
+
 def _build_event(
     *,
     spread_points: float,
@@ -188,6 +242,22 @@ def _build_event(
         "symbol_point": symbol_point,
         "close_price": close_price,
         "signal_trace_id": "trace_sig_1",
+        "entry_intent": {
+            "strategy_name": "sma_trend",
+            "timeframe": "M5",
+            "direction": "buy",
+            "pattern_type": "none",
+        },
+        "pattern_type": "none",
+        "recent_bars": [
+            {
+                "open": close_price - 1.0,
+                "high": close_price + 1.0,
+                "low": close_price - 2.0,
+                "close": close_price,
+            }
+        ],
+        "entry_spec_group": _market_group(close_price),
     }
     if market_structure:
         metadata["market_structure"] = market_structure
@@ -342,6 +412,55 @@ def test_trade_executor_blocks_when_quote_health_is_stale() -> None:
     assert admission.payload["stage"] == "market_tradability"
     assert admission.payload["reasons"][0]["code"] == REASON_QUOTE_STALE
     assert skipped.payload["skip_reason"] == REASON_QUOTE_STALE
+
+
+def test_trade_executor_blocks_when_required_market_data_health_is_critical() -> None:
+    module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            sl_atr_multiplier=2.0,
+            tp_atr_multiplier=4.0,
+            max_spread_to_stop_ratio=0.5,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        pipeline_event_bus=pipeline_bus,
+        market_data_health_fn=lambda symbol: {
+            "status": "critical",
+            "blocking": symbol == "XAUUSD",
+            "blocked_lanes": [f"tick:{symbol}"],
+            "dependency_contract": {"required_lanes": [f"tick:{symbol}"]},
+            "freshness": {"critical_stale_count": 1, "critical_missing_count": 0},
+        },
+        runtime_identity=_default_runtime_identity(),
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+
+    assert module.calls == []
+    assert executor.last_risk_block == REASON_MARKET_DATA_UNHEALTHY
+    assert (
+        executor.status()["recent_executions"][-1]["reason"]
+        == REASON_MARKET_DATA_UNHEALTHY
+    )
+    blocked = _find_last_event(received, PIPELINE_EXECUTION_BLOCKED)
+    admission = _find_last_admission_with_reason(
+        received, REASON_MARKET_DATA_UNHEALTHY
+    )
+    skipped = _find_last_event(received, PIPELINE_EXECUTION_SKIPPED)
+    assert blocked.payload["reason"] == REASON_MARKET_DATA_UNHEALTHY
+    assert admission.payload["decision"] == "block"
+    assert admission.payload["stage"] == "market_tradability"
+    assert admission.payload["reasons"][0]["code"] == REASON_MARKET_DATA_UNHEALTHY
+    assert admission.payload["reasons"][0]["details"]["market_data_health"][
+        "blocked_lanes"
+    ] == ["tick:XAUUSD"]
+    assert skipped.payload["skip_reason"] == REASON_MARKET_DATA_UNHEALTHY
 
 
 def test_trade_executor_returns_structured_skip_when_auto_trade_is_disabled() -> None:
@@ -603,6 +722,149 @@ def test_trade_executor_returns_cost_reason_for_confirmed_skip() -> None:
     assert result["reason"] == "spread_to_stop_ratio_too_high"
     assert result["category"] == "cost_guard"
     assert module.calls == []
+
+
+def test_trade_executor_rejects_when_entry_policy_registry_missing() -> None:
+    module = DummyTradingModule()
+    pending_manager = DummyPendingManager()
+    executor = TradeExecutor(
+        trading_module=module,
+        pending_entry_manager=pending_manager,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    metadata = dict(event.metadata)
+    metadata.pop("entry_spec_group", None)
+    event = SignalEvent(**{**event.__dict__, "metadata": metadata})
+
+    _fire(executor, event)
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_ENTRY_POLICY_UNAVAILABLE
+    )
+
+
+def test_trade_executor_rejects_when_entry_intent_missing() -> None:
+    module = DummyTradingModule()
+    pending_manager = DummyPendingManager()
+    pending_manager.entry_policy_registry = _market_registry()
+    executor = TradeExecutor(
+        trading_module=module,
+        pending_entry_manager=pending_manager,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    metadata = dict(event.metadata)
+    metadata.pop("entry_spec_group", None)
+    metadata.pop("entry_intent", None)
+    event = SignalEvent(**{**event.__dict__, "metadata": metadata})
+
+    _fire(executor, event)
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_ENTRY_POLICY_UNAVAILABLE
+    )
+
+
+def test_trade_executor_rejects_when_recent_bars_missing() -> None:
+    module = DummyTradingModule()
+    pending_manager = DummyPendingManager()
+    pending_manager.entry_policy_registry = _market_registry()
+    executor = TradeExecutor(
+        trading_module=module,
+        pending_entry_manager=pending_manager,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    metadata = dict(event.metadata)
+    metadata.pop("entry_spec_group", None)
+    metadata.pop("recent_bars", None)
+    event = SignalEvent(**{**event.__dict__, "metadata": metadata})
+
+    _fire(executor, event)
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_ENTRY_POLICY_UNAVAILABLE
+    )
+
+
+def test_trade_executor_rejects_when_entry_policy_mapping_missing() -> None:
+    module = DummyTradingModule()
+    pending_manager = DummyPendingManager()
+    pending_manager.entry_policy_registry = _empty_mapping_registry()
+    executor = TradeExecutor(
+        trading_module=module,
+        pending_entry_manager=pending_manager,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    metadata = dict(event.metadata)
+    metadata.pop("entry_spec_group", None)
+    event = SignalEvent(**{**event.__dict__, "metadata": metadata})
+
+    _fire(executor, event)
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_ENTRY_POLICY_UNAVAILABLE
+    )
+
+
+def test_trade_executor_rejects_pending_entry_when_pending_manager_unavailable() -> None:
+    from src.trading.entry_policy import (
+        EntrySpecGroup,
+        EntrySpecMember,
+        EntryType,
+        new_group_id,
+    )
+
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        pending_entry_manager=None,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    event = SignalEvent(
+        **{
+            **event.__dict__,
+            "metadata": {
+                **event.metadata,
+                "entry_spec_group": EntrySpecGroup(
+                    group_id=new_group_id(),
+                    members=(
+                        EntrySpecMember(
+                            member_id="limit_pullback",
+                            entry_type=EntryType.LIMIT,
+                            trigger_price=2999.0,
+                            entry_low=2998.0,
+                            entry_high=3000.0,
+                        ),
+                    ),
+                ),
+            },
+        }
+    )
+
+    _fire(executor, event)
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_PENDING_ENTRY_MANAGER_UNAVAILABLE
+    )
 
 
 def test_trade_executor_returns_failed_result_when_market_dispatch_raises() -> None:

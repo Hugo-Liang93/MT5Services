@@ -388,6 +388,23 @@ def publish_signal_event(
                 runtime._listener_fail_counts.pop(id(listener), None)
 
 
+def _merge_decision_metadata(
+    decision: Any,
+    transition_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """把策略/SignalModule 输出的领域 metadata 合并进最终 SignalEvent。
+
+    transition_metadata 仍拥有运行时身份字段的最终解释权，避免策略输出覆盖
+    signal_state / trace / bar_time 等编排事实。
+    """
+    decision_metadata = getattr(decision, "metadata", None)
+    if not isinstance(decision_metadata, dict):
+        return dict(transition_metadata)
+    merged = dict(decision_metadata)
+    merged.update(transition_metadata)
+    return merged
+
+
 def transition_and_publish(
     runtime: "SignalRuntime",
     state: RuntimeSignalState,
@@ -403,6 +420,16 @@ def transition_and_publish(
     if scope == "confirmed":
         transition_metadata = runtime._transition_confirmed(
             state, decision.direction, event_time, bar_time, regime_metadata
+        )
+    elif scope == "tick_derived" and decision.direction in ("buy", "sell"):
+        signal_state = f"tick_derived_{decision.direction}"
+        previous_state = state.last_emitted_state or "idle"
+        runtime._mark_emitted(state, signal_state, event_time, bar_time)
+        transition_metadata = runtime._build_transition_metadata(
+            regime_metadata,
+            signal_state=signal_state,
+            state_changed=True,
+            previous_state=previous_state,
         )
 
     # ── Intrabar 交易协调：每次 intrabar 评估都更新 bar 计数 ──────────
@@ -442,6 +469,7 @@ def transition_and_publish(
         deployment = runtime.policy.get_strategy_deployment(decision.strategy)
         if deployment is not None:
             armed_metadata[MK.STRATEGY_DEPLOYMENT] = deployment.to_dict()
+        armed_metadata = _merge_decision_metadata(decision, armed_metadata)
         armed_signal_id = uuid4().hex[:12]
         # 持久化 coordinator armed 决策
         runtime.service.persist_decision(
@@ -500,6 +528,7 @@ def transition_and_publish(
     deployment = runtime.policy.get_strategy_deployment(decision.strategy)
     if deployment is not None:
         transition_metadata[MK.STRATEGY_DEPLOYMENT] = deployment.to_dict()
+    transition_metadata = _merge_decision_metadata(decision, transition_metadata)
 
     signal_id = ""
     is_actionable = decision.direction in ("buy", "sell")

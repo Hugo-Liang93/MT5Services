@@ -166,7 +166,8 @@ class TradesWorkbenchReadModel:
                 trade_outcomes=trade_outcomes,
                 positions=positions,
             ),
-            "lifecycle": self._build_lifecycle(
+            "lifecycle": trace_payload.get("lifecycle")
+            or self._build_lifecycle(
                 timeline=timeline,
                 pending_orders=pending_orders,
                 positions=positions,

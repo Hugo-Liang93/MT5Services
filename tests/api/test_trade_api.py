@@ -57,6 +57,9 @@ from src.api.trade import (
     trade_state_closeout_summary,
     trade_state_stream,
     trade_state_summary,
+    trade_trace_by_action_id,
+    trade_trace_by_command_id,
+    trade_trace_by_intent_id,
     trade_trace_by_signal_id,
     trade_trace_by_trace_id,
     trade_traces,
@@ -841,12 +844,84 @@ class _TradeTraceReadModel:
             },
         }
 
+    def trace_by_intent_id(self, intent_id: str):
+        return self._trace_by_execution_identifier("intent_id", intent_id)
+
+    def trace_by_command_id(self, command_id: str):
+        return self._trace_by_execution_identifier("command_id", command_id)
+
+    def trace_by_action_id(self, action_id: str):
+        return self._trace_by_execution_identifier("action_id", action_id)
+
+    def _trace_by_execution_identifier(self, identifier_name: str, identifier_value: str):
+        return {
+            "signal_id": "sig_1",
+            "trace_id": "trace_1",
+            "found": True,
+            "identifiers": {
+                "signal_id": "sig_1",
+                "signal_ids": ["sig_1"],
+                "trace_ids": ["trace_1"],
+                "request_ids": ["sig_1"],
+                "operation_ids": ["op_1"],
+                "intent_ids": ["intent_1"],
+                "command_ids": ["cmd_1"],
+                "action_ids": ["act_1"],
+                "account_keys": ["demo:server:123"],
+                "account_aliases": ["live"],
+                "order_tickets": [7001],
+                "position_tickets": [8001],
+            },
+            "summary": {
+                "stages": {
+                    "pipeline_admission": "present",
+                    "pipeline_execution_submission": "present",
+                },
+                "admission": {
+                    "decision": "allow",
+                    "stage": "account_risk",
+                    "trace_id": "trace_1",
+                    "signal_id": "sig_1",
+                    "intent_id": "intent_1",
+                    "command_id": "cmd_1",
+                    "action_id": "act_1",
+                    "reason_count": 1,
+                },
+            },
+            "timeline": [
+                {"id": "a", "stage": "pipeline.admission_report"},
+                {"id": "b", "stage": "pipeline.execution_submitted"},
+            ],
+            "graph": {
+                "nodes": [{"id": "a"}, {"id": "b"}],
+                "edges": [{"from": "a", "to": "b", "relation": "next"}],
+            },
+            "facts": {
+                "lookup": {
+                    "identifier_name": identifier_name,
+                    "identifier_value": identifier_value,
+                }
+            },
+        }
+
     def list_traces(self, **kwargs):
+        from_time = kwargs.get("from_time")
+        to_time = kwargs.get("to_time")
+        default_window_applied = False
+        if from_time is None and to_time is None and not any(
+            kwargs.get(key)
+            for key in ("trace_id", "signal_id", "intent_id", "command_id", "action_id")
+        ):
+            from_time = "2026-01-01T00:00:00+00:00"
+            default_window_applied = True
         return {
             "items": [
                 {
                     "trace_id": kwargs.get("trace_id") or "trace_1",
                     "signal_id": kwargs.get("signal_id") or "sig_1",
+                    "intent_id": kwargs.get("intent_id") or "intent_1",
+                    "command_id": kwargs.get("command_id") or "cmd_1",
+                    "action_id": kwargs.get("action_id") or "act_1",
                     "symbol": kwargs.get("symbol") or "XAUUSD",
                     "timeframe": kwargs.get("timeframe") or "M5",
                     "strategy": kwargs.get("strategy") or "consensus",
@@ -861,6 +936,9 @@ class _TradeTraceReadModel:
                         "stage": "account_risk",
                         "trace_id": kwargs.get("trace_id") or "trace_1",
                         "signal_id": kwargs.get("signal_id") or "sig_1",
+                        "intent_id": kwargs.get("intent_id") or "intent_1",
+                        "command_id": kwargs.get("command_id") or "cmd_1",
+                        "action_id": kwargs.get("action_id") or "act_1",
                         "reason_count": 1,
                     },
                 }
@@ -868,6 +946,9 @@ class _TradeTraceReadModel:
             "total": 5,
             "page": kwargs.get("page") or 1,
             "page_size": kwargs.get("page_size") or 100,
+            "from_time": from_time,
+            "to_time": to_time,
+            "default_window_applied": default_window_applied,
         }
 
 
@@ -982,6 +1063,8 @@ def test_trade_dispatch_uses_unified_dispatcher() -> None:
     assert response.success is True
     assert response.data["result"]["ticket"] == 1
     assert response.data["admission_report"]["decision"] == "allow"
+    assert service.last_dispatch[1]["trace_id"] == response.data["admission_report"]["trace_id"]
+    assert response.data["result"]["payload"]["trace_id"] == response.metadata["trace_id"]
 
 
 def test_trade_precheck_returns_admission_report() -> None:
@@ -998,6 +1081,72 @@ def test_trade_precheck_returns_admission_report() -> None:
     assert response.data.decision == "allow"
     assert response.data.requested_operation == "trade_precheck"
     assert response.metadata["operation"] == "trade_precheck"
+
+
+def test_trade_precheck_ignores_execution_only_request_fields() -> None:
+    class _StrictPrecheckService(_DispatchService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.precheck_payload = {}
+
+        def precheck_trade(
+            self,
+            *,
+            symbol,
+            volume=None,
+            side=None,
+            order_kind="market",
+            price=None,
+            sl=None,
+            tp=None,
+            deviation=20,
+            comment="",
+            magic=0,
+            metadata=None,
+        ):
+            self.precheck_payload = {
+                "symbol": symbol,
+                "volume": volume,
+                "side": side,
+                "order_kind": order_kind,
+                "price": price,
+                "sl": sl,
+                "tp": tp,
+                "deviation": deviation,
+                "comment": comment,
+                "magic": magic,
+                "metadata": metadata,
+            }
+            return super().precheck_trade(symbol=symbol, volume=volume, side=side)
+
+    service = _StrictPrecheckService()
+
+    response = trade_precheck(
+        TradeRequest(
+            symbol="XAUUSD",
+            volume=0.1,
+            side="buy",
+            dry_run=True,
+            request_id="api_req_1",
+        ),
+        service=service,
+        admission_service=_admission_service(service),
+    )
+
+    assert response.success is True
+    assert service.precheck_payload == {
+        "symbol": "XAUUSD",
+        "volume": 0.1,
+        "side": "buy",
+        "order_kind": "market",
+        "price": None,
+        "sl": None,
+        "tp": None,
+        "deviation": 20,
+        "comment": "",
+        "magic": 0,
+        "metadata": None,
+    }
 
 
 def test_trade_daily_summary_endpoint() -> None:
@@ -1450,6 +1599,48 @@ def test_trade_trace_by_trace_id_endpoint_returns_flow_projection() -> None:
     assert response.metadata["operation"] == "trade_trace_by_trace_id"
 
 
+def test_trade_trace_by_intent_id_endpoint_returns_flow_projection() -> None:
+    response = trade_trace_by_intent_id(
+        "intent_1",
+        trace_views=_TradeTraceReadModel(),
+    )
+
+    assert response.success is True
+    assert response.data["trace_id"] == "trace_1"
+    assert response.data["identifiers"]["intent_ids"] == ["intent_1"]
+    assert response.data["summary"]["admission"]["intent_id"] == "intent_1"
+    assert response.metadata["operation"] == "trade_trace_by_intent_id"
+    assert response.metadata["intent_id"] == "intent_1"
+
+
+def test_trade_trace_by_command_id_endpoint_returns_flow_projection() -> None:
+    response = trade_trace_by_command_id(
+        "cmd_1",
+        trace_views=_TradeTraceReadModel(),
+    )
+
+    assert response.success is True
+    assert response.data["trace_id"] == "trace_1"
+    assert response.data["identifiers"]["command_ids"] == ["cmd_1"]
+    assert response.data["summary"]["admission"]["command_id"] == "cmd_1"
+    assert response.metadata["operation"] == "trade_trace_by_command_id"
+    assert response.metadata["command_id"] == "cmd_1"
+
+
+def test_trade_trace_by_action_id_endpoint_returns_flow_projection() -> None:
+    response = trade_trace_by_action_id(
+        "act_1",
+        trace_views=_TradeTraceReadModel(),
+    )
+
+    assert response.success is True
+    assert response.data["trace_id"] == "trace_1"
+    assert response.data["identifiers"]["action_ids"] == ["act_1"]
+    assert response.data["summary"]["admission"]["action_id"] == "act_1"
+    assert response.metadata["operation"] == "trade_trace_by_action_id"
+    assert response.metadata["action_id"] == "act_1"
+
+
 def test_trade_traces_endpoint_returns_directory_projection() -> None:
     response = trade_traces(
         symbol="XAUUSD",
@@ -1468,6 +1659,34 @@ def test_trade_traces_endpoint_returns_directory_projection() -> None:
     assert response.metadata["operation"] == "trade_traces"
     assert response.metadata["page"] == 2
     assert response.metadata["total"] == 5
+
+
+def test_trade_traces_endpoint_filters_execution_identifiers() -> None:
+    response = trade_traces(
+        intent_id="intent_1",
+        command_id="cmd_1",
+        action_id="act_1",
+        trace_views=_TradeTraceReadModel(),
+    )
+
+    assert response.success is True
+    assert response.data[0].intent_id == "intent_1"
+    assert response.data[0].command_id == "cmd_1"
+    assert response.data[0].action_id == "act_1"
+    assert response.data[0].admission.intent_id == "intent_1"
+    assert response.metadata["intent_id"] == "intent_1"
+    assert response.metadata["command_id"] == "cmd_1"
+    assert response.metadata["action_id"] == "act_1"
+
+
+def test_trade_traces_endpoint_exposes_default_recent_window_metadata() -> None:
+    response = trade_traces(
+        trace_views=_TradeTraceReadModel(),
+    )
+
+    assert response.success is True
+    assert response.metadata["default_window_applied"] is True
+    assert response.metadata["from"] == "2026-01-01T00:00:00+00:00"
 
 
 def test_trade_state_alerts_summary_endpoint_returns_alert_projection() -> None:
@@ -1820,6 +2039,7 @@ def test_trade_dispatch_normalizes_trade_alias_and_direction() -> None:
     assert response.metadata["operation"] == "trade"
     assert response.metadata["requested_operation"] == "submit_trade"
     assert response.data["admission_report"]["decision"] == "allow"
+    trace_id = response.data["admission_report"]["trace_id"]
     assert service.last_dispatch == (
         "trade",
         {
@@ -1831,6 +2051,7 @@ def test_trade_dispatch_normalizes_trade_alias_and_direction() -> None:
             "comment": "",
             "magic": 0,
             "dry_run": False,
+            "trace_id": trace_id,
         },
     )
 

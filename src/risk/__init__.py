@@ -1,5 +1,13 @@
 from .models import RiskAssessment, RiskCheckResult, TradeIntent
 from .ports import MarginGuardExecutorPort, MarginGuardPositionPort, MarginGuardTradePort
+from .profiles import (
+    RiskProfileResolutionError,
+    RiskProfileResolver,
+    RiskProfileSelection,
+    resolve_recovery_budget_profile_settings,
+    resolve_recovery_risk_profile_contract,
+    validate_strategy_risk_profile_binding,
+)
 from .runtime import wire_margin_guard
 from .rules import (
     AccountSnapshotRule,
@@ -31,6 +39,12 @@ __all__ = [
     "ProtectionRule",
     "RiskAssessment",
     "RiskCheckResult",
+    "RiskProfileResolutionError",
+    "RiskProfileResolver",
+    "RiskProfileSelection",
+    "resolve_recovery_budget_profile_settings",
+    "resolve_recovery_risk_profile_contract",
+    "validate_strategy_risk_profile_binding",
     "RuleContext",
     "TradeIntent",
 ]

@@ -27,7 +27,7 @@ def _build_runtime_with_identity(
     )
     if mode_value is not None:
         container.runtime_mode_controller = SimpleNamespace(
-            current_mode=lambda: SimpleNamespace(value=mode_value)
+            current_mode=SimpleNamespace(value=mode_value)
         )
     return AppRuntime(container, signal_config_loader=signal_config_loader)
 
@@ -96,6 +96,7 @@ def test_startup_summary_degrades_on_mode_failure(caplog):
     )
 
     class _BrokenController:
+        @property
         def current_mode(self):
             raise RuntimeError("mode controller offline")
 

@@ -22,13 +22,26 @@ class Quote:
     time: datetime
 
 
-@dataclass
+@dataclass(frozen=True)
 class Tick:
     symbol: str
-    price: float
+    bid: Optional[float]
+    ask: Optional[float]
+    last: Optional[float]
     volume: float
     time: datetime
     time_msc: Optional[int] = None
+    flags: int = 0
+
+    @property
+    def mid(self) -> Optional[float]:
+        if self.bid is None or self.ask is None:
+            return None
+        return (self.bid + self.ask) / 2.0
+
+    @property
+    def price(self) -> Optional[float]:
+        return self.last if self.last is not None else self.mid or self.bid or self.ask
 
 
 @dataclass
@@ -152,10 +165,13 @@ class MT5MarketClient(MT5BaseClient):
         return [
             Tick(
                 symbol=symbol,
-                price=self._extract_price(tick),
+                bid=self._extract_tick_price_field(tick, "bid"),
+                ask=self._extract_tick_price_field(tick, "ask"),
+                last=self._extract_tick_price_field(tick, "last"),
                 volume=self._extract_volume(tick),
                 time=self._tick_timestamp(tick),
                 time_msc=self._tick_time_msc(tick),
+                flags=self._extract_flags(tick),
             )
                 for tick in ticks
             ]
@@ -224,11 +240,21 @@ class MT5MarketClient(MT5BaseClient):
             price = self._get_field(tick, "ask", 0.0)
         return float(price)
 
+    def _extract_tick_price_field(self, tick, field: str) -> Optional[float]:
+        value = self._get_field(tick, field)
+        if value is None:
+            return None
+        value = float(value)
+        return value if value > 0 else None
+
     def _extract_volume(self, tick) -> float:
         vol = self._get_field(tick, "volume_real")
         if vol is None or vol == 0:
             vol = self._get_field(tick, "volume", 0.0)
         return float(vol)
+
+    def _extract_flags(self, tick) -> int:
+        return int(self._get_field(tick, "flags", 0) or 0)
 
     @staticmethod
     def _normalize_last_price(bid: float, ask: float, last: float) -> float:

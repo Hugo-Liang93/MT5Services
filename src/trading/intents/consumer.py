@@ -16,6 +16,10 @@ from src.trading.execution.eventing import (
 )
 from src.trading.intents.codec import signal_event_from_payload
 from src.trading.runtime.lifecycle import OwnedThreadLifecycle
+from src.trading.runtime.progress_health import (
+    build_progress_health_snapshot,
+    utc_now,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +76,11 @@ class ExecutionIntentConsumer:
         # §0dn C4：takeover 检测计数器——complete_fn 返 False 说明 lease
         # 已被其他 worker 接管。生产事故必须在 dashboard 可见，不只是 log。
         self._total_takeovers: int = 0
+        self._last_poll_at: datetime | None = None
+        self._last_claim_at: datetime | None = None
+        self._last_complete_at: datetime | None = None
+        self._last_error: str | None = None
+        self._consecutive_errors: int = 0
 
     def start(self) -> None:
         if self._lifecycle.is_running():
@@ -98,7 +107,8 @@ class ExecutionIntentConsumer:
         while not self._stop_event.is_set():
             try:
                 self._worker_iteration()
-            except Exception:
+            except Exception as exc:
+                self._record_progress_error(exc)
                 logger.exception(
                     "ExecutionIntentConsumer: unexpected error in worker loop; "
                     "continuing after backoff",
@@ -106,6 +116,7 @@ class ExecutionIntentConsumer:
                 self._stop_event.wait(self._poll_interval_seconds)
 
     def _worker_iteration(self) -> None:
+        self._last_poll_at = utc_now()
         transitions = self._claim_fn(
             target_account_key=self._runtime_identity.account_key,
             claimed_by_instance_id=self._runtime_identity.instance_id,
@@ -114,6 +125,7 @@ class ExecutionIntentConsumer:
             lease_seconds=self._lease_seconds,
             max_attempts=self._max_attempts,
         )
+        self._clear_progress_error()
         if isinstance(transitions, dict):
             claimed = list(transitions.get("claimed") or [])
             reclaimed = list(transitions.get("reclaimed") or [])
@@ -136,6 +148,7 @@ class ExecutionIntentConsumer:
         if not claimed:
             self._stop_event.wait(self._poll_interval_seconds)
             return
+        self._last_claim_at = utc_now()
         for item in claimed:
             if self._stop_event.is_set():
                 return
@@ -336,7 +349,11 @@ class ExecutionIntentConsumer:
                             "ExecutionIntentConsumer: takeover pipeline emit "
                             "runtime degradation (counter still incremented)"
                         )
-        except Exception:
+            else:
+                self._last_complete_at = utc_now()
+                self._clear_progress_error()
+        except Exception as exc:
+            self._record_progress_error(exc)
             logger.exception(
                 "ExecutionIntentConsumer: complete_fn failed (intent_id=%s); "
                 "command will retry on next claim cycle (lease will expire)",
@@ -363,24 +380,44 @@ class ExecutionIntentConsumer:
                 "degradation (network/IO/runtime); business execution unaffected",
             )
 
+    def health_snapshot(self, now: datetime | None = None) -> dict[str, Any]:
+        """返回消费者推进健康快照，供 ready / monitoring 使用。"""
+        return build_progress_health_snapshot(
+            running=self.is_running(),
+            poll_interval_seconds=self._poll_interval_seconds,
+            lease_seconds=self._lease_seconds,
+            last_poll_at=self._last_poll_at,
+            last_claim_at=self._last_claim_at,
+            last_complete_at=self._last_complete_at,
+            last_error=self._last_error,
+            consecutive_errors=self._consecutive_errors,
+            in_flight_id_field="in_flight_intent_id",
+            in_flight_id=self._in_flight_intent_id,
+            in_flight_since=self._in_flight_since,
+            totals={
+                "total_processed": self._total_processed,
+                "total_failed": self._total_failed,
+                "total_takeovers": self._total_takeovers,
+            },
+            config={
+                "poll_interval_seconds": self._poll_interval_seconds,
+                "batch_size": self._batch_size,
+                "lease_seconds": self._lease_seconds,
+                "max_attempts": self._max_attempts,
+            },
+            now=now,
+        )
+
     def status(self) -> dict[str, Any]:
         """返回消费者运行状态，供监控使用。"""
-        in_flight_duration: float | None = None
-        if self._in_flight_since is not None:
-            in_flight_duration = round(time.monotonic() - self._in_flight_since, 2)
-        return {
-            "running": self.is_running(),
-            "total_processed": self._total_processed,
-            "total_failed": self._total_failed,
-            # §0dn C4：takeover 计数器，dashboard 可读
-            "total_takeovers": self._total_takeovers,
-            "in_flight_intent_id": self._in_flight_intent_id,
-            "in_flight_duration_seconds": in_flight_duration,
-            "poll_interval_seconds": self._poll_interval_seconds,
-            "batch_size": self._batch_size,
-            "lease_seconds": self._lease_seconds,
-            "max_attempts": self._max_attempts,
-        }
+        return self.health_snapshot()
+
+    def _record_progress_error(self, exc: Exception) -> None:
+        self._last_error = f"{type(exc).__name__}: {exc}"
+        self._consecutive_errors += 1
+
+    def _clear_progress_error(self) -> None:
+        self._consecutive_errors = 0
 
     def _heartbeat(self, intent_id: str) -> None:
         # §0dn A1：heartbeat_fn 必填，无 None 退化路径。
