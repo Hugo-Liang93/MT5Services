@@ -63,6 +63,7 @@ class TradeAPIDispatcher:
                 admission_evaluation = self._admission_service.evaluate_trade_payload(
                     normalized_payload,
                     requested_operation=requested_operation,
+                    trace_id=normalized_payload.get("trace_id"),
                 )
                 admission_report = dict(admission_evaluation.get("report") or {})
                 if normalized_operation == "trade_precheck":
@@ -75,6 +76,9 @@ class TradeAPIDispatcher:
                             "trace_id": admission_report.get("trace_id"),
                         },
                     )
+                admission_trace_id = str(admission_report.get("trace_id") or "").strip()
+                if admission_trace_id:
+                    normalized_payload["trace_id"] = admission_trace_id
                 if admission_report and str(admission_report.get("decision") or "").lower() == "block":
                     assessment = dict(admission_evaluation.get("assessment") or {})
                     reasons = list(admission_report.get("reasons") or [])

@@ -21,6 +21,8 @@ from src.signals.models import SignalEvent
 from src.trading.entry_policy import (
     BarSnapshot,
     EntryIntent,
+    EntryPolicyMappingError,
+    EntryPolicyNotFoundError,
     EntryPolicyRegistry,
     EntrySpecGroup,
     MarketSnapshot,
@@ -45,8 +47,8 @@ def ensure_entry_spec_group(
 ) -> EntrySpecGroup | None:
     """幂等地将 EntrySpecGroup 装配到 event.metadata[ENTRY_SPEC_GROUP]。
 
-    返回 None 表示装配失败（registry 缺失 / ATR<=0 / 关键字段缺失）。调用方
-    根据 None 走 fallback（默认 market 入场）或拒单。
+    返回 None 表示装配失败（registry 缺失 / ATR<=0 / 关键字段缺失）。
+    调用方必须结构化拒单；不得把 None 解释为 market 入场。
     """
     cached = event.metadata.get(MK.ENTRY_SPEC_GROUP)
     if isinstance(cached, EntrySpecGroup):
@@ -64,7 +66,16 @@ def ensure_entry_spec_group(
     if market is None:
         return None
 
-    policy = registry.resolve(intent.strategy_name, intent.timeframe)
+    try:
+        policy = registry.resolve(intent.strategy_name, intent.timeframe)
+    except (EntryPolicyMappingError, EntryPolicyNotFoundError) as exc:
+        logger.warning(
+            "EntryPolicy mapping unavailable for %s/%s: %s",
+            intent.strategy_name,
+            intent.timeframe,
+            exc,
+        )
+        return None
     policy_params = registry.resolve_params(policy.name, intent.timeframe)
     group = policy.derive(intent, market, policy_params)
 
@@ -156,16 +167,7 @@ def _resolve_registry(executor: "TradeExecutor") -> EntryPolicyRegistry | None:
 def _build_entry_intent(event: SignalEvent) -> EntryIntent | None:
     raw = event.metadata.get(MK.ENTRY_INTENT)
     if not isinstance(raw, Mapping):
-        # 兼容历史路径：若 ENTRY_INTENT 未写入但有 direction，构造最小 intent
-        if not event.direction:
-            return None
-        raw = {
-            "strategy_name": event.strategy,
-            "timeframe": event.timeframe,
-            "direction": event.direction,
-            "pattern_type": event.metadata.get(MK.PATTERN_TYPE)
-            or PatternType.NONE.value,
-        }
+        return None
     pattern_value = raw.get("pattern_type") or PatternType.NONE.value
     try:
         pattern = PatternType(pattern_value)
@@ -203,21 +205,7 @@ def _build_market_snapshot(
 
     raw_bars = event.metadata.get(MK.RECENT_BARS)
     if not isinstance(raw_bars, (list, tuple)) or not raw_bars:
-        # fallback: 用 entry_price 构造单 bar 兼容 close-only 场景
-        entry_price = float(getattr(params, "entry_price", 0.0))
-        if entry_price <= 0:
-            return None
-        bar = BarSnapshot(
-            open=entry_price,
-            high=entry_price,
-            low=entry_price,
-            close=entry_price,
-        )
-        return MarketSnapshot(
-            recent_bars=(bar,),
-            atr_value=atr_value,
-            current_close=entry_price,
-        )
+        return None
 
     bars: list[BarSnapshot] = []
     for raw in raw_bars:
@@ -247,9 +235,9 @@ def _build_market_snapshot(
 
 
 def group_is_market_only(group: EntrySpecGroup | None) -> bool:
-    """判断 EntrySpecGroup 是否只含 MARKET 成员（含 None=未装配 → 视作 market 兜底）。"""
+    """判断 EntrySpecGroup 是否只含 MARKET 成员；None 不是 market。"""
     if group is None:
-        return True
+        return False
     return group.all_market()
 
 

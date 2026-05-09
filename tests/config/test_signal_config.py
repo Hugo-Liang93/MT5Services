@@ -212,7 +212,7 @@ def test_signal_config_loads_chandelier_from_exit_ini(monkeypatch):
     assert cfg.chandelier_tf_trail_scale["H1"] == 0.95
 
 
-def test_default_signal_config_declares_m1_m5_micro_momentum_mainline(monkeypatch):
+def test_default_signal_config_is_price_action_only_without_demo_binding(monkeypatch):
     configs = {
         "signal.ini": _read_repo_ini("signal.ini"),
         "exit.ini": _read_repo_ini("exit.ini"),
@@ -226,27 +226,20 @@ def test_default_signal_config_declares_m1_m5_micro_momentum_mainline(monkeypatc
     finally:
         signal_config.get_signal_config.cache_clear()
 
-    assert cfg.strategy_timeframes["structured_micro_momentum"] == ["m1", "m5"]
-    assert cfg.account_bindings["demo_main"] == ["structured_micro_momentum"]
+    assert "structured_micro_momentum" not in cfg.strategy_timeframes
+    assert cfg.strategy_timeframes["structured_price_action"] == ["m15", "m30"]
+    assert cfg.account_bindings.get("demo_main", []) == []
     assert cfg.intrabar_trading_enabled_strategies == []
 
-    deployment = cfg.strategy_deployments["structured_micro_momentum"]
-    assert deployment.status is StrategyDeploymentStatus.DEMO_VALIDATION
-    assert deployment.locked_timeframes == ("M1", "M5")
+    assert "structured_micro_momentum" not in cfg.strategy_deployments
+    deployment = cfg.strategy_deployments["structured_price_action"]
+    assert deployment.status is StrategyDeploymentStatus.CANDIDATE
+    assert deployment.locked_timeframes == ("M15", "M30")
     assert deployment.locked_sessions == ("london", "new_york")
 
-    assert cfg.strategy_params["structured_micro_momentum__min_volume_ratio"] == 1.15
-    assert (
-        cfg.strategy_params_per_tf["M1"][
-            "structured_micro_momentum__time_bars"
-        ]
-        == 8.0
-    )
-    assert (
-        cfg.strategy_params_per_tf["M5"][
-            "structured_micro_momentum__time_bars"
-        ]
-        == 6.0
+    assert not any(
+        key.startswith("structured_micro_momentum__")
+        for key in cfg.strategy_params
     )
 
 

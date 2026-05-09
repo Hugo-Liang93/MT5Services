@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -26,6 +27,8 @@ from .results import (
     build_trade_execution_result,
     build_trade_precheck_result,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TradingService:
@@ -241,6 +244,25 @@ class TradingService:
     def _side_to_order_type(self, side: str, order_kind: str = "market") -> int:
         return self.client.side_and_kind_to_order_type(side, order_kind=order_kind)
 
+    def _finalize_trade_frequency_reservation(
+        self,
+        risk_assessment: Optional[Dict[str, Any]],
+        *,
+        committed: bool,
+    ) -> None:
+        if self.pre_trade_risk_service is None or risk_assessment is None:
+            return
+        try:
+            self.pre_trade_risk_service.finalize_trade_frequency_reservation(
+                risk_assessment,
+                committed=committed,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to finalize trade frequency reservation",
+                exc_info=True,
+            )
+
     # --- 交易执行核心 API ---
     def execute_trade(
         self,
@@ -311,11 +333,19 @@ class TradingService:
                 precheck_snapshot,
                 reason=REASON_XAUUSD_TRADE_GUARD_BLOCKED,
             )
+            self._finalize_trade_frequency_reservation(
+                risk_assessment,
+                committed=False,
+            )
             raise PreTradeRiskBlockedError(
                 blocked_snapshot["reason"],
                 assessment=blocked_snapshot,
             )
         if dry_run:
+            self._finalize_trade_frequency_reservation(
+                risk_assessment,
+                committed=False,
+            )
             return build_trade_execution_result(
                 {},
                 request_id=request_id,
@@ -333,6 +363,10 @@ class TradingService:
                 execution_state="skipped",
             )
         if not bool(precheck_snapshot.get("executable", True)):
+            self._finalize_trade_frequency_reservation(
+                risk_assessment,
+                committed=False,
+            )
             raise MT5TradingClientError(str(precheck_snapshot.get("reason") or "Trade precheck failed"))
 
         last_error: Optional[Exception] = None
@@ -366,15 +400,29 @@ class TradingService:
                     break
                 last_error = exc
                 if attempt >= max_attempts:
+                    self._finalize_trade_frequency_reservation(
+                        risk_assessment,
+                        committed=False,
+                    )
                     raise
                 time.sleep(max(float(retry_backoff_ms), 0.0) / 1000.0)
         if result is None and last_error is not None:
+            self._finalize_trade_frequency_reservation(
+                risk_assessment,
+                committed=False,
+            )
             raise last_error
 
         # 记录交易频率（供 TradeFrequencyRule 使用）
         if self.pre_trade_risk_service is not None:
             try:
-                self.pre_trade_risk_service.record_trade_execution()
+                if risk_assessment is not None:
+                    self.pre_trade_risk_service.finalize_trade_frequency_reservation(
+                        risk_assessment,
+                        committed=True,
+                    )
+                else:
+                    self.pre_trade_risk_service.record_trade_execution()
             except Exception:
                 pass
         self._invalidate_account_cache()

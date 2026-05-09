@@ -21,10 +21,12 @@ from src.config.models import (
     RiskConfig,
     SignalConfig,
     SystemConfig,
+    TickFeatureRuntimeConfig,
     TradingConfig,
     TradingOpsConfig,
 )
 from src.config.instance_context import resolve_instance_scoped_dir
+from src.config.risk import normalize_risk_config_payload
 from src.config.signal import get_signal_config
 from src.config.utils import (
     ConfigValidator,
@@ -47,6 +49,16 @@ def _merge_sections(*sections: Dict[str, Any]) -> Dict[str, Any]:
         if section:
             merged.update(section)
     return merged
+
+
+def _normalize_float_map(raw: Dict[str, Any]) -> Dict[str, float]:
+    normalized: Dict[str, float] = {}
+    for raw_key, raw_value in raw.items():
+        key = str(raw_key).strip().upper()
+        if not key:
+            continue
+        normalized[key] = float(raw_value)
+    return normalized
 
 
 def _normalize_log_format(value: Any) -> str:
@@ -121,12 +133,23 @@ class CentralizedConfig:
                 system_raw.get("modules_enabled")
             )
 
+        interval_raw = dict(main_config.get("intervals", {}))
+        interval_raw["ohlc_intervals"] = _normalize_float_map(
+            dict(main_config.get("ohlc_intervals", {}))
+        )
+        tick_feature_raw = dict(main_config.get("tick_features", {}))
+        tick_feature_raw["point_size_by_symbol"] = _normalize_float_map(
+            dict(main_config.get("tick_feature_point_size", {}))
+        )
+        tick_feature_raw["max_spread_points_by_symbol"] = _normalize_float_map(
+            dict(main_config.get("tick_feature_max_spread_points", {}))
+        )
+
         shared = {
             "trading": TradingConfig(**trading_raw).model_dump(),
-            "intervals": IntervalConfig(
-                **main_config.get("intervals", {})
-            ).model_dump(),
+            "intervals": IntervalConfig(**interval_raw).model_dump(),
             "limits": LimitConfig(**main_config.get("limits", {})).model_dump(),
+            "tick_features": TickFeatureRuntimeConfig(**tick_feature_raw).model_dump(),
             "system": SystemConfig(**system_raw).model_dump(),
         }
         for field in shared["trading"]:
@@ -138,19 +161,43 @@ class CentralizedConfig:
                 ),
             )
         for field in shared["intervals"]:
-            self._set_provenance(
-                "intervals",
-                field,
-                self._option_source(
+            if field == "ohlc_intervals":
+                source = (
+                    "app.ini[ohlc_intervals]"
+                    if shared["intervals"].get(field)
+                    else "default"
+                )
+            else:
+                source = self._option_source(
                     config_name="app.ini", section="intervals", key=field
-                ),
-            )
+                )
+            self._set_provenance("intervals", field, source)
         for field in shared["limits"]:
             self._set_provenance(
                 "limits",
                 field,
                 self._option_source(config_name="app.ini", section="limits", key=field),
             )
+        for field in shared["tick_features"]:
+            if field == "point_size_by_symbol":
+                source = (
+                    "app.ini[tick_feature_point_size]"
+                    if shared["tick_features"].get(field)
+                    else "default"
+                )
+            elif field == "max_spread_points_by_symbol":
+                source = (
+                    "app.ini[tick_feature_max_spread_points]"
+                    if shared["tick_features"].get(field)
+                    else "default"
+                )
+            else:
+                source = self._option_source(
+                    config_name="app.ini",
+                    section="tick_features",
+                    key=field,
+                )
+            self._set_provenance("tick_features", field, source)
         for field in shared["system"]:
             self._set_provenance(
                 "system",
@@ -297,25 +344,21 @@ class CentralizedConfig:
                 economic_config.get(api_key_field)
             )
 
-        risk_config = dict(configs["risk"].get("risk", {}))
-        for optional_int_key in (
-            "max_positions_per_symbol",
-            "max_open_positions_total",
-            "max_pending_orders_per_symbol",
-            "max_trades_per_day",
-            "max_trades_per_hour",
-        ):
-            if str(risk_config.get(optional_int_key, "")).strip() == "":
-                risk_config[optional_int_key] = None
-        for optional_float_key in (
-            "max_volume_per_order",
-            "max_volume_per_symbol",
-            "max_net_lots_per_symbol",
-            "daily_loss_limit_pct",
-            "margin_safety_factor",
-        ):
-            if str(risk_config.get(optional_float_key, "")).strip() == "":
-                risk_config[optional_float_key] = None
+        risk_sections = configs["risk"]
+        risk_profile_sections = {
+            section_name.split(".", 1)[1].strip(): section_payload
+            for section_name, section_payload in risk_sections.items()
+            if section_name.startswith("risk_profiles.")
+            and section_name.split(".", 1)[1].strip()
+        }
+        risk_config = normalize_risk_config_payload(
+            configs["risk"].get("risk", {}),
+            configs["risk"].get("preflight_risk_policy", {}),
+            configs["risk"].get("recovery_execution_canary", {}),
+            configs["risk"].get("recovery_runtime_runner", {}),
+            configs["risk"].get("risk_profile_bindings", {}),
+            risk_profile_sections,
+        )
 
         self._set_provenance(
             "api",
@@ -432,6 +475,27 @@ class CentralizedConfig:
             self._set_provenance("economic", field, source)
 
         for field in RiskConfig.model_fields:
+            if field == "preflight_policy":
+                self._set_provenance(
+                    "risk",
+                    field,
+                    "risk.ini[preflight_risk_policy]",
+                )
+                continue
+            if field == "risk_profile_bindings":
+                self._set_provenance(
+                    "risk",
+                    field,
+                    "risk.ini[risk_profile_bindings]",
+                )
+                continue
+            if field == "risk_profiles":
+                self._set_provenance(
+                    "risk",
+                    field,
+                    "risk.ini[risk_profiles.*]",
+                )
+                continue
             self._set_provenance(
                 "risk",
                 field,
@@ -466,6 +530,9 @@ class CentralizedConfig:
 
     def get_limit_config(self) -> LimitConfig:
         return LimitConfig(**self.load_all()["limits"])
+
+    def get_tick_feature_config(self) -> TickFeatureRuntimeConfig:
+        return TickFeatureRuntimeConfig(**self.load_all()["tick_features"])
 
     def get_api_config(self) -> APIConfig:
         return APIConfig(**self.load_all()["api"])
@@ -513,6 +580,7 @@ class CentralizedConfig:
             "trading": dict(config["trading"]),
             "intervals": dict(config["intervals"]),
             "limits": dict(config["limits"]),
+            "tick_features": dict(config["tick_features"]),
             "system": dict(config["system"]),
             "api": api_snapshot,
             "ingest": dict(config["ingest"]),
@@ -550,6 +618,11 @@ def get_limit_config() -> LimitConfig:
 
 
 @lru_cache
+def get_tick_feature_config() -> TickFeatureRuntimeConfig:
+    return _config_manager.get_tick_feature_config()
+
+
+@lru_cache
 def get_api_config() -> APIConfig:
     return _config_manager.get_api_config()
 
@@ -583,6 +656,7 @@ def reload_configs() -> None:
     get_trading_config.cache_clear()
     get_interval_config.cache_clear()
     get_limit_config.cache_clear()
+    get_tick_feature_config.cache_clear()
     get_api_config.cache_clear()
     get_ingest_config.cache_clear()
     get_system_config.cache_clear()

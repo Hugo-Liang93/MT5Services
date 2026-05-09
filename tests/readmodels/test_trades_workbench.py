@@ -112,6 +112,27 @@ def test_build_trade_detail_returns_six_dimensions() -> None:
         "timeline": [
             {"id": "t1", "stage": "signal.confirmed", "at": "2026-04-20T09:00:00+00:00"}
         ],
+        "lifecycle": {
+            "summary": {
+                "status": "closed",
+                "order_ticket": 9001,
+                "position_ticket": 12345,
+            },
+            "entry": {"status": "filled", "order_ticket": 9001},
+            "management": {
+                "update_count": 1,
+                "sl_tp_updates": [
+                    {
+                        "action_type": "modify_sl",
+                        "new_stop_loss": 2398.0,
+                    }
+                ],
+            },
+            "exit": {"status": "closed"},
+            "outcome": {"won": True},
+            "timeline": [{"stage": "entry"}, {"stage": "management"}, {"stage": "exit"}],
+            "data_gaps": [],
+        },
         "facts": {
             "signal_confirmed": {
                 "signal_id": "sig_1",
@@ -235,7 +256,9 @@ def test_build_trade_detail_returns_six_dimensions() -> None:
     assert plan_vs_live["outcome"]["won"] is True
     assert plan_vs_live["position_state"]["ticket"] == 12345
     # lifecycle
-    assert detail["lifecycle"]["positions"][0]["ticket"] == 12345
+    assert detail["lifecycle"]["summary"]["position_ticket"] == 12345
+    assert detail["lifecycle"]["management"]["update_count"] == 1
+    assert detail["lifecycle"]["timeline"][1]["stage"] == "management"
     # risk_review
     risk = detail["risk_review"]
     assert risk["last_decision"] == "allow"

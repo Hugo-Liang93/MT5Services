@@ -10,6 +10,15 @@ from src.app_runtime.factories import (
     register_signal_hot_reload,
 )
 from src.signals.contracts import StrategyCapability
+from src.signals.orchestration.intrabar_contract import (
+    intrabar_enabled_strategies,
+    intrabar_trading_active,
+)
+from src.trading.execution.market_data_health import build_execution_market_data_health
+from src.trading.execution.tick_feature_health import build_execution_tick_feature_health
+from src.app_runtime.builder_phases.tick_features import (
+    attach_tick_feature_listener,
+)
 
 
 def _resolve_optional_getter(target: Any, attr: str, default: Any = None) -> Any:
@@ -27,9 +36,7 @@ def _validate_intrabar_trigger_coverage(
     """Validate intrabar trigger coverage against the effective runtime timeframe set."""
     if signal_module is None:
         return
-    if not bool(
-        _resolve_optional_getter(signal_config, "intrabar_trading_enabled", False)
-    ):
+    if not intrabar_trading_active(signal_config):
         return
 
     catalog_fn = _resolve_optional_getter(signal_module, "strategy_capability_catalog")
@@ -73,18 +80,7 @@ def _validate_intrabar_trigger_coverage(
     strategy_timeframes: dict[str, Any] = dict(
         _resolve_optional_getter(signal_config, "strategy_timeframes", {}) or {}
     )
-    enabled_intrabar_strategies = frozenset(
-        str(strategy_name).strip()
-        for strategy_name in (
-            _resolve_optional_getter(
-                signal_config,
-                "intrabar_trading_enabled_strategies",
-                (),
-            )
-            or ()
-        )
-        if str(strategy_name).strip()
-    )
+    enabled_intrabar_strategies = intrabar_enabled_strategies(signal_config)
 
     capabilities_by_name = {
         capability.name: capability for capability in catalog if capability.name
@@ -129,11 +125,7 @@ def _validate_intrabar_trigger_coverage(
             "declare intrabar capability: " + ", ".join(unsupported_enabled)
         )
 
-    active_intrabar_strategies = (
-        sorted(enabled_intrabar_strategies)
-        if enabled_intrabar_strategies
-        else sorted(intrabar_capabilities.keys())
-    )
+    active_intrabar_strategies = sorted(enabled_intrabar_strategies)
     if active_intrabar_strategies and not trigger_map:
         raise ValueError(
             "intrabar_trading is enabled but [intrabar_trading.trigger] is empty"
@@ -179,6 +171,46 @@ def _validate_intrabar_trigger_coverage(
                 )
     if errors:
         raise ValueError("Invalid intrabar runtime contract: " + "; ".join(errors))
+
+
+def _wire_required_market_data_lanes(ingestor: Any, signal_runtime: Any) -> None:
+    if ingestor is None or signal_runtime is None:
+        return
+    required_lanes_fn = _resolve_optional_getter(
+        signal_runtime,
+        "required_market_data_lanes",
+    )
+    set_required_lanes_fn = _resolve_optional_getter(
+        ingestor,
+        "set_required_market_data_lanes",
+    )
+    if not callable(required_lanes_fn) or not callable(set_required_lanes_fn):
+        return
+    set_required_lanes_fn(required_lanes_fn())
+
+
+def _has_tick_derived_strategy(signal_runtime: Any) -> bool:
+    if signal_runtime is None:
+        return False
+    contract_fn = _resolve_optional_getter(signal_runtime, "strategy_capability_contract")
+    if not callable(contract_fn):
+        return False
+    for item in contract_fn() or ():
+        scopes = item.valid_scopes if isinstance(item, StrategyCapability) else item.get("valid_scopes", ())
+        if "tick_derived" in tuple(scopes or ()):
+            return True
+    return False
+
+
+def _wire_tick_feature_runtime(container: AppContainer) -> None:
+    if container.signal_runtime is None:
+        return
+    if not _has_tick_derived_strategy(container.signal_runtime):
+        return
+    attach_tick_feature_listener(
+        container,
+        container.signal_runtime.enqueue_tick_feature_snapshot,
+    )
 
 
 def _wire_margin_guard(
@@ -270,10 +302,31 @@ def build_signal_layer(
     container.execution_intent_publisher = signal_components.execution_intent_publisher
     container.execution_intent_consumer = signal_components.execution_intent_consumer
 
-    if container.ingestor is not None and signal_config.intrabar_trading_enabled:
+    if container.ingestor is not None and intrabar_trading_active(signal_config):
         trigger_map = dict(signal_config.intrabar_trading_trigger_map)
         if trigger_map:
             container.ingestor.set_intrabar_trigger_map(trigger_map)
+
+    _wire_required_market_data_lanes(
+        container.ingestor,
+        container.signal_runtime,
+    )
+    _wire_tick_feature_runtime(container)
+    if container.trade_executor is not None and container.ingestor is not None:
+        ingestor = container.ingestor
+        container.trade_executor.set_market_data_health_fn(
+            lambda symbol: build_execution_market_data_health(ingestor, symbol)
+        )
+    if container.trade_executor is not None and container.tick_feature_health_store is not None:
+        health_store = container.tick_feature_health_store
+        feature_bus = container.tick_feature_bus
+        container.trade_executor.set_tick_feature_health_fn(
+            lambda symbol: build_execution_tick_feature_health(
+                health_store,
+                feature_bus,
+                symbol,
+            )
+        )
 
     _validate_intrabar_trigger_coverage(
         container.signal_module,
@@ -303,5 +356,6 @@ def build_signal_layer(
         execution_performance_tracker=container.execution_performance_tracker,
         execution_intent_publisher=container.execution_intent_publisher,
         pending_entry_manager=container.pending_entry_manager,
+        ingestor=container.ingestor,
     )
     container.shutdown_callbacks.append(signal_hot_reload_cleanup)

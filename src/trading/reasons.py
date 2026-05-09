@@ -18,6 +18,7 @@ REASON_TIMEOUT = "timeout"
 REASON_MISSING_WITHOUT_FILL = "missing_without_fill"
 REASON_STARTUP_EXPIRED = "startup_expired"
 REASON_STARTUP_MISSING = "startup_missing"
+REASON_STARTUP_MT5_MISSING = "startup_mt5_missing"
 REASON_STARTUP_ORPHAN_CANCELLED = "startup_orphan_cancelled"
 # ADR-013 P4-residual: recovery 检测到同 group 中 sibling 已 fill 但本 row 仍 placed
 # → 上次 fill 后 cancel 未持久化，本次重启立即撤。
@@ -55,6 +56,7 @@ __all__ = [
     "REASON_MISSING_WITHOUT_FILL",
     "REASON_STARTUP_EXPIRED",
     "REASON_STARTUP_MISSING",
+    "REASON_STARTUP_MT5_MISSING",
     "REASON_STARTUP_ORPHAN_CANCELLED",
     "REASON_STARTUP_OCO_SIBLING_FILLED",
     "REASON_END_OF_DAY",

@@ -113,3 +113,52 @@ def test_trading_state_store_closes_missing_pending_state_when_position_is_recov
     assert position_row[1] == 237986634
     assert position_row[3] == 7001
     assert position_row[32] == "live:broker-live:1001"
+
+
+def test_trading_state_store_marks_missing_position_state_closed() -> None:
+    db = DummyDB()
+    store = TradingStateStore(
+        db,
+        account_alias_getter=lambda: "default",
+        account_key_getter=lambda: "live:broker-live:1001",
+    )
+    row = {
+        "account_alias": "default",
+        "account_key": "live:broker-live:1001",
+        "position_ticket": 237986635,
+        "signal_id": "sig-2",
+        "order_ticket": 7002,
+        "symbol": "XAUUSD",
+        "direction": "sell",
+        "timeframe": "M15",
+        "strategy": "structured_price_action",
+        "comment": "M15_pa_sm_sig2",
+        "entry_price": 4660.0,
+        "initial_stop_loss": 4675.0,
+        "initial_take_profit": 4630.0,
+        "current_stop_loss": 4668.0,
+        "current_take_profit": 4630.0,
+        "volume": 0.01,
+        "atr_at_entry": 8.0,
+        "confidence": 0.52,
+        "regime": None,
+        "opened_at": datetime.now(timezone.utc) - timedelta(hours=1),
+        "last_seen_at": datetime.now(timezone.utc) - timedelta(minutes=30),
+        "last_managed_at": None,
+        "highest_price": None,
+        "lowest_price": 4655.0,
+        "current_price": 4656.0,
+        "breakeven_applied": False,
+        "trailing_active": False,
+        "metadata": {"source": "state_recovery"},
+    }
+
+    store.mark_position_missing(row, reason="startup_mt5_missing")
+
+    assert len(db.position_writes) == 1
+    position_row = db.position_writes[0]
+    assert position_row[1] == 237986635
+    assert position_row[26] == "closed"
+    assert position_row[28] == "mt5_missing"
+    assert position_row[32] == "live:broker-live:1001"
+    assert position_row[30]["reason"] == "startup_mt5_missing"

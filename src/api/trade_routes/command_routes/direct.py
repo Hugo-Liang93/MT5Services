@@ -143,6 +143,7 @@ def trade(
             magic=request.magic,
             dry_run=request.dry_run,
             request_id=request.request_id,
+            trace_id=request.trace_id,
         )
         if result is None:
             return ApiResponse.error_response(

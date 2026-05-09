@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from types import SimpleNamespace
 
 import pytest
 
 from src.ops.cli import live_preflight
 from src.ops import mt5_session_gate
+from src.signals.contracts import StrategyDeployment, StrategyDeploymentStatus
 
 
 def test_ensure_mt5_session_gate_or_raise_surfaces_error_code(monkeypatch) -> None:
@@ -97,9 +99,103 @@ def test_check_mt5_reports_interactive_login_required(monkeypatch) -> None:
     )
 
 
+def test_check_mt5_instance_defaults_to_strict_terminal_process(monkeypatch) -> None:
+    fake_settings = SimpleNamespace(
+        mt5_path="C:/Program Files/TMGM MT5 Terminal/terminal64.exe",
+        mt5_server="TradeMaxGlobal-Demo",
+        mt5_login=60067107,
+        mt5_password="secret",
+        timezone="UTC",
+        server_time_offset_hours=None,
+    )
+    fake_state = SimpleNamespace(
+        terminal_reachable=False,
+        terminal_process_ready=False,
+        ipc_ready=False,
+        authorized=False,
+        account_match=False,
+        session_ready=False,
+        interactive_login_required=False,
+        error_code="terminal_not_running",
+        error_message="MT5 terminal process is not running",
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "src.config.mt5.load_mt5_settings",
+        lambda instance_name=None: fake_settings,
+    )
+
+    def fake_inspect(self, **kwargs):
+        captured.update(kwargs)
+        return fake_state
+
+    monkeypatch.setattr(
+        "src.clients.base.MT5BaseClient.inspect_session_state",
+        fake_inspect,
+    )
+    monkeypatch.setattr("src.clients.base.mt5", None)
+
+    live_preflight._check_mt5_instance()
+
+    assert captured["require_terminal_process"] is True
+    assert captured["attempt_initialize"] is True
+    assert captured["attempt_login"] is True
+
+
+def test_check_mt5_instance_auto_launch_lets_mt5_initialize_terminal(
+    monkeypatch,
+) -> None:
+    fake_settings = SimpleNamespace(
+        mt5_path="C:/Program Files/TMGM MT5 Terminal/terminal64.exe",
+        mt5_server="TradeMaxGlobal-Demo",
+        mt5_login=60067107,
+        mt5_password="secret",
+        timezone="UTC",
+        server_time_offset_hours=None,
+    )
+    fake_state = SimpleNamespace(
+        terminal_reachable=True,
+        terminal_process_ready=True,
+        ipc_ready=True,
+        authorized=True,
+        account_match=True,
+        session_ready=True,
+        interactive_login_required=False,
+        error_code=None,
+        error_message=None,
+        terminal_name="MetaTrader 5",
+        login=60067107,
+        server="TradeMaxGlobal-Demo",
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "src.config.mt5.load_mt5_settings",
+        lambda instance_name=None: fake_settings,
+    )
+
+    def fake_inspect(self, **kwargs):
+        captured.update(kwargs)
+        return fake_state
+
+    monkeypatch.setattr(
+        "src.clients.base.MT5BaseClient.inspect_session_state",
+        fake_inspect,
+    )
+    monkeypatch.setattr("src.clients.base.mt5", None)
+
+    rows = live_preflight._check_mt5_instance(auto_launch_terminal=True)
+
+    assert captured["require_terminal_process"] is False
+    assert any(
+        name == "MT5 session gate" and status == "OK" for name, status, _ in rows
+    )
+
+
 def test_check_mt5_uses_environment_topology_group(monkeypatch) -> None:
     group = SimpleNamespace(main="live-main", workers=["live-exec-a"])
-    calls: list[str] = []
+    calls: list[tuple[str, bool]] = []
 
     monkeypatch.setattr(
         "src.config.topology.load_topology_group", lambda group_name: group
@@ -107,12 +203,15 @@ def test_check_mt5_uses_environment_topology_group(monkeypatch) -> None:
     monkeypatch.setattr(
         live_preflight,
         "_check_mt5_instance",
-        lambda instance_name=None: calls.append(instance_name or "default") or [],
+        lambda instance_name=None, auto_launch_terminal=False: calls.append(
+            (instance_name or "default", auto_launch_terminal)
+        )
+        or [],
     )
 
-    live_preflight._check_mt5("live")
+    live_preflight._check_mt5("live", auto_launch_terminal=True)
 
-    assert calls == ["live-main", "live-exec-a"]
+    assert calls == [("live-main", True), ("live-exec-a", True)]
 
 
 # ---------------------------------------------------------------------------
@@ -284,3 +383,271 @@ def test_live_preflight_symbol_probe_not_hardcoded_xauusd() -> None:
     assert (
         'mt5.symbol_info("XAUUSD")' not in source
     ), "mt5.symbol_info 不应硬编码 XAUUSD；用配置值或循环遍历 trading.symbols"
+
+
+# ---------------------------------------------------------------------------
+# Effective signal routing — auto-trade 必须有可执行策略到账户的正式绑定
+# ---------------------------------------------------------------------------
+
+
+def _deployment(name: str, status: StrategyDeploymentStatus) -> StrategyDeployment:
+    return StrategyDeployment(name=name, status=status)
+
+
+def test_effective_strategy_routing_fails_when_auto_trade_has_no_bindings(
+    monkeypatch,
+) -> None:
+    strategy_name = "structured_price_action"
+    cfg = SimpleNamespace(
+        auto_trade_enabled=True,
+        strategy_deployments={
+            strategy_name: _deployment(
+                strategy_name, StrategyDeploymentStatus.DEMO_VALIDATION
+            )
+        },
+        account_bindings={},
+    )
+
+    monkeypatch.setattr("src.config.signal.get_signal_config", lambda: cfg)
+    monkeypatch.setattr(
+        "src.signals.strategies.catalog.build_named_strategy_catalog",
+        lambda: OrderedDict([(strategy_name, SimpleNamespace(name=strategy_name))]),
+    )
+
+    rows = live_preflight._check_effective_strategy_routing("demo")
+
+    assert any(
+        name == "Effective strategy routing"
+        and status == "FAIL"
+        and "auto_trade_enabled=true" in detail
+        and strategy_name in detail
+        for name, status, detail in rows
+    )
+
+
+def test_effective_strategy_routing_fails_on_unregistered_binding(monkeypatch) -> None:
+    strategy_name = "structured_price_action"
+    cfg = SimpleNamespace(
+        auto_trade_enabled=True,
+        strategy_deployments={
+            strategy_name: _deployment(strategy_name, StrategyDeploymentStatus.ACTIVE)
+        },
+        account_bindings={"demo_main": ["ghost_strategy"]},
+    )
+
+    monkeypatch.setattr("src.config.signal.get_signal_config", lambda: cfg)
+    monkeypatch.setattr(
+        "src.signals.strategies.catalog.build_named_strategy_catalog",
+        lambda: OrderedDict([(strategy_name, SimpleNamespace(name=strategy_name))]),
+    )
+
+    rows = live_preflight._check_effective_strategy_routing("demo")
+
+    assert any(
+        name == "Effective strategy routing"
+        and status == "FAIL"
+        and "unregistered" in detail
+        and "ghost_strategy" in detail
+        for name, status, detail in rows
+    )
+
+
+def test_effective_strategy_routing_blocks_non_executable_live_binding(
+    monkeypatch,
+) -> None:
+    strategy_name = "structured_price_action"
+    cfg = SimpleNamespace(
+        auto_trade_enabled=True,
+        strategy_deployments={
+            strategy_name: _deployment(
+                strategy_name, StrategyDeploymentStatus.DEMO_VALIDATION
+            )
+        },
+        account_bindings={"live_main": [strategy_name]},
+    )
+
+    monkeypatch.setattr("src.config.signal.get_signal_config", lambda: cfg)
+    monkeypatch.setattr(
+        "src.signals.strategies.catalog.build_named_strategy_catalog",
+        lambda: OrderedDict([(strategy_name, SimpleNamespace(name=strategy_name))]),
+    )
+
+    rows = live_preflight._check_effective_strategy_routing("live")
+
+    assert any(
+        name == "Effective strategy routing"
+        and status == "FAIL"
+        and "not executable in live" in detail
+        and strategy_name in detail
+        for name, status, detail in rows
+    )
+
+
+def test_effective_strategy_routing_ignores_other_environment_bindings(
+    monkeypatch,
+) -> None:
+    strategy_name = "structured_price_action"
+    cfg = SimpleNamespace(
+        auto_trade_enabled=True,
+        strategy_deployments={
+            strategy_name: _deployment(
+                strategy_name, StrategyDeploymentStatus.DEMO_VALIDATION
+            )
+        },
+        account_bindings={"demo_main": [strategy_name]},
+    )
+    group = SimpleNamespace(main="live-main", workers=(), instances=("live-main",))
+
+    monkeypatch.setattr("src.config.signal.get_signal_config", lambda: cfg)
+    monkeypatch.setattr(
+        "src.signals.strategies.catalog.build_named_strategy_catalog",
+        lambda: OrderedDict([(strategy_name, SimpleNamespace(name=strategy_name))]),
+    )
+    monkeypatch.setattr(
+        "src.config.topology.load_topology_group", lambda group_name: group
+    )
+
+    rows = live_preflight._check_effective_strategy_routing("live")
+
+    assert rows == [
+        (
+            "Effective strategy routing",
+            "OK",
+            "auto_trade_enabled=true; no strategy executable in live",
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Instance-scoped risk — live topology 必须审计实例 local 覆盖后的有效风控
+# ---------------------------------------------------------------------------
+
+
+def test_instance_risk_safety_blocks_live_topology_high_risk_overrides(
+    monkeypatch,
+) -> None:
+    group = SimpleNamespace(main="live-main", workers=(), instances=("live-main",))
+    high_risk = SimpleNamespace(
+        max_positions_per_symbol=6,
+        max_volume_per_order=0.01,
+        max_volume_per_symbol=0.06,
+        daily_loss_limit_pct=25.0,
+        max_trades_per_day=5,
+        data_unavailable_policy="fail_closed",
+    )
+
+    monkeypatch.setattr(
+        "src.config.topology.load_topology_group", lambda group_name: group
+    )
+    monkeypatch.setattr(
+        live_preflight,
+        "_load_instance_risk_config",
+        lambda instance_name: high_risk,
+        raising=False,
+    )
+
+    rows = live_preflight._check_instance_risk_safety("live")
+
+    assert any(
+        name == "[live-main] Risk: daily_loss_limit_pct"
+        and status == "FAIL"
+        and "25.0%" in detail
+        for name, status, detail in rows
+    )
+    assert any(
+        name == "[live-main] Risk: max_positions_per_symbol"
+        and status == "FAIL"
+        and "6" in detail
+        for name, status, detail in rows
+    )
+    assert any(
+        name == "[live-main] Risk: max_volume_per_symbol"
+        and status == "FAIL"
+        and "0.06" in detail
+        for name, status, detail in rows
+    )
+
+
+def test_instance_risk_safety_uses_configured_preflight_policy(
+    monkeypatch,
+) -> None:
+    from src.config.models import PreflightRiskPolicy
+
+    group = SimpleNamespace(main="live-main", workers=(), instances=("live-main",))
+    policy = PreflightRiskPolicy(
+        live_max_positions_per_symbol=6,
+        live_max_volume_per_order=0.06,
+        live_max_volume_per_symbol=0.06,
+        live_max_daily_loss_limit_pct=25.0,
+    )
+    risk_cfg = SimpleNamespace(
+        max_positions_per_symbol=6,
+        max_volume_per_order=0.06,
+        max_volume_per_symbol=0.06,
+        daily_loss_limit_pct=25.0,
+        max_trades_per_day=5,
+        data_unavailable_policy="fail_closed",
+        preflight_policy=policy,
+    )
+
+    monkeypatch.setattr(
+        "src.config.topology.load_topology_group", lambda group_name: group
+    )
+    monkeypatch.setattr(
+        live_preflight,
+        "_load_instance_risk_config",
+        lambda instance_name: risk_cfg,
+        raising=False,
+    )
+
+    rows = live_preflight._check_instance_risk_safety("live")
+
+    assert any(
+        name == "[live-main] Risk: max_positions_per_symbol" and status == "OK"
+        for name, status, _detail in rows
+    )
+    assert any(
+        name == "[live-main] Risk: max_volume_per_order" and status == "OK"
+        for name, status, _detail in rows
+    )
+    assert any(
+        name == "[live-main] Risk: max_volume_per_symbol" and status == "OK"
+        for name, status, _detail in rows
+    )
+    assert any(
+        name == "[live-main] Risk: daily_loss_limit_pct" and status == "OK"
+        for name, status, _detail in rows
+    )
+
+
+def test_instance_risk_safety_blocks_live_when_risk_data_policy_is_not_fail_closed(
+    monkeypatch,
+) -> None:
+    group = SimpleNamespace(main="live-main", workers=(), instances=("live-main",))
+    risk_cfg = SimpleNamespace(
+        max_positions_per_symbol=1,
+        max_volume_per_order=0.01,
+        max_volume_per_symbol=0.01,
+        daily_loss_limit_pct=2.0,
+        max_trades_per_day=5,
+        data_unavailable_policy="warn_only",
+    )
+
+    monkeypatch.setattr(
+        "src.config.topology.load_topology_group", lambda group_name: group
+    )
+    monkeypatch.setattr(
+        live_preflight,
+        "_load_instance_risk_config",
+        lambda instance_name: risk_cfg,
+        raising=False,
+    )
+
+    rows = live_preflight._check_instance_risk_safety("live")
+
+    assert any(
+        name == "[live-main] Risk: data_unavailable_policy"
+        and status == "FAIL"
+        and "fail_closed" in detail
+        for name, status, detail in rows
+    )

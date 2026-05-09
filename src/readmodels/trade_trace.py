@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional, Sequence
 
 from src.monitoring.pipeline import (
@@ -18,6 +18,8 @@ class TradingFlowTraceReadModel:
     目标不是新增事实源，而是把现有信号、执行、交易审计、挂单状态、
     持仓状态和结果记录聚合成一条可审查、可视化的时间线。
     """
+
+    DEFAULT_TRACE_DIRECTORY_LOOKBACK_HOURS = 6
 
     def __init__(
         self,
@@ -72,6 +74,11 @@ class TradingFlowTraceReadModel:
             signal_id=normalized_signal_id,
             limit=100,
         )
+        sl_tp_history = self._fetch_sl_tp_history(positions=positions)
+        recovery_cycles = self._fetch_recovery_cycles_by_signal_ids(
+            signal_ids=[normalized_signal_id],
+            limit=100,
+        )
         operations = self._command_audit_repo.fetch_trace_operations(
             account_alias=self._account_alias_getter(),
             signal_id=normalized_signal_id,
@@ -97,6 +104,8 @@ class TradingFlowTraceReadModel:
             operations=operations,
             pending_orders=pending_orders,
             positions=positions,
+            recovery_cycles=recovery_cycles,
+            sl_tp_history=sl_tp_history,
             signal_outcomes=signal_outcomes,
             trade_outcomes=trade_outcomes,
         )
@@ -152,6 +161,11 @@ class TradingFlowTraceReadModel:
             fetcher=self._trading_state_repo.fetch_position_runtime_states,
             limit=100,
         )
+        sl_tp_history = self._fetch_sl_tp_history(positions=positions)
+        recovery_cycles = self._fetch_recovery_cycles_by_signal_ids(
+            signal_ids=signal_ids,
+            limit=100,
+        )
         pipeline_events = self._pipeline_trace_repo.fetch_pipeline_trace_events(
             trace_ids=[normalized_trace_id],
             limit=500,
@@ -167,6 +181,157 @@ class TradingFlowTraceReadModel:
             operations=operations,
             pending_orders=pending_orders,
             positions=positions,
+            recovery_cycles=recovery_cycles,
+            sl_tp_history=sl_tp_history,
+            signal_outcomes=signal_outcomes,
+            trade_outcomes=trade_outcomes,
+        )
+
+    def trace_by_intent_id(self, intent_id: str) -> dict[str, Any]:
+        return self._trace_by_pipeline_identifier(
+            identifier_name="intent_id",
+            identifier_value=intent_id,
+        )
+
+    def trace_by_command_id(self, command_id: str) -> dict[str, Any]:
+        return self._trace_by_pipeline_identifier(
+            identifier_name="command_id",
+            identifier_value=command_id,
+        )
+
+    def trace_by_action_id(self, action_id: str) -> dict[str, Any]:
+        return self._trace_by_pipeline_identifier(
+            identifier_name="action_id",
+            identifier_value=action_id,
+        )
+
+    def _trace_by_pipeline_identifier(
+        self,
+        *,
+        identifier_name: str,
+        identifier_value: str,
+    ) -> dict[str, Any]:
+        normalized_value = str(identifier_value or "").strip()
+        if not normalized_value:
+            return self._build_trace_response(
+                signal_id=None,
+                trace_id=None,
+                preview_signals=[],
+                confirmed_signals=[],
+                pipeline_events=[],
+                auto_executions=[],
+                operations=[],
+                pending_orders=[],
+                positions=[],
+                recovery_cycles=[],
+                sl_tp_history=[],
+                signal_outcomes=[],
+                trade_outcomes=[],
+            )
+
+        filtered_events = self._pipeline_trace_repo.fetch_pipeline_trace_filtered(
+            **{identifier_name: normalized_value},
+            limit=500,
+        )
+        identifier_operations = self._fetch_operations_by_pipeline_identifier(
+            identifier_name=identifier_name,
+            identifier_value=normalized_value,
+            limit=100,
+        )
+        trace_ids = self._collect_trace_ids(
+            preview_signals=[],
+            confirmed_signals=[],
+            operations=identifier_operations,
+            pipeline_events=filtered_events,
+        )
+        pipeline_events = (
+            self._pipeline_trace_repo.fetch_pipeline_trace_events(
+                trace_ids=trace_ids,
+                limit=500,
+            )
+            if trace_ids
+            else filtered_events
+        )
+        preview_signals: list[dict[str, Any]] = []
+        confirmed_signals: list[dict[str, Any]] = []
+        operations: list[dict[str, Any]] = list(identifier_operations)
+        for trace_id in trace_ids:
+            preview_signals.extend(
+                self._signal_repo.fetch_signal_events_by_trace_id(
+                    trace_id=trace_id,
+                    scope="preview",
+                    limit=50,
+                )
+            )
+            confirmed_signals.extend(
+                self._signal_repo.fetch_signal_events_by_trace_id(
+                    trace_id=trace_id,
+                    scope="confirmed",
+                    limit=50,
+                )
+            )
+            operations.extend(
+                self._command_audit_repo.fetch_trace_operations_by_trace_id(
+                    account_alias=self._account_alias_getter(),
+                    trace_id=trace_id,
+                    limit=100,
+                )
+            )
+        operations = self._dedupe_operations(operations)
+
+        signal_ids = self._collect_signal_ids(
+            preview_signals=preview_signals,
+            confirmed_signals=confirmed_signals,
+            operations=operations,
+            pipeline_events=pipeline_events,
+        )
+        current_account_alias = self._account_alias_getter()
+        auto_executions = self._fetch_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._signal_repo.fetch_auto_executions,
+            limit=50,
+            account_alias=current_account_alias,
+        )
+        signal_outcomes = self._fetch_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._signal_repo.fetch_signal_outcomes,
+            limit=20,
+        )
+        trade_outcomes = self._fetch_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._signal_repo.fetch_trade_outcomes,
+            limit=20,
+            account_alias=current_account_alias,
+        )
+        pending_orders = self._fetch_state_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._trading_state_repo.fetch_pending_order_states,
+            limit=100,
+        )
+        positions = self._fetch_state_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._trading_state_repo.fetch_position_runtime_states,
+            limit=100,
+        )
+        sl_tp_history = self._fetch_sl_tp_history(positions=positions)
+        recovery_cycles = self._fetch_recovery_cycles_by_signal_ids(
+            signal_ids=signal_ids,
+            limit=100,
+        )
+        primary_signal_id = signal_ids[0] if signal_ids else None
+        primary_trace_id = trace_ids[0] if len(trace_ids) == 1 else None
+        return self._build_trace_response(
+            signal_id=primary_signal_id,
+            trace_id=primary_trace_id,
+            preview_signals=preview_signals,
+            confirmed_signals=confirmed_signals,
+            pipeline_events=pipeline_events,
+            auto_executions=auto_executions,
+            operations=operations,
+            pending_orders=pending_orders,
+            positions=positions,
+            recovery_cycles=recovery_cycles,
+            sl_tp_history=sl_tp_history,
             signal_outcomes=signal_outcomes,
             trade_outcomes=trade_outcomes,
         )
@@ -179,6 +344,9 @@ class TradingFlowTraceReadModel:
         symbol: str | None = None,
         timeframe: str | None = None,
         strategy: str | None = None,
+        intent_id: str | None = None,
+        command_id: str | None = None,
+        action_id: str | None = None,
         status: str | None = None,
         from_time: datetime | None = None,
         to_time: datetime | None = None,
@@ -186,14 +354,32 @@ class TradingFlowTraceReadModel:
         page_size: int = 100,
         sort: str = "last_event_at_desc",
     ) -> dict[str, Any]:
+        effective_from_time = from_time
+        default_window_applied = False
+        has_precise_identifier = any(
+            str(item or "").strip()
+            for item in (trace_id, signal_id, intent_id, command_id, action_id)
+        )
+        if (
+            effective_from_time is None
+            and to_time is None
+            and not has_precise_identifier
+        ):
+            effective_from_time = datetime.now(timezone.utc) - timedelta(
+                hours=self.DEFAULT_TRACE_DIRECTORY_LOOKBACK_HOURS
+            )
+            default_window_applied = True
         query_result = self._pipeline_trace_repo.query_trace_summaries(
             trace_id=trace_id,
             signal_id=signal_id,
             symbol=symbol,
             timeframe=timeframe,
             strategy=strategy,
+            intent_id=intent_id,
+            command_id=command_id,
+            action_id=action_id,
             status=status,
-            from_time=from_time,
+            from_time=effective_from_time,
             to_time=to_time,
             page=page,
             page_size=page_size,
@@ -205,7 +391,398 @@ class TradingFlowTraceReadModel:
             "total": int(query_result.get("total") or 0),
             "page": int(query_result.get("page") or page),
             "page_size": int(query_result.get("page_size") or page_size),
+            "from_time": self._normalize_datetime(effective_from_time),
+            "to_time": self._normalize_datetime(to_time),
+            "default_window_applied": default_window_applied,
         }
+
+    def _fetch_operations_by_pipeline_identifier(
+        self,
+        *,
+        identifier_name: str,
+        identifier_value: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if identifier_name == "action_id" and hasattr(
+            self._command_audit_repo,
+            "fetch_trace_operations_by_action_id",
+        ):
+            return list(
+                self._command_audit_repo.fetch_trace_operations_by_action_id(
+                    account_alias=self._account_alias_getter(),
+                    action_id=identifier_value,
+                    limit=limit,
+                )
+            )
+        if identifier_name == "command_id" and hasattr(
+            self._command_audit_repo,
+            "fetch_trace_operations_by_command_id",
+        ):
+            return list(
+                self._command_audit_repo.fetch_trace_operations_by_command_id(
+                    account_alias=self._account_alias_getter(),
+                    command_id=identifier_value,
+                    limit=limit,
+                )
+            )
+        return []
+
+    @staticmethod
+    def _dedupe_operations(
+        operations: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in operations:
+            operation_id = str(row.get("operation_id") or "").strip()
+            key = operation_id or (
+                f"{row.get('recorded_at')}:{row.get('command_type')}:{row.get('ticket')}"
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(dict(row))
+        return deduped
+
+    def _fetch_sl_tp_history(
+        self,
+        *,
+        positions: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        fetcher = getattr(self._trading_state_repo, "fetch_position_sl_tp_history", None)
+        if not callable(fetcher):
+            return []
+        tickets = sorted(
+            {
+                ticket
+                for ticket in (
+                    self._int_or_none(row.get("position_ticket") or row.get("ticket"))
+                    for row in positions
+                )
+                if ticket is not None
+            }
+        )
+        if not tickets:
+            return []
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[int, str, str]] = set()
+        for row in fetcher(
+            account_alias=self._account_alias_getter(),
+            position_tickets=tickets,
+            limit=500,
+        ):
+            ticket = self._int_or_none(row.get("position_ticket"))
+            key = (
+                int(ticket or 0),
+                str(row.get("recorded_at") or ""),
+                str(row.get("action_type") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(dict(row))
+        rows.sort(key=lambda item: str(item.get("recorded_at") or ""))
+        return rows
+
+    def _fetch_recovery_cycles_by_signal_ids(
+        self,
+        *,
+        signal_ids: Sequence[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        fetcher = getattr(self._trading_state_repo, "fetch_recovery_cycle_states", None)
+        if not callable(fetcher):
+            return []
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for signal_id in signal_ids:
+            normalized_signal_id = str(signal_id or "").strip()
+            if not normalized_signal_id:
+                continue
+            for row in fetcher(
+                account_alias=self._account_alias_getter(),
+                source_signal_id=normalized_signal_id,
+                limit=limit,
+            ):
+                account_key = str(row.get("account_key") or "").strip()
+                cycle_id = str(row.get("cycle_id") or "").strip()
+                key = (account_key, cycle_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(dict(row))
+        rows.sort(key=lambda item: str(item.get("updated_at") or ""))
+        return rows
+
+    def _build_lifecycle_projection(
+        self,
+        *,
+        timeline: Sequence[dict[str, Any]],
+        operations: Sequence[dict[str, Any]],
+        pending_orders: Sequence[dict[str, Any]],
+        positions: Sequence[dict[str, Any]],
+        sl_tp_history: Sequence[dict[str, Any]],
+        trade_outcomes: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        pending = self._latest_by_time(pending_orders, self._pending_event_time)
+        position = self._latest_by_time(
+            positions,
+            lambda row: row.get("closed_at")
+            or row.get("last_seen_at")
+            or row.get("opened_at")
+            or row.get("updated_at"),
+        )
+        entry_operation = self._first_operation_of_type(operations, "execute_trade")
+        close_commands = [
+            dict(row)
+            for row in operations
+            if str(row.get("command_type") or "").startswith("close")
+        ]
+        outcome = self._latest_by_time(trade_outcomes, lambda row: row.get("recorded_at"))
+
+        order_ticket = self._first_int(
+            pending.get("order_ticket") if pending else None,
+            position.get("order_ticket") if position else None,
+            entry_operation.get("ticket") if entry_operation else None,
+            entry_operation.get("order_id") if entry_operation else None,
+        )
+        position_ticket = self._first_int(
+            position.get("position_ticket") if position else None,
+            position.get("ticket") if position else None,
+            pending.get("position_ticket") if pending else None,
+            self._extract_int_from_payloads(close_commands, "ticket"),
+            self._extract_int_from_payloads(close_commands, "position_ticket"),
+        )
+        position_status = str((position or {}).get("status") or "").strip()
+        closed_at = self._normalize_datetime(
+            (position or {}).get("closed_at")
+            or (close_commands[-1].get("recorded_at") if close_commands else None)
+        )
+        opened_at = self._normalize_datetime(
+            (position or {}).get("opened_at")
+            or (pending or {}).get("filled_at")
+            or (entry_operation or {}).get("recorded_at")
+        )
+        lifecycle_status = self._derive_lifecycle_status(
+            position_status=position_status,
+            pending_status=str((pending or {}).get("status") or ""),
+            close_commands=close_commands,
+            outcome=outcome,
+        )
+
+        sl_tp_updates = [self._json_safe(dict(row)) for row in sl_tp_history]
+        latest_sl_tp = sl_tp_history[-1] if sl_tp_history else {}
+        latest_stop_loss = (
+            latest_sl_tp.get("new_stop_loss")
+            if latest_sl_tp
+            else (position or {}).get("current_stop_loss")
+        )
+        latest_take_profit = (
+            latest_sl_tp.get("new_take_profit")
+            if latest_sl_tp
+            else (position or {}).get("current_take_profit")
+        )
+
+        data_gaps: list[str] = []
+        if not pending and not entry_operation and not position:
+            data_gaps.append("entry_fact_missing")
+        if position_status == "closed" and not closed_at:
+            data_gaps.append("closed_time_missing")
+
+        lifecycle_timeline = self._build_lifecycle_timeline(
+            entry_operation=entry_operation,
+            pending=pending,
+            position=position,
+            sl_tp_history=sl_tp_history,
+            close_commands=close_commands,
+            outcome=outcome,
+        )
+
+        return {
+            "summary": {
+                "status": lifecycle_status,
+                "order_ticket": order_ticket,
+                "position_ticket": position_ticket,
+                "opened_at": opened_at,
+                "closed_at": closed_at,
+                "duration_seconds": self._duration_seconds(opened_at, closed_at),
+                "last_stage": (
+                    lifecycle_timeline[-1]["stage"] if lifecycle_timeline else None
+                ),
+                "trace_event_count": len(timeline),
+            },
+            "entry": {
+                "status": str((pending or {}).get("status") or "submitted"),
+                "order_ticket": order_ticket,
+                "position_ticket": position_ticket,
+                "filled_at": self._normalize_datetime((pending or {}).get("filled_at")),
+                "fill_price": (pending or {}).get("fill_price")
+                or (position or {}).get("entry_price")
+                or (position or {}).get("open_price"),
+                "operation": self._json_safe(entry_operation),
+                "pending_order": self._json_safe(pending),
+            },
+            "management": {
+                "update_count": len(sl_tp_updates),
+                "latest_stop_loss": latest_stop_loss,
+                "latest_take_profit": latest_take_profit,
+                "sl_tp_updates": sl_tp_updates,
+            },
+            "exit": {
+                "status": position_status or ("closed" if close_commands else None),
+                "closed_at": closed_at,
+                "close_price": (position or {}).get("close_price"),
+                "close_source": (position or {}).get("close_source"),
+                "close_commands": self._json_safe(close_commands),
+            },
+            "outcome": self._json_safe(outcome),
+            "timeline": lifecycle_timeline,
+            "data_gaps": data_gaps,
+        }
+
+    def _build_lifecycle_timeline(
+        self,
+        *,
+        entry_operation: dict[str, Any] | None,
+        pending: dict[str, Any] | None,
+        position: dict[str, Any] | None,
+        sl_tp_history: Sequence[dict[str, Any]],
+        close_commands: Sequence[dict[str, Any]],
+        outcome: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        entry_time = (
+            (pending or {}).get("filled_at")
+            or (position or {}).get("opened_at")
+            or (entry_operation or {}).get("recorded_at")
+        )
+        if entry_time is not None:
+            events.append(
+                {
+                    "stage": "entry",
+                    "status": str((pending or {}).get("status") or "submitted"),
+                    "at": self._normalize_datetime(entry_time),
+                    "source": (
+                        "pending_order_states"
+                        if pending
+                        else "trade_command_audits"
+                    ),
+                    "details": self._json_safe(pending or entry_operation or {}),
+                }
+            )
+        for row in sl_tp_history:
+            events.append(
+                {
+                    "stage": "management",
+                    "status": "success" if row.get("success") is True else "failed",
+                    "at": self._normalize_datetime(row.get("recorded_at")),
+                    "source": "position_sl_tp_history",
+                    "details": self._json_safe(row),
+                }
+            )
+        for row in close_commands:
+            events.append(
+                {
+                    "stage": "exit",
+                    "status": str(row.get("status") or "unknown"),
+                    "at": self._normalize_datetime(row.get("recorded_at")),
+                    "source": "trade_command_audits",
+                    "details": self._json_safe(row),
+                }
+            )
+        if position is not None and str(position.get("status") or "") == "closed":
+            events.append(
+                {
+                    "stage": "exit",
+                    "status": "closed",
+                    "at": self._normalize_datetime(position.get("closed_at")),
+                    "source": "position_runtime_states",
+                    "details": self._json_safe(position),
+                }
+            )
+        if outcome is not None:
+            events.append(
+                {
+                    "stage": "outcome",
+                    "status": (
+                        "won"
+                        if outcome.get("won") is True
+                        else "lost"
+                        if outcome.get("won") is False
+                        else "unknown"
+                    ),
+                    "at": self._normalize_datetime(outcome.get("recorded_at")),
+                    "source": "trade_outcomes",
+                    "details": self._json_safe(outcome),
+                }
+            )
+        events.sort(
+            key=lambda item: (
+                1 if item["at"] is None else 0,
+                item["at"] or "",
+                item["stage"],
+            )
+        )
+        return events
+
+    @staticmethod
+    def _derive_lifecycle_status(
+        *,
+        position_status: str,
+        pending_status: str,
+        close_commands: Sequence[dict[str, Any]],
+        outcome: dict[str, Any] | None,
+    ) -> str:
+        normalized_position = position_status.lower()
+        if normalized_position == "closed" or outcome is not None:
+            return "closed"
+        if close_commands and str(close_commands[-1].get("status") or "") == "success":
+            return "closed"
+        if normalized_position in {"open", "active"}:
+            return "open"
+        if pending_status.lower() == "filled":
+            return "open"
+        if pending_status:
+            return pending_status.lower()
+        return "unknown"
+
+    @staticmethod
+    def _latest_by_time(
+        rows: Sequence[dict[str, Any]],
+        time_getter: Callable[[dict[str, Any]], Any],
+    ) -> dict[str, Any] | None:
+        if not rows:
+            return None
+        return max(rows, key=lambda row: str(time_getter(row) or ""))
+
+    @staticmethod
+    def _first_operation_of_type(
+        operations: Sequence[dict[str, Any]],
+        command_type: str,
+    ) -> dict[str, Any] | None:
+        for row in operations:
+            if str(row.get("command_type") or "") == command_type:
+                return dict(row)
+        return None
+
+    def _extract_int_from_payloads(
+        self,
+        rows: Sequence[dict[str, Any]],
+        key: str,
+    ) -> int | None:
+        for row in rows:
+            for payload in (row, row.get("request_payload") or {}, row.get("response_payload") or {}):
+                value = self._int_or_none(payload.get(key))
+                if value is not None:
+                    return value
+        return None
+
+    def _first_int(self, *values: Any) -> int | None:
+        for value in values:
+            normalized = self._int_or_none(value)
+            if normalized is not None:
+                return normalized
+        return None
 
     def _build_trace_response(
         self,
@@ -219,6 +796,8 @@ class TradingFlowTraceReadModel:
         operations: Sequence[dict[str, Any]],
         pending_orders: Sequence[dict[str, Any]],
         positions: Sequence[dict[str, Any]],
+        recovery_cycles: Sequence[dict[str, Any]],
+        sl_tp_history: Sequence[dict[str, Any]],
         signal_outcomes: Sequence[dict[str, Any]],
         trade_outcomes: Sequence[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -230,11 +809,13 @@ class TradingFlowTraceReadModel:
             preview_signals=preview_signals,
             confirmed_signals=confirmed_signals,
             operations=operations,
+            pipeline_events=pipeline_events,
         )
         signal_ids = self._collect_signal_ids(
             preview_signals=preview_signals,
             confirmed_signals=confirmed_signals,
             operations=operations,
+            pipeline_events=pipeline_events,
         )
         admission_reports = self._extract_admission_reports(pipeline_events)
         facts = {
@@ -248,6 +829,8 @@ class TradingFlowTraceReadModel:
             "trade_command_audits": list(operations),
             "pending_orders": list(pending_orders),
             "positions": list(positions),
+            "recovery_cycles": list(recovery_cycles),
+            "position_sl_tp_history": list(sl_tp_history),
             "signal_outcomes": list(signal_outcomes),
             "trade_outcomes": list(trade_outcomes),
         }
@@ -255,9 +838,11 @@ class TradingFlowTraceReadModel:
             signal_id=normalized_signal_id,
             signal_ids=signal_ids,
             trace_ids=trace_ids,
+            pipeline_events=pipeline_events,
             operations=operations,
             pending_orders=pending_orders,
             positions=positions,
+            recovery_cycles=recovery_cycles,
         )
         timeline = self._build_timeline(
             signal_id=normalized_signal_id or normalized_trace_id or "trace",
@@ -268,7 +853,16 @@ class TradingFlowTraceReadModel:
             operations=operations,
             pending_orders=pending_orders,
             positions=positions,
+            recovery_cycles=recovery_cycles,
             signal_outcomes=signal_outcomes,
+            trade_outcomes=trade_outcomes,
+        )
+        lifecycle = self._build_lifecycle_projection(
+            timeline=timeline,
+            operations=operations,
+            pending_orders=pending_orders,
+            positions=positions,
+            sl_tp_history=sl_tp_history,
             trade_outcomes=trade_outcomes,
         )
         trace_status = self._derive_trace_status(
@@ -287,6 +881,7 @@ class TradingFlowTraceReadModel:
                     operations,
                     pending_orders,
                     positions,
+                    recovery_cycles,
                     signal_outcomes,
                     trade_outcomes,
                 ]
@@ -303,6 +898,7 @@ class TradingFlowTraceReadModel:
                 reason=trace_status["reason"],
             ),
             "timeline": timeline,
+            "lifecycle": lifecycle,
             "graph": self._build_graph(timeline),
             "facts": facts,
             "related_signals": {
@@ -331,6 +927,7 @@ class TradingFlowTraceReadModel:
         pipeline_events = list(facts.get("pipeline_trace_events") or [])
         pending_orders = list(facts.get("pending_orders") or [])
         positions = list(facts.get("positions") or [])
+        recovery_cycles = list(facts.get("recovery_cycles") or [])
         admission_reports = list(facts.get("admission_reports") or [])
         latest_admission = admission_reports[-1] if admission_reports else None
         return {
@@ -356,6 +953,7 @@ class TradingFlowTraceReadModel:
                 "trade_command_audit": "present" if operations else "missing",
                 "pending_order": "present" if pending_orders else "missing",
                 "position_runtime": "present" if positions else "missing",
+                "recovery_cycle": "present" if recovery_cycles else "missing",
                 "signal_outcome": (
                     "present" if facts.get("signal_outcomes") else "missing"
                 ),
@@ -367,6 +965,10 @@ class TradingFlowTraceReadModel:
             "command_counts": self._count_by_key(operations, "command_type"),
             "pending_status_counts": self._count_by_key(pending_orders, "status"),
             "position_status_counts": self._count_by_key(positions, "status"),
+            "recovery_cycle_status_counts": self._count_by_key(
+                recovery_cycles,
+                "status",
+            ),
             "admission": self._build_admission_summary(latest_admission),
             "status": status,
             "started_at": started_at,
@@ -381,10 +983,12 @@ class TradingFlowTraceReadModel:
         *,
         signal_id: str | None,
         signal_ids: Sequence[str],
+        pipeline_events: Sequence[dict[str, Any]],
         operations: Sequence[dict[str, Any]],
         trace_ids: Sequence[str],
         pending_orders: Sequence[dict[str, Any]],
         positions: Sequence[dict[str, Any]],
+        recovery_cycles: Sequence[dict[str, Any]],
     ) -> dict[str, Any]:
         request_ids = {
             str(item).strip()
@@ -395,8 +999,46 @@ class TradingFlowTraceReadModel:
             str(item).strip() for item in trace_ids if str(item or "").strip()
         }
         operation_ids: set[str] = set()
+        intent_ids: set[str] = set()
+        command_ids: set[str] = set()
+        action_ids: set[str] = set()
+        account_keys: set[str] = set()
+        account_aliases: set[str] = set()
         order_tickets: set[int] = set()
         position_tickets: set[int] = set()
+        recovery_cycle_ids: set[str] = set()
+
+        for row in pipeline_events:
+            payload = row.get("payload") or {}
+            for candidate in (
+                row.get("trace_id"),
+                payload.get("trace_id"),
+            ):
+                value = str(candidate or "").strip()
+                if value:
+                    normalized_trace_ids.add(value)
+            for candidate in (
+                row.get("signal_id"),
+                payload.get("signal_id"),
+                payload.get("request_id"),
+            ):
+                value = str(candidate or "").strip()
+                if value:
+                    request_ids.add(value)
+            for target, candidates in (
+                (intent_ids, (row.get("intent_id"), payload.get("intent_id"))),
+                (command_ids, (row.get("command_id"), payload.get("command_id"))),
+                (action_ids, (row.get("action_id"), payload.get("action_id"))),
+                (account_keys, (row.get("account_key"), payload.get("account_key"))),
+                (
+                    account_aliases,
+                    (row.get("account_alias"), payload.get("account_alias")),
+                ),
+            ):
+                for candidate in candidates:
+                    value = str(candidate or "").strip()
+                    if value:
+                        target.add(value)
 
         for row in operations:
             operation_id = str(row.get("operation_id") or "").strip()
@@ -404,6 +1046,18 @@ class TradingFlowTraceReadModel:
                 operation_ids.add(operation_id)
             request_payload = row.get("request_payload") or {}
             response_payload = row.get("response_payload") or {}
+            for target, keys in (
+                (intent_ids, ("intent_id",)),
+                (command_ids, ("command_id",)),
+                (action_ids, ("action_id",)),
+                (account_keys, ("account_key",)),
+                (account_aliases, ("account_alias",)),
+            ):
+                for payload in (request_payload, response_payload):
+                    for key in keys:
+                        value = str(payload.get(key) or row.get(key) or "").strip()
+                        if value:
+                            target.add(value)
             for candidate in (
                 request_payload.get("request_id"),
                 response_payload.get("request_id"),
@@ -412,13 +1066,15 @@ class TradingFlowTraceReadModel:
                 value = str(candidate or "").strip()
                 if value:
                     request_ids.add(value)
-            for key in ("ticket", "order_id"):
-                ticket = self._int_or_none(row.get(key))
-                if ticket:
-                    order_tickets.add(ticket)
-            deal_ticket = self._int_or_none(row.get("ticket"))
-            if deal_ticket:
-                order_tickets.add(deal_ticket)
+            for payload in (row, request_payload, response_payload):
+                for key in ("ticket", "order_ticket", "order", "order_id"):
+                    ticket = self._int_or_none(payload.get(key))
+                    if ticket:
+                        order_tickets.add(ticket)
+                for key in ("position", "position_ticket"):
+                    position_ticket = self._int_or_none(payload.get(key))
+                    if position_ticket:
+                        position_tickets.add(position_ticket)
 
         for row in pending_orders:
             ticket = self._int_or_none(row.get("order_ticket"))
@@ -436,14 +1092,34 @@ class TradingFlowTraceReadModel:
             if order_ticket:
                 order_tickets.add(order_ticket)
 
+        for row in recovery_cycles:
+            cycle_id = str(row.get("cycle_id") or "").strip()
+            if cycle_id:
+                recovery_cycle_ids.add(cycle_id)
+            for target, candidates in (
+                (account_keys, (row.get("account_key"),)),
+                (account_aliases, (row.get("account_alias"),)),
+                (request_ids, (row.get("source_signal_id"),)),
+            ):
+                for candidate in candidates:
+                    value = str(candidate or "").strip()
+                    if value:
+                        target.add(value)
+
         return {
             "signal_id": signal_id,
             "signal_ids": sorted({str(item).strip() for item in signal_ids if str(item or "").strip()}),
             "request_ids": sorted(request_ids),
             "trace_ids": sorted(normalized_trace_ids),
             "operation_ids": sorted(operation_ids),
+            "intent_ids": sorted(intent_ids),
+            "command_ids": sorted(command_ids),
+            "action_ids": sorted(action_ids),
+            "account_keys": sorted(account_keys),
+            "account_aliases": sorted(account_aliases),
             "order_tickets": sorted(order_tickets),
             "position_tickets": sorted(position_tickets),
+            "recovery_cycle_ids": sorted(recovery_cycle_ids),
         }
 
     def _build_timeline(
@@ -457,6 +1133,7 @@ class TradingFlowTraceReadModel:
         operations: Sequence[dict[str, Any]],
         pending_orders: Sequence[dict[str, Any]],
         positions: Sequence[dict[str, Any]],
+        recovery_cycles: Sequence[dict[str, Any]],
         signal_outcomes: Sequence[dict[str, Any]],
         trade_outcomes: Sequence[dict[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -554,6 +1231,21 @@ class TradingFlowTraceReadModel:
                     details=row,
                 )
             )
+        for row in recovery_cycles:
+            status = str(row.get("status") or "unknown")
+            events.append(
+                self._timeline_event(
+                    event_id=f"{signal_id}:recovery:{row.get('cycle_id')}:{status}",
+                    stage=f"recovery.{status}",
+                    status=status,
+                    at=row.get("updated_at")
+                    or row.get("last_step_at")
+                    or row.get("started_at"),
+                    source="recovery_cycle_states",
+                    summary=f"恢复周期状态: {status}",
+                    details=row,
+                )
+            )
         for row in signal_outcomes:
             events.append(
                 self._timeline_event(
@@ -620,6 +1312,9 @@ class TradingFlowTraceReadModel:
             "symbol": self._str_or_none(row.get("symbol")),
             "timeframe": self._str_or_none(row.get("timeframe")),
             "strategy": self._str_or_none(row.get("strategy")),
+            "intent_id": self._str_or_none(row.get("intent_id")),
+            "command_id": self._str_or_none(row.get("command_id")),
+            "action_id": self._str_or_none(row.get("action_id")),
             "status": self._str_or_none(row.get("status")) or "in_progress",
             "started_at": self._normalize_datetime(row.get("started_at")),
             "last_event_at": self._normalize_datetime(row.get("last_event_at")),
@@ -632,6 +1327,9 @@ class TradingFlowTraceReadModel:
                     "stage": row.get("last_admission_stage"),
                     "trace_id": row.get("trace_id"),
                     "signal_id": row.get("signal_id"),
+                    "intent_id": row.get("intent_id"),
+                    "command_id": row.get("command_id"),
+                    "action_id": row.get("action_id"),
                 }
             ),
         }
@@ -651,7 +1349,16 @@ class TradingFlowTraceReadModel:
             status = "blocked"
         elif last_stage == "pipeline.admission_report":
             status = "admission"
-        elif last_stage in {"outcome.trade", "position.closed"}:
+        elif last_stage in {"outcome.trade", "position.closed", "recovery.closed"}:
+            status = "completed"
+        elif last_stage in {
+            "trade.close_position",
+            "trade.close_all_positions",
+            "trade.close_positions_by_tickets",
+            "trade.cancel_orders",
+            "trade.cancel_orders_by_tickets",
+            "trade.close_exposure",
+        } and last_status == "success":
             status = "completed"
         elif last_stage in {"trade.execute_trade", "pipeline.execution_submitted", "pending.filled"}:
             status = "submitted"
@@ -703,6 +1410,7 @@ class TradingFlowTraceReadModel:
         preview_signals: Sequence[dict[str, Any]],
         confirmed_signals: Sequence[dict[str, Any]],
         operations: Sequence[dict[str, Any]],
+        pipeline_events: Sequence[dict[str, Any]] = (),
     ) -> list[str]:
         trace_ids: set[str] = set()
         for row in [*preview_signals, *confirmed_signals]:
@@ -717,6 +1425,12 @@ class TradingFlowTraceReadModel:
                 trace_id = str(payload.get("trace_id") or "").strip()
                 if trace_id:
                     trace_ids.add(trace_id)
+        for row in pipeline_events:
+            payload = row.get("payload") or {}
+            for candidate in (row.get("trace_id"), payload.get("trace_id")):
+                trace_id = str(candidate or "").strip()
+                if trace_id:
+                    trace_ids.add(trace_id)
         return sorted(trace_ids)
 
     def _collect_signal_ids(
@@ -725,6 +1439,7 @@ class TradingFlowTraceReadModel:
         preview_signals: Sequence[dict[str, Any]],
         confirmed_signals: Sequence[dict[str, Any]],
         operations: Sequence[dict[str, Any]],
+        pipeline_events: Sequence[dict[str, Any]] = (),
     ) -> list[str]:
         signal_ids: set[str] = set()
         for row in [*preview_signals, *confirmed_signals]:
@@ -735,12 +1450,24 @@ class TradingFlowTraceReadModel:
             for payload in (row.get("request_payload") or {}, row.get("response_payload") or {}):
                 metadata = payload.get("metadata") or {}
                 signal = metadata.get("signal") or {}
-                signal_id = str(signal.get("signal_id") or "").strip()
+                for candidate in (
+                    signal.get("signal_id"),
+                    metadata.get("source_signal_id"),
+                    payload.get("signal_id"),
+                ):
+                    signal_id = str(candidate or "").strip()
+                    if signal_id:
+                        signal_ids.add(signal_id)
+        for row in pipeline_events:
+            payload = row.get("payload") or {}
+            for candidate in (
+                row.get("signal_id"),
+                payload.get("signal_id"),
+                payload.get("request_id"),
+            ):
+                signal_id = str(candidate or "").strip()
                 if signal_id:
                     signal_ids.add(signal_id)
-                direct = str(payload.get("request_id") or "").strip()
-                if direct:
-                    signal_ids.add(direct)
         return sorted(signal_ids)
 
     @staticmethod
@@ -894,6 +1621,17 @@ class TradingFlowTraceReadModel:
         if status in {"expired", "cancelled"}:
             return row.get("cancelled_at") or row.get("updated_at")
         return row.get("created_at") or row.get("updated_at")
+
+    @staticmethod
+    def _duration_seconds(start: str | None, end: str | None) -> float | None:
+        if not start or not end:
+            return None
+        try:
+            start_dt = datetime.fromisoformat(str(start))
+            end_dt = datetime.fromisoformat(str(end))
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, (end_dt - start_dt).total_seconds())
 
     @staticmethod
     def _normalize_datetime(value: Any) -> Optional[str]:

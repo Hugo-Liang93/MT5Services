@@ -39,9 +39,50 @@ class TradeCommandAuditService:
             return [self._json_safe(item) for item in value]
         return str(value)
 
+    def _payload_candidates(self, payload: Any) -> list[dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return []
+        candidates = [payload]
+        for key in ("result", "details"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                candidates.append(nested)
+        effective_state = payload.get("effective_state")
+        if isinstance(effective_state, dict):
+            candidates.append(effective_state)
+            nested_result = effective_state.get("result")
+            if isinstance(nested_result, dict):
+                candidates.append(nested_result)
+        return candidates
+
+    def _first_int_payload_value(
+        self,
+        *payloads: dict[str, Any],
+        keys: tuple[str, ...],
+    ) -> int | None:
+        for payload in payloads:
+            for candidate in self._payload_candidates(payload):
+                for key in keys:
+                    value = candidate.get(key)
+                    if value in (None, ""):
+                        continue
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        continue
+        return None
+
     def record(self, record: TradeCommandAuditRecord) -> None:
         if self._db_writer is None:
             return
+        safe_request_payload = self._json_safe(record.request_payload)
+        safe_response_payload = self._json_safe(record.response_payload)
+        request_payload = (
+            safe_request_payload if isinstance(safe_request_payload, dict) else {}
+        )
+        response_payload = (
+            safe_response_payload if isinstance(safe_response_payload, dict) else {}
+        )
         normalized = TradeCommandAuditRecord(
             account_alias=record.account_alias,
             account_key=record.account_key or self._account_key_getter(),
@@ -51,14 +92,29 @@ class TradeCommandAuditService:
             side=record.side,
             order_kind=record.order_kind,
             volume=record.volume,
-            ticket=record.ticket,
-            order_id=record.order_id,
-            deal_id=record.deal_id,
+            ticket=record.ticket
+            or self._first_int_payload_value(
+                response_payload,
+                request_payload,
+                keys=("ticket", "order_ticket", "position_ticket"),
+            ),
+            order_id=record.order_id
+            or self._first_int_payload_value(
+                response_payload,
+                request_payload,
+                keys=("order_id", "order", "order_ticket"),
+            ),
+            deal_id=record.deal_id
+            or self._first_int_payload_value(
+                response_payload,
+                request_payload,
+                keys=("deal_id", "deal"),
+            ),
             magic=record.magic,
             duration_ms=record.duration_ms,
             error_message=record.error_message,
-            request_payload=self._json_safe(record.request_payload),
-            response_payload=self._json_safe(record.response_payload),
+            request_payload=request_payload,
+            response_payload=response_payload,
             recorded_at=record.recorded_at,
             operation_id=record.operation_id,
         )

@@ -11,9 +11,16 @@ from src.clients.economic_calendar import (
     TradingEconomicsCalendarClient,
 )
 from src.clients.economic_calendar_registry import ProviderRegistry
-from src.config import EconomicConfig, RiskConfig, load_mt5_settings
+from src.config import (
+    EconomicConfig,
+    RiskConfig,
+    build_account_key,
+    load_mt5_settings,
+    resolve_current_environment,
+)
 from src.trading.application.module import TradingModule
 from src.trading.runtime.registry import TradingAccountRegistry
+from src.trading.runtime.trade_frequency import TradeCommandAuditFrequencyProvider
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +110,28 @@ def build_trading_components(
             target_instance_id=runtime_identity.peer_main_instance_id,
         )
     mt5_settings = load_mt5_settings()
+    environment = resolve_current_environment(instance_name=mt5_settings.instance_name)
+    account_key = (
+        build_account_key(
+            environment,
+            mt5_settings.mt5_server,
+            mt5_settings.mt5_login,
+        )
+        if environment is not None
+        else ""
+    )
+    trade_frequency_provider = TradeCommandAuditFrequencyProvider(
+        storage_writer.db,
+        account_key=account_key,
+        account_alias=mt5_settings.account_alias,
+    )
     trade_registry = TradingAccountRegistry(
         settings=mt5_settings,
         economic_calendar_service=economic_calendar_service,
         risk_config=risk_config,
         economic_config=economic_settings,
+        trade_frequency_provider=trade_frequency_provider,
+        account_key=account_key,
     )
     trade_module = TradingModule(
         registry=trade_registry,

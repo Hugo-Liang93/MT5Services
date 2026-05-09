@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from typing import Optional
+from typing import Any, Optional
 
 from src.clients.mt5_account import MT5AccountClient
 from src.clients.mt5_trading import MT5TradingClient
@@ -26,6 +26,8 @@ class TradingAccountRegistry:
         economic_config: EconomicConfig,
         settings: Optional[MT5Settings] = None,
         economic_calendar_service=None,
+        trade_frequency_provider: Any = None,
+        account_key: Optional[str] = None,
     ):
         """ADR-006: 配置必须由装配层显式注入，不在组件内调用全局加载函数。
 
@@ -37,6 +39,8 @@ class TradingAccountRegistry:
         self._risk_config = risk_config
         self._economic_config = economic_config
         self._economic_calendar_service = economic_calendar_service
+        self._trade_frequency_provider = trade_frequency_provider
+        self._account_key = str(account_key or "").strip() or None
         self._lock = threading.RLock()
         self._account_client: MT5AccountClient | None = None
         self._trading_service: TradingService | None = None
@@ -97,6 +101,8 @@ class TradingAccountRegistry:
                         account_service=account_client,
                         settings=self._economic_config,
                         risk_settings=self._risk_config,
+                        trade_frequency_provider=self._trade_frequency_provider,
+                        account_key=self._account_key,
                     ),
                 )
             return self._trading_service

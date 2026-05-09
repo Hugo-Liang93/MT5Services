@@ -12,6 +12,8 @@ from src.config.models.runtime import RiskConfig
 from src.config import EconomicConfig
 from src.risk.models import TradeIntent
 from src.risk.rules import (
+    AccountSnapshotRule,
+    DailyLossLimitRule,
     MarginAvailabilityRule,
     RuleContext,
     TradeFrequencyRule,
@@ -73,6 +75,30 @@ class BrokenAccountProvider:
         return []
 
 
+class FullyBrokenAccountProvider:
+    def account_info(self):
+        raise RuntimeError("account unavailable")
+
+    def positions(self, symbol=None):
+        raise RuntimeError("positions unavailable")
+
+    def orders(self, symbol=None):
+        raise RuntimeError("orders unavailable")
+
+
+class FakeTradeFrequencyProvider:
+    def __init__(self, *, count: int = 0, error: Exception | None = None) -> None:
+        self.count = count
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    def count_trades_since(self, since: datetime, *, account_key: str | None = None) -> int:
+        self.calls.append({"since": since, "account_key": account_key})
+        if self.error is not None:
+            raise self.error
+        return self.count
+
+
 def _ctx(
     *,
     metadata: Optional[Dict[str, Any]] = None,
@@ -81,18 +107,24 @@ def _ctx(
     account_provider: Any = None,
     max_trades_per_day: Optional[int] = None,
     max_trades_per_hour: Optional[int] = None,
+    data_unavailable_policy: str = "warn_only",
+    trade_frequency_provider: Any = None,
+    account_key: str | None = None,
+    at_time: datetime | None = None,
 ) -> RuleContext:
     intent = TradeIntent(
         symbol="XAUUSD",
         volume=0.1,
         side="buy",
         metadata=dict(metadata or {}),
+        at_time=at_time,
     )
     risk = RiskConfig(
         enabled=True,
         margin_safety_factor=margin_safety_factor,
         max_trades_per_day=max_trades_per_day,
         max_trades_per_hour=max_trades_per_hour,
+        data_unavailable_policy=data_unavailable_policy,
     )
     if account_provider is None:
         account_provider = FakeAccountProvider(margin_free=margin_free)
@@ -101,7 +133,52 @@ def _ctx(
         economic_settings=EconomicConfig(),
         risk_settings=risk,
         account_provider=account_provider,
+        trade_frequency_provider=trade_frequency_provider,
+        account_key=account_key,
     )
+
+
+# ---------------------------------------------------------------------------
+# AccountSnapshotRule / DailyLossLimitRule
+# ---------------------------------------------------------------------------
+
+
+class TestRiskDataAvailabilityPolicy:
+    def test_account_snapshot_blocks_when_account_state_unavailable_fail_closed(self):
+        ctx = _ctx(
+            account_provider=FullyBrokenAccountProvider(),
+            data_unavailable_policy="fail_closed",
+        )
+        ctx.risk_settings = RiskConfig(
+            enabled=True,
+            max_positions_per_symbol=1,
+            data_unavailable_policy="fail_closed",
+        )
+
+        checks = AccountSnapshotRule().evaluate(ctx)
+
+        assert len(checks) == 1
+        assert checks[0].name == "account_snapshot"
+        assert checks[0].verdict == "block"
+        assert checks[0].reason == "risk_data_unavailable"
+
+    def test_daily_loss_blocks_when_account_info_unavailable_fail_closed(self):
+        ctx = _ctx(
+            account_provider=BrokenAccountProvider(),
+            data_unavailable_policy="fail_closed",
+        )
+        ctx.risk_settings = RiskConfig(
+            enabled=True,
+            daily_loss_limit_pct=3.0,
+            data_unavailable_policy="fail_closed",
+        )
+
+        checks = DailyLossLimitRule().evaluate(ctx)
+
+        assert len(checks) == 1
+        assert checks[0].name == "daily_loss_limit"
+        assert checks[0].verdict == "block"
+        assert checks[0].reason == "risk_data_unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +237,28 @@ class TestMarginAvailabilityRule:
         assert len(checks) == 1
         assert checks[0].verdict == "warn"
 
+    def test_blocks_when_account_unavailable_fail_closed(self):
+        ctx = _ctx(
+            metadata={"estimated_margin": 100.0},
+            account_provider=BrokenAccountProvider(),
+            data_unavailable_policy="fail_closed",
+        )
+        checks = self.rule.evaluate(ctx)
+        assert len(checks) == 1
+        assert checks[0].verdict == "block"
+        assert checks[0].reason == "risk_data_unavailable"
+
+    def test_blocks_when_margin_estimate_missing_fail_closed(self):
+        ctx = _ctx(
+            metadata={},
+            margin_free=100.0,
+            data_unavailable_policy="fail_closed",
+        )
+        checks = self.rule.evaluate(ctx)
+        assert len(checks) == 1
+        assert checks[0].verdict == "block"
+        assert checks[0].reason == "risk_data_unavailable"
+
     def test_warns_when_free_margin_field_missing(self):
         provider = FakeAccountProvider(margin_free=None)
         ctx = _ctx(
@@ -199,6 +298,9 @@ class TestMarginAvailabilityRule:
 # ---------------------------------------------------------------------------
 
 class TestTradeFrequencyRule:
+    @staticmethod
+    def _anchor_now() -> datetime:
+        return datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
 
     def test_passes_when_no_limits(self):
         rule = TradeFrequencyRule()
@@ -209,20 +311,20 @@ class TestTradeFrequencyRule:
 
     def test_blocks_when_daily_limit_reached(self):
         rule = TradeFrequencyRule()
-        now = datetime.now(timezone.utc)
+        now = self._anchor_now()
         for i in range(10):
             rule.record_trade(now - timedelta(minutes=i))
-        ctx = _ctx(max_trades_per_day=10)
+        ctx = _ctx(max_trades_per_day=10, at_time=now)
         checks = rule.evaluate(ctx)
         assert any(c.name == "max_trades_per_day" for c in checks)
         assert checks[0].verdict == "block"
 
     def test_passes_when_under_daily_limit(self):
         rule = TradeFrequencyRule()
-        now = datetime.now(timezone.utc)
+        now = self._anchor_now()
         for i in range(5):
             rule.record_trade(now - timedelta(minutes=i))
-        ctx = _ctx(max_trades_per_day=10)
+        ctx = _ctx(max_trades_per_day=10, at_time=now)
         checks = rule.evaluate(ctx)
         assert checks == []
 
@@ -256,20 +358,20 @@ class TestTradeFrequencyRule:
 
     def test_old_trades_not_counted_daily(self):
         rule = TradeFrequencyRule()
-        now = datetime.now(timezone.utc)
+        now = self._anchor_now()
         yesterday = now - timedelta(days=1)
         for i in range(20):
             rule.record_trade(yesterday - timedelta(minutes=i))
-        ctx = _ctx(max_trades_per_day=10)
+        ctx = _ctx(max_trades_per_day=10, at_time=now)
         checks = rule.evaluate(ctx)
         assert checks == []
 
     def test_both_limits_can_block_simultaneously(self):
         rule = TradeFrequencyRule()
-        now = datetime.now(timezone.utc)
+        now = self._anchor_now()
         for i in range(10):
             rule.record_trade(now - timedelta(minutes=i))
-        ctx = _ctx(max_trades_per_day=10, max_trades_per_hour=5)
+        ctx = _ctx(max_trades_per_day=10, max_trades_per_hour=5, at_time=now)
         checks = rule.evaluate(ctx)
         assert len(checks) == 2
         names = {c.name for c in checks}
@@ -297,6 +399,36 @@ class TestTradeFrequencyRule:
         ctx.risk_settings = RiskConfig(enabled=False)
         checks = rule.evaluate(ctx)
         assert checks == []
+
+    def test_uses_persistent_account_scoped_frequency_provider(self):
+        provider = FakeTradeFrequencyProvider(count=3)
+        ctx = _ctx(
+            max_trades_per_day=3,
+            trade_frequency_provider=provider,
+            account_key="live:broker:123",
+        )
+
+        checks = TradeFrequencyRule().evaluate(ctx)
+
+        assert any(c.name == "max_trades_per_day" for c in checks)
+        assert provider.calls
+        assert provider.calls[0]["account_key"] == "live:broker:123"
+
+    def test_provider_failure_follows_risk_data_policy(self):
+        provider = FakeTradeFrequencyProvider(error=RuntimeError("db unavailable"))
+        ctx = _ctx(
+            max_trades_per_day=3,
+            data_unavailable_policy="fail_closed",
+            trade_frequency_provider=provider,
+            account_key="live:broker:123",
+        )
+
+        checks = TradeFrequencyRule().evaluate(ctx)
+
+        assert len(checks) == 1
+        assert checks[0].name == "trade_frequency"
+        assert checks[0].verdict == "block"
+        assert checks[0].reason == "risk_data_unavailable"
 
 
 class TestResolveRiskFailureKey:

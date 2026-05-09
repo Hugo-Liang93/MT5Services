@@ -6,6 +6,7 @@ import pytest
 
 from src.config.models.entry_policy import EntryPolicyConfig
 from src.trading.entry_policy import (
+    EntryPolicyMappingError,
     EntryPolicyNotFoundError,
     EntryPolicyRegistry,
     MarketEntryPolicy,
@@ -32,10 +33,10 @@ def _make_registry(**overrides) -> EntryPolicyRegistry:
 
 
 class TestResolution:
-    def test_default_fallback(self):
+    def test_unmapped_strategy_is_rejected(self):
         reg = _make_registry()
-        policy = reg.resolve("structured_unknown", "M15")
-        assert policy.name == "market"
+        with pytest.raises(EntryPolicyMappingError, match="no entry policy mapping"):
+            reg.resolve("structured_unknown", "M15")
 
     def test_per_strategy_override(self):
         # 临时再注册一个 fake policy
@@ -57,7 +58,8 @@ class TestResolution:
             config=cfg,
         )
         assert reg.resolve("strat_a", "M15").name == "fake"
-        assert reg.resolve("strat_b", "M15").name == "market"
+        with pytest.raises(EntryPolicyMappingError):
+            reg.resolve("strat_b", "M15")
 
     def test_per_tf_override_wins_over_strategy(self):
         class FakePolicy:

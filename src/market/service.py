@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Tu
 
 from src.config import MarketSettings, get_runtime_market_settings
 from src.clients.mt5_market import MT5MarketClient, OHLC, Quote, SymbolInfo, Tick
-from src.market.event_bus import MarketEventBus
+from src.market.event_bus import MarketEventBus, QuoteEvent, TickBatchEvent
 from src.utils.common import ohlc_key
 
 if TYPE_CHECKING:
@@ -239,6 +239,8 @@ class MarketDataService:
         status = self.client.health()
         with self._lock:
             status["cached_quotes"] = len(self._quote_cache)
+        status["tick_event_bus"] = self.tick_event_bus_stats()
+        status["quote_event_bus"] = self.quote_event_bus_stats()
         status["timestamp"] = datetime.now(timezone.utc).isoformat()
         return status
 
@@ -253,6 +255,7 @@ class MarketDataService:
                 and len(self._quote_cache) > self._quote_cache_prune_threshold
             ):
                 self._prune_quote_cache_locked()
+        self.event_bus.dispatch_quote(symbol, quote)
 
     def _prune_quote_cache_locked(self) -> None:
         """在持锁状态下移除超过 10× stale 阈值的报价条目（仅用于内部清理）。"""
@@ -269,12 +272,16 @@ class MarketDataService:
             logger.info("Pruned %d stale quote cache entries", len(stale_keys))
 
     def extend_ticks(self, symbol: str, ticks: List[Tick]) -> None:
+        if not ticks:
+            return
+        tick_batch = tuple(ticks)
         with self._lock:
             cache = self._tick_cache.setdefault(
                 symbol,
                 deque(maxlen=self.market_settings.tick_cache_size),
             )
-            cache.extend(ticks)
+            cache.extend(tick_batch)
+        self.event_bus.dispatch_tick_batch(symbol, tick_batch)
 
     def get_ohlc_closed(
         self,
@@ -512,6 +519,24 @@ class MarketDataService:
     def remove_intrabar_listener(self, listener: Callable[[str, str, OHLC], None]) -> None:
         self.event_bus.remove_intrabar_listener(listener)
 
+    def add_tick_batch_listener(self, listener: Callable[[TickBatchEvent], None]) -> None:
+        self.event_bus.add_tick_batch_listener(listener)
+
+    def remove_tick_batch_listener(self, listener: Callable[[TickBatchEvent], None]) -> None:
+        self.event_bus.remove_tick_batch_listener(listener)
+
+    def add_quote_listener(self, listener: Callable[[QuoteEvent], None]) -> None:
+        self.event_bus.add_quote_listener(listener)
+
+    def remove_quote_listener(self, listener: Callable[[QuoteEvent], None]) -> None:
+        self.event_bus.remove_quote_listener(listener)
+
+    def tick_event_bus_stats(self) -> dict[str, object]:
+        return self.event_bus.tick_batch_stats()
+
+    def quote_event_bus_stats(self) -> dict[str, object]:
+        return self.event_bus.quote_stats()
+
     def set_ohlc_event_sink(
         self, sink: Optional[Callable[[str, str, datetime], None]],
     ) -> None:
@@ -583,17 +608,16 @@ class MarketDataService:
         return value.astimezone(timezone.utc)
 
     def _row_to_tick(self, row: tuple) -> Tick:
-        if len(row) >= 5:
-            symbol, price, volume, time, time_msc = row[:5]
-        else:
-            symbol, price, volume, time = row
-            time_msc = None
+        symbol, price, bid, ask, last, volume, time, time_msc, flags = row[:9]
         return Tick(
             symbol=symbol,
-            price=float(price),
+            bid=float(bid) if bid is not None else None,
+            ask=float(ask) if ask is not None else None,
+            last=float(last) if last is not None else None,
             volume=float(volume or 0.0),
             time=self._normalize_time(time),
             time_msc=int(time_msc) if time_msc is not None else None,
+            flags=int(flags or 0),
         )
 
     def _row_to_quote(self, row: tuple) -> Quote:
@@ -630,11 +654,11 @@ class MarketDataService:
     @staticmethod
     def _merge_ticks(base: List[Tick], overlay: List[Tick]) -> List[Tick]:
         merged = {
-            (tick.time, tick.time_msc, tick.price, tick.volume): tick
+            (tick.time, tick.time_msc, tick.bid, tick.ask, tick.last, tick.volume, tick.flags): tick
             for tick in base
         }
         for tick in overlay:
-            merged[(tick.time, tick.time_msc, tick.price, tick.volume)] = tick
+            merged[(tick.time, tick.time_msc, tick.bid, tick.ask, tick.last, tick.volume, tick.flags)] = tick
         return sorted(
             merged.values(),
             key=lambda item: (

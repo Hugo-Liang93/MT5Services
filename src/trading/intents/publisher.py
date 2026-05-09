@@ -167,6 +167,8 @@ class ExecutionIntentPublisher:
             return "confirmed" in signal_state
         if scope == "intrabar":
             return signal_state.startswith("intrabar_armed_")
+        if scope == "tick_derived":
+            return signal_state.startswith("tick_derived_")
         return False
 
     def _resolve_target_accounts(self, strategy: str) -> Iterable[MT5Settings]:

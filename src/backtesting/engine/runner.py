@@ -18,7 +18,6 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from src.clients.mt5_market import OHLC
 from src.signals.contracts import StrategyCapability
-from src.signals.contracts.deployment import StrategyDeployment
 from src.signals.contracts.execution_plan import build_strategy_capability_summary
 from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.service import SignalModule
@@ -40,6 +39,7 @@ from .indicators import detect_regime as _detect_regime_helper
 from .indicators import lookup_htf_at_time as _lookup_htf_at_time_helper
 from .indicators import precompute_all_indicators as _precompute_all_indicators_helper
 from .indicators import preload_htf_indicators as _preload_htf_indicators_helper
+from .deployment_gate import BacktestDeploymentGate
 from .portfolio import CostModel, PortfolioTracker
 
 
@@ -176,25 +176,23 @@ class _BacktestSignalState:
     armed: bool = False
 
 
-def _load_deployments_from_signal_config() -> Dict[str, StrategyDeployment]:
+def _load_deployment_gate_from_signal_config() -> BacktestDeploymentGate:
     """从 signal_config 加载当前所有策略的部署合同。
 
-    失败时返回空 dict —— 表示"无 deployment gate"，等价于旧行为。
-    这种自动回退是契约的一部分（调用方未显式传时的默认）。
+    默认回测必须与 live/demo 读取同一份 deployment gate。若调用方确实要
+    research-only 关闭 gate，应显式传入 ``BacktestDeploymentGate.research_disabled``。
     """
     try:
         from src.backtesting.component_factory import _load_signal_config_snapshot
 
         signal_config = _load_signal_config_snapshot()
-    except Exception:
-        logger.debug(
-            "BacktestEngine: signal_config unavailable, deployment gate disabled",
-        )
-        return {}
+    except Exception as exc:
+        raise RuntimeError(
+            "BacktestEngine deployment gate requires signal_config; "
+            "pass BacktestDeploymentGate.research_disabled(...) for research-only overrides"
+        ) from exc
     deployments = getattr(signal_config, "strategy_deployments", None)
-    if not deployments:
-        return {}
-    return dict(deployments)
+    return BacktestDeploymentGate.from_config(deployments or {})
 
 
 class BacktestEngine:
@@ -227,10 +225,10 @@ class BacktestEngine:
         htf_indicator_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
         # 性能优化：预计算指标快照（优化器复用时避免重复计算）
         precomputed_indicators: Optional[List[Dict[str, Dict[str, Any]]]] = None,
-        # StrategyDeployment 契约：回测与实盘同一套部署合同，保证两条链路
+        # BacktestDeploymentGate 契约：回测与实盘同一套部署合同，保证两条链路
         # 对 CANDIDATE / DEMO_VALIDATION / locked_timeframes / max_live_positions 的
         # 处理完全一致。None 表示"未显式注入"，将在构造期从 signal_config 读取。
-        strategy_deployments: Optional[Dict[str, StrategyDeployment]] = None,
+        deployment_gate: Optional[BacktestDeploymentGate] = None,
         # Research-only overlay：只在 backtest 中消费 State Edge artifact。
         # demo/live runtime 不构造该端口。
         state_edge_overlay: Optional[Any] = None,
@@ -249,13 +247,13 @@ class BacktestEngine:
         self._htf_direction_fn = htf_direction_fn
         self._htf_alignment_boost = htf_alignment_boost
         self._htf_conflict_penalty = htf_conflict_penalty
-        # StrategyDeployment 契约：优先使用显式传入；否则自动从 signal_config 加载
-        # 这保证所有 BacktestEngine 调用点默认获得与实盘一致的 deployment gate 行为，
-        # 无需每个调用方手动传参。调用方可显式传空 dict 显式声明"不走 deployment gate"。
-        if strategy_deployments is None:
-            self._strategy_deployments = _load_deployments_from_signal_config()
+        # Deployment gate：优先使用显式合同；否则自动从 signal_config 加载。
+        # research-only 绕过必须携带 audit_reason，不能用空 dict 隐式关闭。
+        if deployment_gate is None:
+            self._deployment_gate = _load_deployment_gate_from_signal_config()
         else:
-            self._strategy_deployments = dict(strategy_deployments)
+            self._deployment_gate = deployment_gate
+        self._strategy_deployments = dict(self._deployment_gate.deployments)
         self._state_edge_overlay = state_edge_overlay
         self._entry_meta_overlay = entry_meta_overlay
         # HTF 指标：{timeframe: {indicator_name: {field: value}}}（静态快照，向后兼容）
@@ -339,7 +337,7 @@ class BacktestEngine:
         # Deployment gate：允许的策略才进入 _target_strategies
         self._target_strategies = []
         for strategy in candidates:
-            deployment = self._strategy_deployments.get(strategy)
+            deployment = self._deployment_gate.require_deployment(strategy)
             if deployment is not None:
                 if not deployment.allows_runtime_evaluation():
                     deployment_filtered_candidate.append(strategy)

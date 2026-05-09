@@ -12,6 +12,10 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _now_msc() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
 def _db_settings() -> DBSettings:
     return DBSettings(
         pg_host="localhost",
@@ -37,7 +41,7 @@ class _FakePool:
 
 
 def test_validator_accepts_valid_market_rows() -> None:
-    valid_tick = ("EURUSD", 1.12345, 1000.0, _now_iso())
+    valid_tick = ("EURUSD", 1.12345, 1.1234, 1.1235, 1.12345, 1000.0, _now_iso(), _now_msc(), 6)
     valid_quote = ("EURUSD", 1.1234, 1.1235, 1.12345, 1000.0, _now_iso())
     valid_ohlc = ("EURUSD", "M1", 1.1234, 1.1240, 1.1230, 1.1238, 1000.0, _now_iso(), {})
     valid_intrabar = (
@@ -61,8 +65,28 @@ def test_validator_accepts_valid_market_rows() -> None:
 def test_validator_rejects_invalid_market_rows() -> None:
     future_time = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
 
-    tick_valid, tick_msg = DataValidator.validate_tick("EURUSD", -1.0, 1000.0, _now_iso())
-    future_valid, future_msg = DataValidator.validate_tick("EURUSD", 1.12345, 1000.0, future_time)
+    tick_valid, tick_msg = DataValidator.validate_tick(
+        "EURUSD",
+        -1.0,
+        1.1234,
+        1.1235,
+        1.12345,
+        1000.0,
+        _now_iso(),
+        _now_msc(),
+        6,
+    )
+    future_valid, future_msg = DataValidator.validate_tick(
+        "EURUSD",
+        1.12345,
+        1.1234,
+        1.1235,
+        1.12345,
+        1000.0,
+        future_time,
+        _now_msc(),
+        6,
+    )
     quote_valid, quote_msg = DataValidator.validate_quote("EURUSD", 1.1236, 1.1235, 1.12345, 1000.0, _now_iso())
     ohlc_valid, ohlc_msg = DataValidator.validate_ohlc(
         "EURUSD",
@@ -101,11 +125,12 @@ def test_validator_rejects_invalid_market_rows() -> None:
 
 def test_filtering_keeps_only_valid_rows() -> None:
     now_iso = _now_iso()
+    now_msc = _now_msc()
 
     ticks = [
-        ("EURUSD", 1.12345, 1000.0, now_iso),
-        ("EURUSD", -1.12345, 1000.0, now_iso),
-        ("USDJPY", 150.123, 2000.0, now_iso),
+        ("EURUSD", 1.12345, 1.1234, 1.1235, 1.12345, 1000.0, now_iso, now_msc, 6),
+        ("EURUSD", -1.12345, 1.1234, 1.1235, 1.12345, 1000.0, now_iso, now_msc, 6),
+        ("USDJPY", 150.123, 150.122, 150.124, 150.123, 2000.0, now_iso, now_msc, 6),
         ("BROKEN",),
     ]
     quotes = [
@@ -119,8 +144,8 @@ def test_filtering_keeps_only_valid_rows() -> None:
     ]
 
     assert DataValidator.filter_valid_ticks(ticks) == [
-        ("EURUSD", 1.12345, 1000.0, now_iso),
-        ("USDJPY", 150.123, 2000.0, now_iso),
+        ("EURUSD", 1.12345, 1.1234, 1.1235, 1.12345, 1000.0, now_iso, now_msc, 6),
+        ("USDJPY", 150.123, 150.122, 150.124, 150.123, 2000.0, now_iso, now_msc, 6),
     ]
     assert DataValidator.filter_valid_quotes(quotes) == [
         ("EURUSD", 1.1234, 1.1235, 1.12345, 1000.0, now_iso),

@@ -22,7 +22,7 @@ MT5 下单往返 + pre-trade checks 实际耗时多少？
 
 ```bash
 python -m src.ops.stress.intent_latency_probe --environment live --days 3
-python -m src.ops.stress.intent_latency_probe --environment live --days 7 --strategy structured_micro_momentum --json
+python -m src.ops.stress.intent_latency_probe --environment live --days 7 --strategy structured_price_action --json
 ```
 
 **如何读数**：
@@ -43,7 +43,7 @@ python -m src.ops.stress.intent_latency_probe --environment live --days 7 --stra
 ```bash
 python -m src.ops.stress.replay_intrabar --environment live --tf M5 --days 7
 python -m src.ops.stress.replay_intrabar --environment live --days 14 --tf H1
-python -m src.ops.stress.replay_intrabar --environment live --strategy structured_micro_momentum --sweep 2,3,4,5
+python -m src.ops.stress.replay_intrabar --environment live --strategy structured_price_action --sweep 2,3,4,5
 ```
 
 **如何读数**：

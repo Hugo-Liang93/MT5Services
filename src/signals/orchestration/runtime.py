@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable, Protocol
 
 from ..evaluation.regime import MarketRegimeDetector, RegimeTracker, RegimeType
 from ..execution.filters import SignalFilterChain
+from ..metadata_keys import MetadataKey as MK
 from ..models import SignalEvent
 from ..service import SignalModule, StrategyCapability
 from .htf_resolver import parse_htf_config, resolve_htf_indicators
@@ -184,6 +185,7 @@ class SignalRuntime:
         else:
             self._confirmed_events: Any = queue.Queue(maxsize=4096)
         self._intrabar_events: queue.Queue = queue.Queue(maxsize=8192)
+        self._tick_derived_events: queue.Queue = queue.Queue(maxsize=8192)
         self._queue_runner = QueueRunner(self)
         self._status_builder = RuntimeStatusBuilder(self)
         self._lifecycle_policy = SignalLifecyclePolicy(self)
@@ -200,6 +202,7 @@ class SignalRuntime:
         self._state_lock = threading.Lock()
         self._dropped_confirmed = 0
         self._dropped_intrabar = 0
+        self._dropped_tick_derived = 0
         self._intrabar_stale_drops = 0
         self._intrabar_overflow_wait_success = 0
         self._intrabar_overflow_replace_success = 0
@@ -221,6 +224,7 @@ class SignalRuntime:
         self._filter_by_scope: dict[str, dict[str, Any]] = {
             "confirmed": {"passed": 0, "blocked": 0, "blocks": {}},
             "intrabar": {"passed": 0, "blocked": 0, "blocks": {}},
+            "tick_derived": {"passed": 0, "blocked": 0, "blocks": {}},
         }
         # 滑动窗口统计最近 1h 内 filter 的 pass/block 分布：(timestamp, scope, category)。
         self._filter_window: deque[tuple[float, str, str]] = deque()
@@ -234,6 +238,10 @@ class SignalRuntime:
         }
         # Anti-starvation 计数器：限制 confirmed 连续独占队列，周期性给 intrabar 让路。
         self._confirmed_burst_count: int = 0
+        self._non_confirmed_turn: int = 0
+        self._tick_derived_processed: int = 0
+        self._tick_derived_failed: int = 0
+        self._tick_derived_last_snapshot_at: datetime | None = None
 
     @property
     def strategy_capabilities(self) -> dict[str, StrategyCapability]:
@@ -294,6 +302,20 @@ class SignalRuntime:
     def strategy_capability_contract(self) -> tuple[dict[str, Any], ...]:
         """Expose runtime-visible strategy capability contract."""
         return self.policy.strategy_capability_contract()
+
+    def required_market_data_lanes(self) -> tuple[str, ...]:
+        """Return required market data lane keys for currently scheduled targets."""
+        lanes: set[str] = set()
+        for (symbol, timeframe), strategies in self._target_index.items():
+            for strategy in strategies:
+                for requirement in self.policy.market_data_requirements_for(strategy):
+                    if requirement == "quote":
+                        lanes.add(f"quote:{symbol}")
+                    elif requirement == "tick":
+                        lanes.add(f"tick:{symbol}")
+                    elif requirement == "ohlc":
+                        lanes.add(f"ohlc:{symbol}:{timeframe}")
+        return tuple(sorted(lanes))
 
     def strategy_capability_reconciliation(self) -> dict[str, Any]:
         """Compare module contract vs runtime policy contract.
@@ -375,6 +397,69 @@ class SignalRuntime:
         item: tuple[str, str, str, dict[str, dict[str, float]], dict[str, Any]],
     ) -> None:
         self._queue_runner.enqueue(item)
+
+    def enqueue_tick_feature_snapshot(self, snapshot: Any) -> None:
+        """Public port used by TickFeatureBus to feed tick-derived runtime events."""
+        target_timeframes = self._tick_derived_timeframes_for(str(snapshot.symbol))
+        if not target_timeframes:
+            return
+        indicators = self._tick_feature_indicators(snapshot)
+        metadata = {
+            MK.SCOPE: "tick_derived",
+            MK.SNAPSHOT_TIME: snapshot.generated_at,
+            MK.BAR_TIME: snapshot.generated_at,
+            MK.SPREAD_POINTS: snapshot.spread_points or 0.0,
+            MK.TICK_FEATURE_STATUS: snapshot.status,
+            MK.TICK_FEATURE_REASONS: list(snapshot.reasons),
+            MK.TICK_FEATURE_WINDOW_START_MSC: snapshot.window_start_msc,
+            MK.TICK_FEATURE_WINDOW_END_MSC: snapshot.window_end_msc,
+            MK.CLOSE_PRICE: snapshot.last or snapshot.mid or snapshot.bid or snapshot.ask,
+        }
+        for timeframe in target_timeframes:
+            self._enqueue(
+                (
+                    "tick_derived",
+                    str(snapshot.symbol),
+                    timeframe,
+                    indicators,
+                    dict(metadata),
+                )
+            )
+
+    def _tick_derived_timeframes_for(self, symbol: str) -> tuple[str, ...]:
+        result: list[str] = []
+        tick_strategies = set(self.policy.strategies_by_scope("tick_derived"))
+        if not tick_strategies:
+            return ()
+        for (target_symbol, timeframe), strategies in self._target_index.items():
+            if target_symbol != symbol:
+                continue
+            if any(strategy in tick_strategies for strategy in strategies):
+                result.append(str(timeframe).upper())
+        return tuple(sorted(set(result)))
+
+    @staticmethod
+    def _tick_feature_indicators(snapshot: Any) -> dict[str, dict[str, float]]:
+        fields = {
+            "tick_count": snapshot.tick_count,
+            "bid": snapshot.bid,
+            "ask": snapshot.ask,
+            "last": snapshot.last,
+            "mid": snapshot.mid,
+            "spread_points": snapshot.spread_points,
+            "quote_age_ms": snapshot.quote_age_ms,
+            "realized_range_points": snapshot.realized_range_points,
+            "price_change_points": snapshot.price_change_points,
+            "buy_pressure": snapshot.buy_pressure,
+            "sell_pressure": snapshot.sell_pressure,
+        }
+        return {
+            "tick_features": {
+                key: float(value)
+                for key, value in fields.items()
+                if value is not None
+            }
+        }
 
     def _compute_filter_window_stats(self) -> dict:
         return self._status_builder.compute_filter_window_stats()

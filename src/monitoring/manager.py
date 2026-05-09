@@ -327,6 +327,58 @@ class MonitoringManager:
                                     ),
                                     check_alert=False,
                                 )
+                                if isinstance(status_payload, dict):
+                                    if "stalled" in status_payload:
+                                        self.health_monitor.record_metric(
+                                            name,
+                                            "consumer_stalled",
+                                            1.0
+                                            if status_payload.get("stalled")
+                                            else 0.0,
+                                            status_payload,
+                                        )
+                                    if "consecutive_errors" in status_payload:
+                                        self.health_monitor.record_metric(
+                                            name,
+                                            "consumer_consecutive_errors",
+                                            float(
+                                                status_payload.get(
+                                                    "consecutive_errors"
+                                                )
+                                                or 0
+                                            ),
+                                            status_payload,
+                                        )
+                                    if isinstance(
+                                        status_payload.get(
+                                            "in_flight_duration_seconds"
+                                        ),
+                                        (int, float),
+                                    ):
+                                        self.health_monitor.record_metric(
+                                            name,
+                                            "consumer_in_flight_duration_seconds",
+                                            float(
+                                                status_payload[
+                                                    "in_flight_duration_seconds"
+                                                ]
+                                            ),
+                                            status_payload,
+                                            check_alert=False,
+                                        )
+                                    if "total_takeovers" in status_payload:
+                                        self.health_monitor.record_metric(
+                                            name,
+                                            "consumer_lease_takeovers_total",
+                                            float(
+                                                status_payload.get(
+                                                    "total_takeovers"
+                                                )
+                                                or 0
+                                            ),
+                                            status_payload,
+                                            check_alert=False,
+                                        )
 
                             elif method == "monitoring_summary" and hasattr(
                                 component_obj, "monitoring_summary"

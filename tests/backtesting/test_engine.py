@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.backtesting.engine import BacktestEngine
+from src.backtesting.engine import BacktestDeploymentGate, BacktestEngine
 from src.backtesting.models import BacktestConfig
 from src.clients.mt5_market import OHLC
 from src.signals.models import SignalDecision
@@ -52,6 +52,10 @@ def _capability(
     }
 
 
+def _research_gate() -> BacktestDeploymentGate:
+    return BacktestDeploymentGate.research_disabled("unit test")
+
+
 class TestBacktestEngine:
     def _make_config(self, **kwargs: Any) -> BacktestConfig:
         defaults = {
@@ -87,6 +91,7 @@ class TestBacktestEngine:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
+            deployment_gate=_research_gate(),
         )
         result = engine.run()
         assert result.metrics.total_trades == 0
@@ -148,6 +153,7 @@ class TestBacktestEngine:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
+            deployment_gate=_research_gate(),
         )
         result = engine.run()
 
@@ -182,6 +188,7 @@ class TestBacktestEngine:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
+            deployment_gate=_research_gate(),
         )
 
         assert engine._target_strategies == [
@@ -238,7 +245,10 @@ class TestBacktestEngine:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
-            strategy_deployments=deployments,
+            deployment_gate=BacktestDeploymentGate.from_snapshot(
+                deployments,
+                audit_reason="unit test deployment gate",
+            ),
         )
 
     def test_default_excludes_demo_validation_and_candidate(self) -> None:
@@ -281,6 +291,7 @@ class TestBacktestEngine:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
+            deployment_gate=_research_gate(),
         )
         result = engine.run()
         # 所有 bar 都应被跳过，无交易
@@ -329,6 +340,7 @@ class TestBacktestEngine:
             signal_module=signal_module,
             indicator_pipeline=pipeline,
             htf_indicator_data=htf_data,
+            deployment_gate=_research_gate(),
         )
         engine.run()
 
@@ -387,6 +399,7 @@ class TestBacktestEngine:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
+            deployment_gate=_research_gate(),
         )
         result = engine.run()
 
@@ -456,6 +469,7 @@ class TestBacktestEngine:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
+            deployment_gate=_research_gate(),
         )
         result = engine.run()
 
@@ -497,6 +511,7 @@ class TestBacktestEngine:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
+            deployment_gate=_research_gate(),
         )
 
         assert engine._has_no_eligible_strategies is True
@@ -569,6 +584,7 @@ class TestBacktestEngine:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
+            deployment_gate=_research_gate(),
         )
         result = engine.run()
 

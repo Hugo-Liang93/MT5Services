@@ -22,7 +22,7 @@ class IngestSettings(BaseModel):
     ingest_poll_interval: float = 0.5
     ingest_ohlc_timeframes: list[str] = Field(default_factory=lambda: ["M1", "H1"])
     ingest_ohlc_interval: float = 30.0
-    ingest_ohlc_intervals: dict = Field(default_factory=dict)
+    ingest_ohlc_intervals: dict[str, float] = Field(default_factory=dict)
     ohlc_backfill_limit: int = 500
     retry_attempts: int = 3
     retry_backoff: float = 1.0
@@ -33,7 +33,7 @@ class IngestSettings(BaseModel):
     max_allowed_delay: float = 60.0
     intrabar_enabled: bool = True
     ingest_intrabar_interval: float = 15.0
-    ingest_intrabar_intervals: dict = Field(default_factory=dict)
+    ingest_intrabar_intervals: dict[str, float] = Field(default_factory=dict)
     # error_recovery: 连续失败退避参数
     symbol_error_threshold: int = 5
     symbol_cooldown_seconds: float = 60.0
@@ -90,7 +90,7 @@ def get_runtime_ingest_settings() -> IngestSettings:
         ingest_poll_interval=intervals.poll_interval,
         ingest_ohlc_timeframes=trading.timeframes,
         ingest_ohlc_interval=intervals.ohlc_interval,
-        ingest_ohlc_intervals={},
+        ingest_ohlc_intervals=dict(intervals.ohlc_intervals),
         ohlc_backfill_limit=ingest.ohlc_backfill_limit,
         retry_attempts=ingest.retry_attempts,
         retry_backoff=ingest.retry_backoff,

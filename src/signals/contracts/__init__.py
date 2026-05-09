@@ -6,7 +6,12 @@ from .sessions import (
     normalize_session_name,
     resolve_session_by_hour,
 )
-from .capability import StrategyCapability
+from .capability import (
+    SIGNAL_SCOPES,
+    StrategyCapability,
+    normalize_market_data_requirements,
+    normalize_signal_scopes,
+)
 from .deployment import (
     StrategyDeployment,
     StrategyDeploymentStatus,
@@ -26,6 +31,9 @@ __all__ = [
     "normalize_session_name",
     "resolve_session_by_hour",
     "StrategyCapability",
+    "SIGNAL_SCOPES",
+    "normalize_market_data_requirements",
+    "normalize_signal_scopes",
     "StrategyDeployment",
     "StrategyDeploymentStatus",
     "normalize_strategy_deployments",

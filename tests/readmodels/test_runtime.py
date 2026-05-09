@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from src.readmodels.runtime import (
     TRADABILITY_REASON_CLOSE_ONLY,
+    TRADABILITY_REASON_MARKET_DATA_UNHEALTHY,
     TRADABILITY_REASON_RISK_BLOCK,
     TRADABILITY_REASON_RUNTIME_NOT_READY,
     RuntimeReadModel,
@@ -34,6 +35,32 @@ class DummyIngestor:
                 }
             },
             "threads": {"writer_alive": True, "ingest_alive": True},
+        }
+
+    def health_snapshot(self):
+        return {
+            "status": "healthy",
+            "blocking": False,
+            "dependency_contract": {"required_lanes": []},
+            "lanes": {},
+        }
+
+
+class DummyCriticalMarketDataIngestor(DummyIngestor):
+    def health_snapshot(self):
+        return {
+            "status": "critical",
+            "blocking": True,
+            "blocked_lanes": ["tick:XAUUSD"],
+            "dependency_contract": {"required_lanes": ["tick:XAUUSD"]},
+            "freshness": {"critical_stale_count": 1, "critical_missing_count": 0},
+            "lanes": {
+                "tick:XAUUSD": {
+                    "required": True,
+                    "status": "stale",
+                    "stale": True,
+                }
+            },
         }
 
 
@@ -213,6 +240,84 @@ class DummyTradingStateStore:
         rows = [
             {"position_ticket": 11, "status": "open", "symbol": "XAUUSD"},
             {"position_ticket": 12, "status": "closed", "symbol": "XAUUSD"},
+            {
+                "position_ticket": 302143382,
+                "order_ticket": 302143382,
+                "signal_id": "demo-recovery-runner:cycle-1:initial",
+                "status": "closed",
+                "symbol": "XAUUSD",
+                "direction": "sell",
+                "volume": 0.01,
+                "entry_price": 4712.21,
+                "close_price": 4713.36,
+                "close_source": "history_deals",
+                "opened_at": datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+                "closed_at": datetime(2026, 1, 1, 0, 4, 0, tzinfo=timezone.utc),
+                "comment": "recovery-runner:cycle-1:initial",
+            },
+            {
+                "position_ticket": 302143503,
+                "order_ticket": 302143503,
+                "signal_id": "demo-recovery-runner:cycle-1:step:1",
+                "status": "closed",
+                "symbol": "XAUUSD",
+                "direction": "sell",
+                "volume": 0.02,
+                "entry_price": 4713.05,
+                "close_price": 4713.36,
+                "close_source": "close_position",
+                "opened_at": datetime(2026, 1, 1, 0, 2, 0, tzinfo=timezone.utc),
+                "closed_at": datetime(2026, 1, 1, 0, 4, 0, tzinfo=timezone.utc),
+                "comment": "recovery-runner:cycle-1:s1",
+            },
+        ]
+        if statuses:
+            rows = [row for row in rows if row["status"] in set(statuses)]
+        return rows[:limit]
+
+    def list_recovery_cycle_states(self, *, statuses=None, limit=100, **_kwargs):
+        rows = [
+            {
+                "account_alias": "demo",
+                "account_key": "demo_main",
+                "cycle_id": "cycle-1",
+                "symbol": "XAUUSD",
+                "direction": "sell",
+                "strategy": "tick_martingale_probe",
+                "timeframe": "TICK",
+                "source_signal_id": "demo-recovery-runner:cycle-1:initial",
+                "status": "closed",
+                "status_reason": "resident_recovery_target_reached_submitted",
+                "base_volume": 0.01,
+                "total_volume": 0.03,
+                "step_count": 1,
+                "average_entry_price": 4712.77,
+                "last_entry_price": 4713.05,
+                "started_at": datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+                "last_step_at": datetime(2026, 1, 1, 0, 2, 0, tzinfo=timezone.utc),
+                "closed_at": datetime(2026, 1, 1, 0, 4, 0, tzinfo=timezone.utc),
+                "close_price": 4713.36,
+                "realized_pnl": 1.23,
+                "metadata": {
+                    "submitted_tickets": [302143382, 302143503],
+                    "exit_reason": "target_reached",
+                    "cleanup_result": {
+                        "status": "closed",
+                        "reason": "cleanup_positions_already_absent",
+                        "already_closed_tickets": [302143382, 302143503],
+                        "closed_tickets": [],
+                        "failed_tickets": [],
+                    },
+                    "close_decision": {
+                        "reason": "net_recovery_target_reached",
+                        "metadata": {
+                            "net_profit_points": 31.5,
+                            "target_net_points": 30.0,
+                        },
+                    },
+                },
+                "updated_at": datetime(2026, 1, 1, 0, 4, 1, tzinfo=timezone.utc),
+            }
         ]
         if statuses:
             rows = [row for row in rows if row["status"] in set(statuses)]
@@ -279,6 +384,39 @@ class DummyExposureCloseoutController:
                 "remaining_orders": [],
             },
         }
+
+
+class DummyRecoveryRunner:
+    def status(self):
+        return {
+            "enabled": True,
+            "running": True,
+            "dry_run": True,
+            "symbol": "XAUUSD",
+            "strategy": "tick_martingale_probe",
+            "active_cycle_id": "cycle-1",
+            "processed_snapshots": 12,
+            "decision_counts": {"open_initial": 1, "open_step": 1},
+            "stalled": False,
+            "consecutive_errors": 0,
+        }
+
+
+class DummyTickFeatureHealthStore:
+    def health_payload(self, symbol, **kwargs):
+        return {
+            "symbol": symbol,
+            "status": "healthy",
+            "blocking": False,
+            "last_reasons": [],
+            "queue_depth": 0,
+            "dropped_snapshots": 0,
+        }
+
+
+class DummyTickFeatureBus:
+    def stats(self):
+        return {"queue_depth": 0, "dropped_snapshots": 0}
 
 
 class DummyRuntimeIdentity:
@@ -474,6 +612,7 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
         trading_state_store=DummyTradingStateStore(),
         trading_state_alerts=DummyTradingStateAlerts(),
         exposure_closeout_controller=DummyExposureCloseoutController(),
+        recovery_runner=DummyRecoveryRunner(),
         runtime_mode_controller=DummyRuntimeModeController(current_mode="observe"),
     )
 
@@ -483,6 +622,9 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
     assert summary["runtime_mode"]["current_mode"] == "observe"
     assert summary["closeout"]["status"] == "completed"
     assert summary["closeout"]["result"]["orders"]["completed"] == [201]
+    assert summary["recovery_runner"]["running"] is True
+    assert summary["recovery_runner"]["active_cycle_id"] == "cycle-1"
+    assert summary["recovery_runner"]["decision_counts"]["open_step"] == 1
     assert summary["pending"]["active"]["status_counts"]["placed"] == 1
     assert summary["pending"]["active"]["status_counts"]["orphan"] == 1
     assert summary["pending"]["lifecycle"]["status_counts"]["filled"] == 1
@@ -492,9 +634,42 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
     )
     assert summary["pending"]["execution_contexts"]["source_counts"]["mt5_order"] == 1
     assert summary["positions"]["status_counts"]["open"] == 1
+    recovery_cycles = summary["recovery_cycles"]
+    assert recovery_cycles["count"] == 1
+    assert recovery_cycles["status_counts"]["closed"] == 1
+    cycle = recovery_cycles["items"][0]
+    assert cycle["cycle_id"] == "cycle-1"
+    assert cycle["exit_reason"] == "target_reached"
+    assert cycle["position_count"] == 2
+    assert cycle["open_position_count"] == 0
+    assert cycle["submitted_tickets"] == [302143382, 302143503]
+    assert cycle["cleanup_status"] == "closed"
+    assert cycle["cleanup_reason"] == "cleanup_positions_already_absent"
+    assert cycle["net_profit_points"] == 31.5
+    assert cycle["target_net_points"] == 30.0
+    assert cycle["already_closed_tickets"] == [302143382, 302143503]
+    assert cycle["failed_cleanup_tickets"] == []
+    assert cycle["close_sources"] == {"close_position": 1, "history_deals": 1}
+    assert [leg["role"] for leg in cycle["legs"]] == ["initial", "step"]
+    assert [leg["step_index"] for leg in cycle["legs"]] == [0, 1]
     assert summary["alerts"]["status"] == "warning"
     # ADR-010: validation sidecars 已清空（paper_trading 删除）
     assert summary["validation"] == {}
+
+
+def test_recovery_runner_symbol_requires_tick_feature_health() -> None:
+    read_model = RuntimeReadModel(
+        recovery_runner=DummyRecoveryRunner(),
+        tick_feature_health_store=DummyTickFeatureHealthStore(),
+        tick_feature_bus=DummyTickFeatureBus(),
+    )
+
+    summary = read_model.tick_feature_health_summary()
+
+    assert summary["status"] == "healthy"
+    assert summary["blocking"] is False
+    assert summary["blocked_symbols"] == []
+    assert summary["symbols"]["XAUUSD"]["status"] == "healthy"
 
 
 def test_runtime_mode_summary_exposes_empty_validation_sidecars() -> None:
@@ -601,6 +776,7 @@ def _verdict_kwargs(**overrides):
         runtime_present=True,
         circuit_open=False,
         quote_stale=False,
+        market_data_unhealthy=False,
         should_block_new_trades=False,
         last_risk_block=None,
         close_only_mode=False,
@@ -637,6 +813,16 @@ def test_compute_tradability_verdict_quote_stale() -> None:
     assert verdict == "blocked"
     assert code == REASON_QUOTE_STALE
     assert action == "wait_quote"
+
+
+def test_compute_tradability_verdict_market_data_unhealthy() -> None:
+    verdict, code, reason, action = compute_tradability_verdict(
+        **_verdict_kwargs(market_data_unhealthy=True)
+    )
+    assert verdict == "blocked"
+    assert code == TRADABILITY_REASON_MARKET_DATA_UNHEALTHY
+    assert reason == "关键行情数据不可用或过期"
+    assert action == "wait_market_data"
 
 
 def test_compute_tradability_verdict_should_block_uses_last_risk_block() -> None:
@@ -758,6 +944,35 @@ def test_tradability_state_summary_blocks_on_quote_stale() -> None:
     assert payload["recommended_action"] == "wait_quote"
     assert payload["tradable"] is False
     assert payload["quote_health"]["stale"] is True
+
+
+def test_tradability_state_summary_blocks_on_market_data_health_critical() -> None:
+    store = _DummyAccountRiskStore(
+        account_risk={
+            "auto_entry_enabled": True,
+            "close_only_mode": False,
+            "circuit_open": False,
+            "quote_stale": False,
+            "should_block_new_trades": False,
+            "updated_at": "2026-04-20T10:00:00+00:00",
+        }
+    )
+    read_model = RuntimeReadModel(
+        trade_executor=DummyTradeExecutor(),
+        ingestor=DummyCriticalMarketDataIngestor(),
+        trading_state_store=store,
+        runtime_mode_controller=DummyRuntimeModeController(current_mode="full"),
+    )
+
+    payload = read_model.tradability_state_summary()
+
+    assert payload["verdict"] == "blocked"
+    assert payload["reason_code"] == TRADABILITY_REASON_MARKET_DATA_UNHEALTHY
+    assert payload["recommended_action"] == "wait_market_data"
+    assert payload["tradable"] is False
+    assert payload["market_data_fresh"] is False
+    assert payload["market_data_health"]["status"] == "critical"
+    assert payload["market_data_health"]["blocked_lanes"] == ["tick:XAUUSD"]
 
 
 def test_tradability_state_summary_blocks_on_risk_with_last_risk_block() -> None:

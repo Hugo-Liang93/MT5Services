@@ -16,7 +16,10 @@ def _signal_config():
 
 
 def _risk_config():
-    return SimpleNamespace(model_dump=lambda: {})
+    return SimpleNamespace(
+        recovery_runtime_runner=SimpleNamespace(enabled=False),
+        model_dump=lambda: {},
+    )
 
 
 def _patch_builder_dependencies(

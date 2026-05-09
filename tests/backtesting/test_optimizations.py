@@ -371,7 +371,7 @@ class TestPendingEntryExpiry:
 class TestConfidencePipelineFlags:
     def test_metadata_flags_set(self) -> None:
         """禁用置信度管线组件时 metadata 应包含跳过标记。"""
-        from src.backtesting.engine import BacktestEngine
+        from src.backtesting.engine import BacktestDeploymentGate, BacktestEngine
         from src.signals.models import SignalDecision
 
         config = BacktestConfig.from_flat(
@@ -422,6 +422,7 @@ class TestConfidencePipelineFlags:
             data_loader=data_loader,
             signal_module=signal_module,
             indicator_pipeline=pipeline,
+            deployment_gate=BacktestDeploymentGate.research_disabled("unit test"),
         )
         engine.run()
 

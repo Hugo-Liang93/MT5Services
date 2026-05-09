@@ -95,6 +95,7 @@ class TradeRequest(BaseModel):
     magic: int = 0
     dry_run: bool = False
     request_id: Optional[str] = None
+    trace_id: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod

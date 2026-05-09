@@ -48,6 +48,9 @@ from .trade_routes.state import (
     trading_accounts,
 )
 from .trade_routes.trace import (
+    trade_trace_by_action_id,
+    trade_trace_by_command_id,
+    trade_trace_by_intent_id,
     trade_trace_by_signal_id,
     trade_trace_by_trace_id,
     trade_traces,
@@ -98,6 +101,9 @@ __all__ = [
     "trade_state_stream",
     "trade_state_summary",
     "trade_detail",
+    "trade_trace_by_action_id",
+    "trade_trace_by_command_id",
+    "trade_trace_by_intent_id",
     "trade_trace_by_signal_id",
     "trade_trace_by_trace_id",
     "trade_traces",

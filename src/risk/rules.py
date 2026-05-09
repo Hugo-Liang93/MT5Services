@@ -44,6 +44,33 @@ class AccountSnapshot(Protocol):
     daily_pnl: float | None
 
 
+class TradeFrequencyProvider(Protocol):
+    def count_trades_since(
+        self,
+        since: datetime,
+        *,
+        account_key: str | None = None,
+    ) -> int:
+        ...
+
+    def reserve_trade_slot(
+        self,
+        *,
+        account_key: str,
+        at_time: datetime,
+        max_trades_per_day: int | None,
+        max_trades_per_hour: int | None,
+    ) -> str:
+        ...
+
+    def finalize_trade_slot(self, reservation_id: str, *, committed: bool) -> None:
+        ...
+
+
+class TradeFrequencyQuotaExceeded(RuntimeError):
+    """Trade frequency reservation was denied because a window limit is full."""
+
+
 @dataclass
 class RuleContext:
     intent: TradeIntent
@@ -51,6 +78,8 @@ class RuleContext:
     risk_settings: RiskConfig
     economic_provider: Optional[EconomicCalendarRuleProvider] = None
     account_provider: Optional[AccountStateProvider] = None
+    trade_frequency_provider: Optional[TradeFrequencyProvider] = None
+    account_key: str | None = None
     mode: str = "warn_only"
     calendar_health_mode: str = "warn_only"
 
@@ -62,31 +91,45 @@ class RiskRule:
         raise NotImplementedError
 
 
+def _risk_data_policy(context: RuleContext) -> str:
+    policy = str(
+        getattr(context.risk_settings, "data_unavailable_policy", "warn_only")
+    ).strip().lower()
+    return policy if policy in {"warn_only", "fail_closed"} else "warn_only"
+
+
+def _risk_data_unavailable_check(
+    context: RuleContext,
+    *,
+    name: str,
+    reason: str,
+    details: Dict[str, Any] | None = None,
+) -> RiskCheckResult:
+    policy = _risk_data_policy(context)
+    fail_closed = policy == "fail_closed"
+    payload = {
+        "data_unavailable_policy": policy,
+        "source_reason": reason,
+        **dict(details or {}),
+    }
+    return RiskCheckResult(
+        name=name,
+        verdict="block" if fail_closed else "warn",
+        reason="risk_data_unavailable" if fail_closed else reason,
+        details=payload,
+    )
+
+
 class AccountSnapshotRule(RiskRule):
     name = "account_snapshot"
 
     def evaluate(self, context: RuleContext) -> List[RiskCheckResult]:
-        if not context.risk_settings.enabled or context.account_provider is None:
+        if not context.risk_settings.enabled:
             return []
 
         checks: List[RiskCheckResult] = []
-        try:
-            symbol_positions = list(
-                context.account_provider.positions(context.intent.symbol)
-            )
-            all_positions = list(context.account_provider.positions())
-            symbol_orders = list(context.account_provider.orders(context.intent.symbol))
-        except Exception as exc:
-            return [
-                RiskCheckResult(
-                    name=self.name,
-                    verdict="warn",
-                    reason="Account state unavailable for structural risk checks",
-                    details={"error": str(exc)},
-                )
-            ]
-
         settings = context.risk_settings
+
         if (
             settings.max_volume_per_order is not None
             and context.intent.volume > settings.max_volume_per_order
@@ -102,6 +145,47 @@ class AccountSnapshotRule(RiskRule):
                     },
                 )
             )
+
+        needs_account_snapshot = any(
+            value is not None
+            for value in (
+                settings.max_positions_per_symbol,
+                settings.max_open_positions_total,
+                settings.max_pending_orders_per_symbol,
+                settings.max_volume_per_symbol,
+                settings.max_net_lots_per_symbol,
+            )
+        )
+        if not needs_account_snapshot:
+            return checks
+
+        if context.account_provider is None:
+            if _risk_data_policy(context) == "fail_closed":
+                checks.append(
+                    _risk_data_unavailable_check(
+                        context,
+                        name=self.name,
+                        reason="Account state provider unavailable for structural risk checks",
+                    )
+                )
+            return checks
+
+        try:
+            symbol_positions = list(
+                context.account_provider.positions(context.intent.symbol)
+            )
+            all_positions = list(context.account_provider.positions())
+            symbol_orders = list(context.account_provider.orders(context.intent.symbol))
+        except Exception as exc:
+            checks.append(
+                _risk_data_unavailable_check(
+                    context,
+                    name=self.name,
+                    reason="Account state unavailable for structural risk checks",
+                    details={"error": str(exc)},
+                )
+            )
+            return checks
 
         if (
             settings.max_positions_per_symbol is not None
@@ -256,19 +340,29 @@ class DailyLossLimitRule(RiskRule):
     name = "daily_loss_limit"
 
     def evaluate(self, context: RuleContext) -> List[RiskCheckResult]:
-        if not context.risk_settings.enabled or context.account_provider is None:
+        if not context.risk_settings.enabled:
             return []
         limit_pct = context.risk_settings.daily_loss_limit_pct
         if limit_pct is None or float(limit_pct) <= 0:
+            return []
+        if context.account_provider is None:
+            if _risk_data_policy(context) == "fail_closed":
+                return [
+                    _risk_data_unavailable_check(
+                        context,
+                        name=self.name,
+                        reason="Daily loss limit unavailable because account provider is not configured",
+                    )
+                ]
             return []
 
         try:
             account_info = context.account_provider.account_info()
         except Exception as exc:
             return [
-                RiskCheckResult(
+                _risk_data_unavailable_check(
+                    context,
                     name=self.name,
-                    verdict="warn",
                     reason="Daily loss limit unavailable because account info could not be loaded",
                     details={"error": str(exc)},
                 )
@@ -399,25 +493,43 @@ class MarginAvailabilityRule(RiskRule):
     name = "margin_availability"
 
     def evaluate(self, context: RuleContext) -> List[RiskCheckResult]:
-        if not context.risk_settings.enabled or context.account_provider is None:
+        if not context.risk_settings.enabled:
             return []
         safety = float(context.risk_settings.margin_safety_factor or 0)
         if safety <= 0:
+            return []
+        if context.account_provider is None:
+            if _risk_data_policy(context) == "fail_closed":
+                return [
+                    _risk_data_unavailable_check(
+                        context,
+                        name=self.name,
+                        reason="Margin check unavailable because account provider is not configured",
+                    )
+                ]
             return []
 
         estimated_margin = self._numeric(
             (context.intent.metadata or {}).get("estimated_margin")
         )
         if estimated_margin is None or estimated_margin <= 0:
+            if _risk_data_policy(context) == "fail_closed":
+                return [
+                    _risk_data_unavailable_check(
+                        context,
+                        name=self.name,
+                        reason="Margin estimate unavailable for trade",
+                    )
+                ]
             return []
 
         try:
             account_info = context.account_provider.account_info()
         except Exception:
             return [
-                RiskCheckResult(
+                _risk_data_unavailable_check(
+                    context,
                     name=self.name,
-                    verdict="warn",
                     reason="Margin check unavailable: account info could not be loaded",
                 )
             ]
@@ -426,9 +538,9 @@ class MarginAvailabilityRule(RiskRule):
 
         if free_margin is None:
             return [
-                RiskCheckResult(
+                _risk_data_unavailable_check(
+                    context,
                     name=self.name,
-                    verdict="warn",
                     reason="Free margin data unavailable from account info",
                     details={"estimated_margin": estimated_margin},
                 )
@@ -466,8 +578,9 @@ class MarginAvailabilityRule(RiskRule):
 class TradeFrequencyRule(RiskRule):
     """Limits the number of trades per day and per hour.
 
-    This is a *stateful* rule: call :meth:`record_trade` after every
-    successful trade execution so the rule can track timestamps.
+    Live/demo should provide an account-scoped persistent frequency provider.
+    The in-memory timestamp list remains only as an explicit no-provider
+    fallback for isolated tests and non-persistent research contexts.
     """
 
     name = "trade_frequency"
@@ -490,14 +603,33 @@ class TradeFrequencyRule(RiskRule):
             return []
 
         checks: List[RiskCheckResult] = []
-        now = datetime.now(timezone.utc)
+        now = context.intent.at_time or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        else:
+            now = now.astimezone(timezone.utc)
+
         with self._lock:
             timestamps = list(self._trade_timestamps)
 
         max_per_day = context.risk_settings.max_trades_per_day
         if max_per_day is not None and max_per_day > 0:
             day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            day_count = sum(1 for t in timestamps if t >= day_start)
+            try:
+                day_count = self._count_trades_since(
+                    context,
+                    since=day_start,
+                    fallback_timestamps=timestamps,
+                )
+            except Exception as exc:
+                return [
+                    _risk_data_unavailable_check(
+                        context,
+                        name=self.name,
+                        reason="Trade frequency history unavailable",
+                        details={"error": str(exc)},
+                    )
+                ]
             if day_count >= max_per_day:
                 checks.append(
                     RiskCheckResult(
@@ -514,7 +646,21 @@ class TradeFrequencyRule(RiskRule):
         max_per_hour = context.risk_settings.max_trades_per_hour
         if max_per_hour is not None and max_per_hour > 0:
             hour_ago = now - timedelta(hours=1)
-            hour_count = sum(1 for t in timestamps if t >= hour_ago)
+            try:
+                hour_count = self._count_trades_since(
+                    context,
+                    since=hour_ago,
+                    fallback_timestamps=timestamps,
+                )
+            except Exception as exc:
+                return [
+                    _risk_data_unavailable_check(
+                        context,
+                        name=self.name,
+                        reason="Trade frequency history unavailable",
+                        details={"error": str(exc)},
+                    )
+                ]
             if hour_count >= max_per_hour:
                 checks.append(
                     RiskCheckResult(
@@ -529,6 +675,26 @@ class TradeFrequencyRule(RiskRule):
                 )
 
         return checks
+
+    @staticmethod
+    def _count_trades_since(
+        context: RuleContext,
+        *,
+        since: datetime,
+        fallback_timestamps: List[datetime],
+    ) -> int:
+        provider = context.trade_frequency_provider
+        if provider is not None:
+            return max(
+                0,
+                int(
+                    provider.count_trades_since(
+                        since,
+                        account_key=context.account_key,
+                    )
+                ),
+            )
+        return sum(1 for t in fallback_timestamps if t >= since)
 
 
 class SessionWindowRule(RiskRule):

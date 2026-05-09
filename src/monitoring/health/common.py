@@ -17,6 +17,10 @@ def metric_overall_impact(metric_name: str) -> str:
         "data_latency",
         "indicator_freshness",
         "queue_depth",
+        "mt5_circuit_open",
+        "mt5_abandoned_call_count",
+        "market_data_critical_stale_count",
+        "market_data_lane_stale",
         "economic_calendar_staleness",
         "economic_provider_failures",
         # §0v P2：交易域阻断指标 —— 旧实现漏掉，导致 critical 时只算
@@ -25,6 +29,8 @@ def metric_overall_impact(metric_name: str) -> str:
         "circuit_breaker_open",
         "execution_failure_rate",
         "execution_queue_overflows",
+        "consumer_stalled",
+        "consumer_consecutive_errors",
         # §0w P2：PendingEntryManager 监听/填单线程任一死亡即阻断挂单链路。
         "pending_runtime_down",
     }:

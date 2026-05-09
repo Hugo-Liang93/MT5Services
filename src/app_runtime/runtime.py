@@ -13,6 +13,10 @@ from src.config.file_manager import close_file_config_manager
 from src.monitoring.health import close_health_monitor
 from src.monitoring.manager import close_monitoring_manager
 from src.monitoring.runtime_task_status import RuntimeTaskState
+from src.signals.orchestration.intrabar_contract import (
+    intrabar_enabled_strategies,
+    intrabar_trading_active,
+)
 from src.utils.event_store import close_event_store
 
 logger = logging.getLogger(__name__)
@@ -98,6 +102,21 @@ class AppRuntime:
                 current_started,
             )
 
+            if c.recovery_runner is not None:
+                current_step = "recovery_runner"
+                current_started = time.monotonic()
+                c.recovery_runner.start()
+                self._mark_step(
+                    current_step,
+                    RuntimeTaskState.READY.value,
+                    current_started,
+                )
+                self._record_task_status(
+                    current_step,
+                    RuntimeTaskState.READY.value,
+                    current_started,
+                )
+
             self._register_monitoring()
 
             self._start_notifications()
@@ -155,7 +174,7 @@ class AppRuntime:
         mode = "?"
         if c.runtime_mode_controller is not None:
             try:
-                current = c.runtime_mode_controller.current_mode()
+                current = c.runtime_mode_controller.current_mode
                 mode = getattr(current, "value", str(current)) if current else "?"
             except Exception:
                 mode = "error"
@@ -174,14 +193,10 @@ class AppRuntime:
         bindings: dict[str, list[str]] = {}
         if signal_config is not None:
             auto_trade = str(getattr(signal_config, "auto_trade_enabled", "?"))
-            intrabar_enabled = str(
-                getattr(signal_config, "intrabar_trading_enabled", "?")
-            )
+            intrabar_enabled = str(intrabar_trading_active(signal_config))
             tf_map = getattr(signal_config, "strategy_timeframes", {}) or {}
             active_strategies = sorted(tf_map.keys())
-            intrabar_strategies = sorted(
-                getattr(signal_config, "intrabar_trading_enabled_strategies", []) or []
-            )
+            intrabar_strategies = sorted(intrabar_enabled_strategies(signal_config))
             raw_bindings = getattr(signal_config, "account_bindings", {}) or {}
             bindings = {
                 alias: sorted(strategies or [])
@@ -245,6 +260,7 @@ class AppRuntime:
         # Shutdown order: signal source → execution → data
         for label, component, method in [
             ("monitoring_manager", c.monitoring_manager, "stop"),
+            ("recovery_runner", c.recovery_runner, "stop"),
             ("signal_runtime", c.signal_runtime, "stop"),
             ("trade_executor", c.trade_executor, "shutdown"),
             ("pending_entry_manager", c.pending_entry_manager, "shutdown"),
@@ -421,6 +437,27 @@ class AppRuntime:
                 "trade_executor",
                 c.trade_executor,
                 ["circuit_breaker", "execution_quality"],
+                trading_only=True,
+            )
+        if c.execution_intent_consumer is not None:
+            c.monitoring_manager.register_component(
+                "execution_intent_consumer",
+                c.execution_intent_consumer,
+                ["status"],
+                trading_only=True,
+            )
+        if c.operator_command_consumer is not None:
+            c.monitoring_manager.register_component(
+                "operator_command_consumer",
+                c.operator_command_consumer,
+                ["status"],
+                trading_only=True,
+            )
+        if c.recovery_runner is not None:
+            c.monitoring_manager.register_component(
+                "recovery_runner",
+                c.recovery_runner,
+                ["status"],
                 trading_only=True,
             )
         if c.trading_state_alerts is not None:

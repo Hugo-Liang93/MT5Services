@@ -111,6 +111,15 @@ class SignalPolicy:
         capability = self.get_strategy_capability(strategy)
         return bool(capability and capability.needs_htf)
 
+    def market_data_requirements_for(self, strategy: str) -> tuple[str, ...]:
+        """策略声明的必需市场数据 lane 类型。"""
+        capability = self.get_strategy_capability(strategy)
+        return (
+            capability.market_data_requirements
+            if capability is not None
+            else tuple()
+        )
+
     def intrabar_strategies(self) -> tuple[str, ...]:
         """声明 intrabar 的策略名列表（有序）。"""
         return tuple(

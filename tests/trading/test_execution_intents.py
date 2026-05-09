@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from src.config.mt5 import MT5Settings
 from src.config.runtime_identity import RuntimeIdentity, build_account_key
@@ -219,6 +219,51 @@ def test_execution_intent_publisher_routes_intrabar_armed_signal(monkeypatch):
     assert rows[0][8] == "M5"
     assert rows[0][9]["scope"] == "intrabar"
     assert rows[0][9]["signal_state"] == "intrabar_armed_buy"
+
+
+def test_execution_intent_publisher_routes_tick_derived_signal(monkeypatch):
+    rows: list[tuple] = []
+    monkeypatch.setattr(
+        "src.trading.intents.publisher.load_group_mt5_settings",
+        lambda **kwargs: {
+            "exec_b": MT5Settings(
+                instance_name="live-exec-b",
+                account_alias="exec_b",
+                account_label="Exec B",
+                mt5_login=1002,
+                mt5_server="Broker-Live",
+                mt5_path="C:/MT5/exec_b/terminal64.exe",
+            ),
+        },
+    )
+    publisher = ExecutionIntentPublisher(
+        write_with_idempotency_fn=lambda items: (
+            rows.extend(item["row"] for item in items)
+            or [item["intent_key"] for item in items]
+        ),
+        runtime_identity=_runtime_identity(live_topology_mode="multi_account"),
+        account_bindings={"exec_b": ["trend_alpha"]},
+        strategy_deployments={
+            "trend_alpha": StrategyDeployment(
+                name="trend_alpha",
+                status=StrategyDeploymentStatus.ACTIVE_GUARDED,
+            )
+        },
+        auto_trade_enabled=True,
+    )
+
+    publisher.on_signal_event(
+        _event(
+            scope="tick_derived",
+            signal_state="tick_derived_buy",
+            signal_id="sig-tick-1",
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0][3] == "sig-tick-1"
+    assert rows[0][9]["scope"] == "tick_derived"
+    assert rows[0][9]["signal_state"] == "tick_derived_buy"
 
 
 def test_execution_intent_publisher_skips_non_actionable_intrabar_signal(monkeypatch):
@@ -1195,6 +1240,40 @@ def test_consumer_survives_transient_complete_fn_exception_in_failure_branch() -
     assert consumer._in_flight_intent_id is None
     assert consumer._total_processed == 1
     assert consumer._total_failed == 1
+
+
+def test_execution_intent_consumer_health_snapshot_reports_stalled_progress() -> None:
+    """executor ready 需要证明 consumer 仍在推进，而不是只看线程存活。"""
+
+    class _Executor:
+        def process_event(self, event):
+            return {"status": "ok"}
+
+    now = datetime(2026, 5, 5, 12, 0, tzinfo=timezone.utc)
+    consumer = ExecutionIntentConsumer(
+        claim_fn=lambda **kwargs: [],
+        complete_fn=lambda **kwargs: None,
+        runtime_identity=_runtime_identity(),
+        trade_executor=_Executor(),
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
+        poll_interval_seconds=0.5,
+        lease_seconds=30,
+    )
+    consumer.is_running = lambda: True
+    consumer._last_poll_at = now - timedelta(seconds=12)
+    consumer._consecutive_errors = 3
+    consumer._last_error = "RuntimeError: database unavailable"
+
+    snapshot = consumer.health_snapshot(now=now)
+
+    assert snapshot["running"] is True
+    assert snapshot["stalled"] is True
+    assert "poll_stalled" in snapshot["stall_reasons"]
+    assert "consecutive_errors" in snapshot["stall_reasons"]
+    assert snapshot["last_poll_at"] == "2026-05-05T11:59:48+00:00"
+    assert snapshot["last_error"] == "RuntimeError: database unavailable"
+    assert consumer.status()["stalled"] is True
 
 
 def test_consumer_survives_transient_pipeline_emit_exception() -> None:

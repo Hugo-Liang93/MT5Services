@@ -1,15 +1,13 @@
-"""验证 EntryPolicyRegistry 能被装配到 AppContainer 并解析正常。
-
-P1 阶段：仅验证 (registry 装配成功) + (字段绑定到 container) + (resolve fallback to market)。
-P2/P3 之后再加：与 PendingEntryManager 协作的端到端集成。
-"""
+"""验证 EntryPolicyRegistry 能被装配到 AppContainer 并解析正常。"""
 
 from __future__ import annotations
+
+import pytest
 
 from src.app_runtime.container import AppContainer
 from src.app_runtime.factories import build_entry_policy_registry
 from src.config import get_entry_policy_config, reset_entry_policy_config_cache
-from src.trading.entry_policy import EntryPolicyRegistry
+from src.trading.entry_policy import EntryPolicyMappingError, EntryPolicyRegistry
 
 
 class TestEntryPolicyPhase:
@@ -33,17 +31,17 @@ class TestEntryPolicyPhase:
             "fib_pullback",
         }
 
-    def test_default_resolves_to_market(self):
+    def test_unknown_strategy_requires_explicit_mapping(self):
         reset_entry_policy_config_cache()
         registry = build_entry_policy_registry(get_entry_policy_config())
-        policy = registry.resolve("structured_unknown_strategy", "M15")
-        assert policy.name == "market"
+        with pytest.raises(EntryPolicyMappingError, match="no entry policy mapping"):
+            registry.resolve("structured_unknown_strategy", "M15")
 
-    def test_micro_momentum_resolves_to_market_policy(self):
+    def test_price_action_resolves_to_configured_policy(self):
         reset_entry_policy_config_cache()
         registry = build_entry_policy_registry(get_entry_policy_config())
-        assert registry.resolve("structured_micro_momentum", "M1").name == "market"
-        assert registry.resolve("structured_micro_momentum", "M5").name == "market"
+        assert registry.resolve("structured_price_action", "M15").name == "oco_pullback_breakout"
+        assert registry.resolve("structured_price_action", "M5").name == "pullback"
 
     def test_describe_includes_registered_policies(self):
         reset_entry_policy_config_cache()

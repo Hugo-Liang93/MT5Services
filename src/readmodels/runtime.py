@@ -20,7 +20,14 @@ from src.trading.broker.comment_codec import looks_like_system_trade_comment
 from src.trading.execution.reasons import (
     REASON_AUTO_TRADE_DISABLED,
     REASON_CIRCUIT_OPEN,
+    REASON_MARKET_DATA_UNHEALTHY,
     REASON_QUOTE_STALE,
+)
+from src.trading.execution.market_data_health import (
+    normalize_market_data_health_snapshot,
+)
+from src.trading.execution.tick_feature_health import (
+    normalize_tick_feature_health_snapshot,
 )
 
 # ── Tradability verdict 原生计算（P9 freshness tiering，T0 数据） ──
@@ -28,6 +35,7 @@ from src.trading.execution.reasons import (
 TRADABILITY_REASON_RUNTIME_NOT_READY = "runtime_not_ready"
 TRADABILITY_REASON_CLOSE_ONLY = "close_only_mode"
 TRADABILITY_REASON_RISK_BLOCK = "risk_block"
+TRADABILITY_REASON_MARKET_DATA_UNHEALTHY = REASON_MARKET_DATA_UNHEALTHY
 # multi_account 拓扑下的 main role 不挂 trade_executor，本身就不参与执行 →
 # 不应误报 blocked，前端应识别 not_applicable 跳过 tradability 显示。
 TRADABILITY_VERDICT_NOT_APPLICABLE = "not_applicable"
@@ -39,6 +47,7 @@ def compute_tradability_verdict(
     runtime_present: bool,
     circuit_open: bool,
     quote_stale: bool,
+    market_data_unhealthy: bool,
     should_block_new_trades: bool,
     last_risk_block: Optional[str],
     close_only_mode: bool,
@@ -65,6 +74,13 @@ def compute_tradability_verdict(
         return ("blocked", REASON_CIRCUIT_OPEN, "熔断器已触发", "acknowledge")
     if quote_stale:
         return ("blocked", REASON_QUOTE_STALE, "行情数据过期，等待恢复", "wait_quote")
+    if market_data_unhealthy:
+        return (
+            "blocked",
+            TRADABILITY_REASON_MARKET_DATA_UNHEALTHY,
+            "关键行情数据不可用或过期",
+            "wait_market_data",
+        )
     if should_block_new_trades:
         return (
             "blocked",
@@ -105,6 +121,9 @@ class RuntimeReadModel:
         trading_state_store: Any = None,
         trading_state_alerts: Any = None,
         exposure_closeout_controller: Any = None,
+        recovery_runner: Any = None,
+        tick_feature_health_store: Any = None,
+        tick_feature_bus: Any = None,
         runtime_mode_controller: Any = None,
         runtime_identity: Any = None,
         db_writer: Any = None,
@@ -122,6 +141,9 @@ class RuntimeReadModel:
         self._trading_state_store = trading_state_store
         self._trading_state_alerts = trading_state_alerts
         self._exposure_closeout_controller = exposure_closeout_controller
+        self._recovery_runner = recovery_runner
+        self._tick_feature_health_store = tick_feature_health_store
+        self._tick_feature_bus = tick_feature_bus
         self._runtime_mode_controller = runtime_mode_controller
         self._runtime_identity = runtime_identity
         self.db_writer = db_writer
@@ -660,6 +682,134 @@ class RuntimeReadModel:
             return dict(fallback)
         return {"value": value}
 
+    def market_data_health_summary(self) -> dict[str, Any]:
+        if self._ingestor is None:
+            return {
+                "status": "unavailable",
+                "blocking": False,
+                "blocked_lanes": [],
+                "dependency_contract": {"required_lanes": []},
+            }
+        health_snapshot = getattr(self._ingestor, "health_snapshot", None)
+        if not callable(health_snapshot):
+            return {
+                "status": "unavailable",
+                "blocking": False,
+                "blocked_lanes": [],
+                "dependency_contract": {"required_lanes": []},
+            }
+        try:
+            snapshot = health_snapshot()
+        except Exception as exc:
+            return {
+                "status": "critical",
+                "source_status": "probe_failed",
+                "blocking": True,
+                "blocked_lanes": [],
+                "dependency_contract": {"required_lanes": []},
+                "error": str(exc),
+            }
+        if not isinstance(snapshot, Mapping):
+            return {
+                "status": "critical",
+                "source_status": "invalid_snapshot",
+                "blocking": True,
+                "blocked_lanes": [],
+                "dependency_contract": {"required_lanes": []},
+            }
+        return self._json_safe_value(
+            normalize_market_data_health_snapshot(snapshot, symbol=None)
+        )
+
+    def _required_tick_symbols(self) -> tuple[str, ...]:
+        symbols: set[str] = set()
+        runtime = self._signal_runtime
+        if runtime is not None:
+            required_lanes = getattr(runtime, "required_market_data_lanes", None)
+            if callable(required_lanes):
+                try:
+                    lanes = required_lanes()
+                except Exception:
+                    lanes = ()
+                for lane in lanes or ():
+                    parts = str(lane or "").split(":")
+                    if len(parts) >= 2 and parts[0] == "tick" and parts[1].strip():
+                        symbols.add(parts[1].strip().upper())
+        runner = self._recovery_runner
+        if runner is not None:
+            status_fn = getattr(runner, "status", None)
+            try:
+                runner_status = status_fn() if callable(status_fn) else {}
+            except Exception:
+                runner_status = {}
+            if bool(runner_status.get("enabled", False)):
+                symbol = str(runner_status.get("symbol") or "").strip().upper()
+                if symbol:
+                    symbols.add(symbol)
+        return tuple(sorted(symbols))
+
+    def tick_feature_health_summary(self) -> dict[str, Any]:
+        symbols = self._required_tick_symbols()
+        if not symbols:
+            return {
+                "status": "not_required",
+                "blocking": False,
+                "blocked_symbols": [],
+                "symbols": {},
+            }
+        if self._tick_feature_health_store is None:
+            return {
+                "status": "unavailable",
+                "blocking": True,
+                "blocked_symbols": list(symbols),
+                "symbols": {},
+            }
+        bus_stats = {}
+        if self._tick_feature_bus is not None:
+            stats_fn = getattr(self._tick_feature_bus, "stats", None)
+            if callable(stats_fn):
+                try:
+                    bus_stats = stats_fn()
+                except Exception:
+                    bus_stats = {}
+        per_symbol: dict[str, Any] = {}
+        blocked: list[str] = []
+        health_payload = getattr(self._tick_feature_health_store, "health_payload", None)
+        for symbol in symbols:
+            try:
+                if callable(health_payload):
+                    payload = health_payload(symbol, bus_stats=bus_stats)
+                else:
+                    health = self._tick_feature_health_store.health_for(
+                        symbol,
+                        bus_stats=bus_stats,
+                    )
+                    to_dict = getattr(health, "to_dict", None)
+                    if callable(to_dict):
+                        payload = to_dict()
+                    elif isinstance(health, Mapping):
+                        payload = dict(health)
+                    else:
+                        payload = dict(getattr(health, "__dict__", {}) or {})
+            except Exception as exc:
+                payload = {
+                    "symbol": symbol,
+                    "status": "critical",
+                    "blocking": True,
+                    "last_reasons": ["probe_failed"],
+                    "error": str(exc),
+                }
+            normalized = normalize_tick_feature_health_snapshot(payload, symbol=symbol)
+            per_symbol[symbol] = self._json_safe_value(normalized)
+            if bool(normalized.get("blocking", False)):
+                blocked.append(symbol)
+        return {
+            "status": "critical" if blocked else "healthy",
+            "blocking": bool(blocked),
+            "blocked_symbols": blocked,
+            "symbols": per_symbol,
+        }
+
     def storage_summary(self) -> dict[str, Any]:
         if self._is_executor():
             writer_alive = bool(
@@ -1156,6 +1306,40 @@ class RuntimeReadModel:
         snapshot.setdefault("status", "idle")
         return snapshot
 
+    def recovery_runner_summary(self) -> dict[str, Any]:
+        runner = self._recovery_runner
+        if runner is None:
+            return {
+                "enabled": False,
+                "running": False,
+                "status": "unavailable",
+                "active_cycle_id": None,
+            }
+        status_fn = getattr(runner, "status", None)
+        if not callable(status_fn):
+            return {
+                "enabled": True,
+                "running": False,
+                "status": "unavailable",
+                "reason": "status_port_missing",
+                "active_cycle_id": None,
+            }
+        try:
+            payload = dict(status_fn() or {})
+        except Exception as exc:
+            return {
+                "enabled": True,
+                "running": False,
+                "status": "error",
+                "reason": "status_failed",
+                "error_message": str(exc),
+                "active_cycle_id": None,
+            }
+        payload.setdefault("enabled", True)
+        payload.setdefault("running", False)
+        payload.setdefault("status", "running" if payload.get("running") else "stopped")
+        return self._json_safe_value(payload)
+
     def tracked_positions_payload(self, *, limit: int = 20) -> dict[str, Any]:
         summary = self.position_manager_summary()
         positions = list(summary.get("positions", {}).get("items", []) or [])[:limit]
@@ -1263,6 +1447,335 @@ class RuntimeReadModel:
             "status_counts": self._state_counts(items),
             "items": items,
         }
+
+    def recovery_cycle_summary_payload(self, *, limit: int = 20) -> dict[str, Any]:
+        if self._trading_state_store is None:
+            return {
+                "count": 0,
+                "status_counts": {},
+                "exit_reason_counts": {},
+                "items": [],
+                "view": "recovery_cycles",
+            }
+        cycle_lister = getattr(
+            self._trading_state_store, "list_recovery_cycle_states", None
+        )
+        if not callable(cycle_lister):
+            return {
+                "count": 0,
+                "status_counts": {},
+                "exit_reason_counts": {},
+                "items": [],
+                "view": "recovery_cycles",
+                "source_status": "unavailable",
+            }
+        try:
+            cycle_rows = [
+                dict(row)
+                for row in list(cycle_lister(limit=max(int(limit or 0), 1)) or [])
+                if isinstance(row, Mapping)
+            ]
+        except Exception as exc:
+            return {
+                "count": 0,
+                "status_counts": {},
+                "exit_reason_counts": {},
+                "items": [],
+                "view": "recovery_cycles",
+                "source_status": "query_failed",
+                "error": str(exc),
+            }
+
+        position_rows = self._recovery_cycle_position_rows(limit=max(limit * 20, 100))
+        positions_by_cycle: dict[str, list[dict[str, Any]]] = {}
+        for position in position_rows:
+            cycle_id = self._recovery_cycle_id_from_position(position)
+            if cycle_id:
+                positions_by_cycle.setdefault(cycle_id, []).append(position)
+
+        exit_reason_counts: dict[str, int] = {}
+        items: list[dict[str, Any]] = []
+        for row in cycle_rows:
+            cycle_id = str(row.get("cycle_id") or "")
+            item = self._recovery_cycle_item_payload(
+                row,
+                positions_by_cycle.get(cycle_id, []),
+            )
+            items.append(item)
+            exit_reason = str(item.get("exit_reason") or "unknown")
+            exit_reason_counts[exit_reason] = exit_reason_counts.get(exit_reason, 0) + 1
+
+        return self._json_safe_value(
+            {
+                "count": len(items),
+                "status_counts": self._state_counts(cycle_rows),
+                "exit_reason_counts": exit_reason_counts,
+                "items": items,
+                "view": "recovery_cycles",
+            }
+        )
+
+    def _recovery_cycle_position_rows(self, *, limit: int) -> list[dict[str, Any]]:
+        if self._trading_state_store is None:
+            return []
+        position_lister = getattr(
+            self._trading_state_store, "list_position_runtime_states", None
+        )
+        if not callable(position_lister):
+            return []
+        try:
+            rows = list(position_lister(limit=max(int(limit or 0), 1)) or [])
+        except Exception:
+            return []
+        return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+    @staticmethod
+    def _recovery_cycle_id_from_position(row: Mapping[str, Any]) -> str | None:
+        metadata = row.get("metadata")
+        if isinstance(metadata, Mapping):
+            for key in ("recovery_cycle_id", "cycle_id"):
+                value = metadata.get(key)
+                if value:
+                    return str(value)
+        direct_value = row.get("recovery_cycle_id") or row.get("cycle_id")
+        if direct_value:
+            return str(direct_value)
+        for field in ("signal_id", "comment"):
+            value = row.get(field)
+            cycle_id = RuntimeReadModel._recovery_cycle_id_from_text(value)
+            if cycle_id:
+                return cycle_id
+        return None
+
+    @staticmethod
+    def _recovery_cycle_id_from_text(value: Any) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        parts = [part for part in text.split(":") if part]
+        if len(parts) >= 3 and parts[0] in {"recovery", "recovery-runner"}:
+            return parts[1]
+        if len(parts) >= 3 and "recovery" in parts[0]:
+            return parts[1]
+        for part in parts:
+            if part.startswith("demo-recovery-runner-"):
+                return part
+        return None
+
+    def _recovery_cycle_item_payload(
+        self,
+        row: Mapping[str, Any],
+        positions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        legs = [
+            self._recovery_cycle_leg_payload(position)
+            for position in positions
+            if self._recovery_cycle_leg_role(position) != "unknown"
+        ]
+        legs.sort(
+            key=lambda leg: (
+                int(leg.get("step_index") or 0),
+                str(leg.get("opened_at") or ""),
+                int(leg.get("position_ticket") or 0),
+            )
+        )
+        close_sources: dict[str, int] = {}
+        for leg in legs:
+            source = str(leg.get("close_source") or "unknown")
+            close_sources[source] = close_sources.get(source, 0) + 1
+        open_tickets = [
+            int(leg["position_ticket"])
+            for leg in legs
+            if leg.get("status") == "open" and leg.get("position_ticket") is not None
+        ]
+        submitted_tickets = self._recovery_submitted_tickets(row.get("metadata"))
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+        cleanup_result = (
+            metadata.get("cleanup_result") if isinstance(metadata, Mapping) else {}
+        )
+        if not isinstance(cleanup_result, Mapping):
+            cleanup_result = {}
+        close_decision = (
+            metadata.get("close_decision") if isinstance(metadata, Mapping) else {}
+        )
+        if not isinstance(close_decision, Mapping):
+            close_decision = {}
+        close_decision_metadata = close_decision.get("metadata")
+        if not isinstance(close_decision_metadata, Mapping):
+            close_decision_metadata = {}
+        exit_reason = self._recovery_exit_reason(row)
+        return {
+            "cycle_id": row.get("cycle_id"),
+            "account_alias": row.get("account_alias"),
+            "account_key": row.get("account_key"),
+            "symbol": row.get("symbol"),
+            "direction": row.get("direction"),
+            "strategy": row.get("strategy"),
+            "timeframe": row.get("timeframe"),
+            "source_signal_id": row.get("source_signal_id"),
+            "status": row.get("status"),
+            "status_reason": row.get("status_reason"),
+            "exit_reason": exit_reason,
+            "base_volume": row.get("base_volume"),
+            "total_volume": row.get("total_volume"),
+            "step_count": row.get("step_count"),
+            "average_entry_price": row.get("average_entry_price"),
+            "last_entry_price": row.get("last_entry_price"),
+            "close_price": row.get("close_price"),
+            "realized_pnl": row.get("realized_pnl"),
+            "net_profit_points": close_decision_metadata.get("net_profit_points"),
+            "target_net_points": close_decision_metadata.get("target_net_points"),
+            "started_at": row.get("started_at"),
+            "last_step_at": row.get("last_step_at"),
+            "closed_at": row.get("closed_at"),
+            "updated_at": row.get("updated_at"),
+            "submitted_tickets": submitted_tickets,
+            "cleanup_status": cleanup_result.get("status"),
+            "cleanup_reason": cleanup_result.get("reason"),
+            "cleanup_closed_tickets": self._recovery_int_list(
+                cleanup_result.get("closed_tickets")
+            ),
+            "already_closed_tickets": self._recovery_int_list(
+                cleanup_result.get("already_closed_tickets")
+            ),
+            "failed_cleanup_tickets": self._recovery_int_list(
+                cleanup_result.get("failed_tickets")
+            ),
+            "position_count": len(legs),
+            "open_position_count": len(open_tickets),
+            "closed_position_count": len(
+                [leg for leg in legs if leg.get("status") == "closed"]
+            ),
+            "open_position_tickets": open_tickets,
+            "close_sources": close_sources,
+            "legs": legs,
+            "metadata": metadata,
+        }
+
+    @staticmethod
+    def _recovery_exit_reason(row: Mapping[str, Any]) -> str:
+        metadata = row.get("metadata")
+        if isinstance(metadata, Mapping) and metadata.get("exit_reason"):
+            return str(metadata.get("exit_reason"))
+        status_reason = str(row.get("status_reason") or "")
+        reason_map = {
+            "target_reached": "target_reached",
+            "cycle_loss_limit": "cycle_loss_limit",
+            "max_cycle_duration": "max_cycle_duration",
+            "max_steps_exit": "max_steps_exit",
+            "submitted_exposure_absent": "submitted_exposure_absent",
+        }
+        for needle, reason in reason_map.items():
+            if needle in status_reason:
+                return reason
+        return status_reason or "unknown"
+
+    def _recovery_cycle_leg_payload(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "role": self._recovery_cycle_leg_role(row),
+            "step_index": self._recovery_cycle_step_index(row),
+            "position_ticket": row.get("position_ticket"),
+            "order_ticket": row.get("order_ticket"),
+            "signal_id": row.get("signal_id"),
+            "status": row.get("status"),
+            "symbol": row.get("symbol"),
+            "direction": row.get("direction"),
+            "volume": row.get("volume"),
+            "entry_price": row.get("entry_price"),
+            "initial_stop_loss": row.get("initial_stop_loss"),
+            "initial_take_profit": row.get("initial_take_profit"),
+            "current_stop_loss": row.get("current_stop_loss"),
+            "current_take_profit": row.get("current_take_profit"),
+            "close_price": row.get("close_price"),
+            "close_source": row.get("close_source"),
+            "opened_at": row.get("opened_at"),
+            "closed_at": row.get("closed_at"),
+            "comment": row.get("comment"),
+            "metadata": row.get("metadata") or {},
+        }
+
+    @staticmethod
+    def _recovery_cycle_leg_role(row: Mapping[str, Any]) -> str:
+        metadata = row.get("metadata")
+        if isinstance(metadata, Mapping):
+            step = metadata.get("recovery_step_index")
+            if step == 0:
+                return "initial"
+            if step is not None:
+                return "step"
+        text = " ".join(str(row.get(field) or "") for field in ("signal_id", "comment"))
+        parts = [part.lower() for part in text.replace(" ", ":").split(":") if part]
+        if "initial" in parts:
+            return "initial"
+        if "step" in parts or any(part.startswith("s") and part[1:].isdigit() for part in parts):
+            return "step"
+        return "unknown"
+
+    @staticmethod
+    def _recovery_cycle_step_index(row: Mapping[str, Any]) -> int | None:
+        metadata = row.get("metadata")
+        if isinstance(metadata, Mapping) and metadata.get("recovery_step_index") is not None:
+            try:
+                return int(metadata.get("recovery_step_index"))
+            except (TypeError, ValueError):
+                return None
+        text = " ".join(str(row.get(field) or "") for field in ("signal_id", "comment"))
+        parts = [part.lower() for part in text.replace(" ", ":").split(":") if part]
+        if "initial" in parts:
+            return 0
+        for index, part in enumerate(parts):
+            if part == "step" and index + 1 < len(parts):
+                try:
+                    return int(parts[index + 1])
+                except (TypeError, ValueError):
+                    return None
+            if part.startswith("s") and part[1:].isdigit():
+                return int(part[1:])
+        return None
+
+    @staticmethod
+    def _recovery_submitted_tickets(metadata: Any) -> list[int]:
+        if not isinstance(metadata, Mapping):
+            return []
+        raw_items = metadata.get("submitted_tickets") or []
+        if not isinstance(raw_items, list):
+            return []
+        tickets: list[int] = []
+        for item in raw_items:
+            value: Any
+            if isinstance(item, Mapping):
+                value = (
+                    item.get("position_ticket")
+                    or item.get("ticket")
+                    or item.get("order")
+                    or item.get("order_ticket")
+                )
+            else:
+                value = item
+            try:
+                ticket = int(value)
+            except (TypeError, ValueError):
+                continue
+            if ticket > 0:
+                tickets.append(ticket)
+        return tickets
+
+    @staticmethod
+    def _recovery_int_list(raw_items: Any) -> list[int]:
+        if not isinstance(raw_items, list):
+            return []
+        items: list[int] = []
+        seen: set[int] = set()
+        for item in raw_items:
+            try:
+                value = int(item)
+            except (TypeError, ValueError):
+                continue
+            if value <= 0 or value in seen:
+                continue
+            seen.add(value)
+            items.append(value)
+        return items
 
     def persisted_trade_control_payload(self) -> dict[str, Any] | None:
         if self._trading_state_store is None:
@@ -1391,6 +1904,8 @@ class RuntimeReadModel:
         quote_health = dict(
             account_risk.get("metadata", {}).get("quote_health", {}) or {}
         )
+        market_data_health = dict(self.market_data_health_summary() or {})
+        tick_feature_health = dict(self.tick_feature_health_summary() or {})
         margin_guard = dict(
             account_risk.get("metadata", {}).get("margin_guard", {}) or {}
         )
@@ -1406,6 +1921,10 @@ class RuntimeReadModel:
         )
         circuit_open = bool(account_risk.get("circuit_open", False))
         quote_stale = bool(account_risk.get("quote_stale", False))
+        market_data_unhealthy = bool(
+            market_data_health.get("blocking", False)
+            or str(market_data_health.get("status") or "").lower() == "critical"
+        )
         should_block_new_trades = bool(
             account_risk.get("should_block_new_trades", False)
         )
@@ -1433,6 +1952,7 @@ class RuntimeReadModel:
                     runtime_present=runtime_present,
                     circuit_open=circuit_open,
                     quote_stale=quote_stale,
+                    market_data_unhealthy=market_data_unhealthy,
                     should_block_new_trades=should_block_new_trades,
                     last_risk_block=last_risk_block,
                     close_only_mode=close_only_mode,
@@ -1451,7 +1971,10 @@ class RuntimeReadModel:
             "tradable": verdict == "tradable",
             "runtime_present": runtime_present,
             "admission_enabled": admission_enabled,
-            "market_data_fresh": not quote_stale,
+            "market_data_fresh": not quote_stale and not market_data_unhealthy,
+            "market_data_health": market_data_health,
+            "tick_feature_health": tick_feature_health,
+            "tick_derived_tradable": not bool(tick_feature_health.get("blocking", False)),
             "quote_health": {
                 "stale": quote_stale,
                 "age_seconds": quote_health.get("age_seconds"),
@@ -1545,6 +2068,10 @@ class RuntimeReadModel:
             "tradability": self.tradability_state_summary(),
             "runtime_mode": self.runtime_mode_summary(),
             "closeout": self.exposure_closeout_summary(),
+            "recovery_runner": self.recovery_runner_summary(),
+            "recovery_cycles": self.recovery_cycle_summary_payload(
+                limit=position_limit
+            ),
             "pending": {
                 "active": active_pending,
                 "lifecycle": lifecycle_pending,

@@ -1,6 +1,6 @@
 # 文档导航
 
-> 更新日期：2026-04-21
+> 更新日期：2026-05-05
 > 目的：为 `docs/` 提供单一入口，明确每份文档的职责边界 + md 管理规范，避免"同一事实在多处重复"与"维护错过时 md"。
 
 ---
@@ -103,6 +103,7 @@ docs/
   | 策略/指标数量变化 | `CLAUDE.md §项目概览` + `signal-system.md` |
   | Research 模块变更 | `research-system.md` + `codebase-review.md §N` |
   | API 契约变化（影响前端） | `quantx-canonical-ia.md` + OpenAPI 契约同步 |
+  | 启动入口 / ready 探针 / live canary 流程变化 | `runbooks/system-startup-and-live-canary.md` + `design/entrypoint-map.md` + `codebase-review.md §N` |
   | 事故/大改 | 追加 `codebase-review.md §N`（不删旧段落）+ 必要时新建 `research/<日期>-<事故>.md` |
   | 时点研究结论 | 写 `research/<日期>-<主题>.md`，**不改事实源** |
 

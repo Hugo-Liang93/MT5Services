@@ -783,15 +783,13 @@ class MT5BaseClient:
 
     def _get_field(self, obj, name: str, default=None):
         """兼容 numpy.void/dict/对象字段，返回基础类型值。"""
-        if hasattr(obj, name):
-            val = getattr(obj, name)
-        elif isinstance(obj, dict) and name in obj:
+        if isinstance(obj, dict) and name in obj:
             val = obj[name]
         else:
             try:
                 val = obj[name]
             except Exception:
-                val = default
+                val = getattr(obj, name, default) if hasattr(obj, name) else default
         if hasattr(val, "item"):
             try:
                 return val.item()

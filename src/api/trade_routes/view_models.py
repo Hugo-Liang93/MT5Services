@@ -122,6 +122,68 @@ class PositionRuntimeStateListView(FlexibleModel):
     items: list[PositionRuntimeStateItemView] = Field(default_factory=list)
 
 
+class RecoveryCycleLegView(FlexibleModel):
+    role: Optional[str] = None
+    step_index: Optional[int] = None
+    position_ticket: Optional[int] = None
+    order_ticket: Optional[int] = None
+    signal_id: Optional[str] = None
+    status: Optional[str] = None
+    symbol: Optional[str] = None
+    direction: Optional[str] = None
+    volume: Optional[float] = None
+    entry_price: Optional[float] = None
+    close_price: Optional[float] = None
+    close_source: Optional[str] = None
+    opened_at: Optional[str] = None
+    closed_at: Optional[str] = None
+    comment: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecoveryCycleStateItemView(FlexibleModel):
+    cycle_id: Optional[str] = None
+    account_alias: Optional[str] = None
+    account_key: Optional[str] = None
+    symbol: Optional[str] = None
+    direction: Optional[str] = None
+    strategy: Optional[str] = None
+    timeframe: Optional[str] = None
+    status: Optional[str] = None
+    status_reason: Optional[str] = None
+    exit_reason: Optional[str] = None
+    base_volume: Optional[float] = None
+    total_volume: Optional[float] = None
+    step_count: Optional[int] = None
+    average_entry_price: Optional[float] = None
+    close_price: Optional[float] = None
+    realized_pnl: Optional[float] = None
+    started_at: Optional[str] = None
+    closed_at: Optional[str] = None
+    submitted_tickets: list[int] = Field(default_factory=list)
+    cleanup_status: Optional[str] = None
+    cleanup_reason: Optional[str] = None
+    cleanup_closed_tickets: list[int] = Field(default_factory=list)
+    already_closed_tickets: list[int] = Field(default_factory=list)
+    failed_cleanup_tickets: list[int] = Field(default_factory=list)
+    position_count: int = 0
+    open_position_count: int = 0
+    closed_position_count: int = 0
+    open_position_tickets: list[int] = Field(default_factory=list)
+    close_sources: dict[str, int] = Field(default_factory=dict)
+    legs: list[RecoveryCycleLegView] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecoveryCycleStateListView(FlexibleModel):
+    count: int
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    exit_reason_counts: dict[str, int] = Field(default_factory=dict)
+    items: list[RecoveryCycleStateItemView] = Field(default_factory=list)
+    view: Optional[str] = None
+    source_status: Optional[str] = None
+
+
 class TradeStateAlertView(FlexibleModel):
     code: str
     severity: Optional[str] = None
@@ -156,6 +218,8 @@ class TradeStateSummaryView(FlexibleModel):
     closeout: ExposureCloseoutSummaryView
     pending: TradePendingStateView
     positions: PositionRuntimeStateListView
+    recovery_cycles: RecoveryCycleStateListView
+    recovery_runner: dict[str, Any] = Field(default_factory=dict)
     alerts: TradeStateAlertsView
     validation: dict[str, Any] = Field(default_factory=dict)
 
@@ -255,6 +319,11 @@ class TradeTraceIdentifiersView(FlexibleModel):
     request_ids: list[str] = Field(default_factory=list)
     trace_ids: list[str] = Field(default_factory=list)
     operation_ids: list[str] = Field(default_factory=list)
+    intent_ids: list[str] = Field(default_factory=list)
+    command_ids: list[str] = Field(default_factory=list)
+    action_ids: list[str] = Field(default_factory=list)
+    account_keys: list[str] = Field(default_factory=list)
+    account_aliases: list[str] = Field(default_factory=list)
     order_tickets: list[int] = Field(default_factory=list)
     position_tickets: list[int] = Field(default_factory=list)
 
@@ -314,6 +383,9 @@ class TradeTraceGraphView(FlexibleModel):
 class TradeTraceListItemView(FlexibleModel):
     trace_id: str
     signal_id: Optional[str] = None
+    intent_id: Optional[str] = None
+    command_id: Optional[str] = None
+    action_id: Optional[str] = None
     symbol: Optional[str] = None
     timeframe: Optional[str] = None
     strategy: Optional[str] = None
@@ -333,6 +405,7 @@ class TradeTraceView(FlexibleModel):
     identifiers: TradeTraceIdentifiersView
     summary: TradeTraceSummaryView
     timeline: list[TradeTraceTimelineEventView] = Field(default_factory=list)
+    lifecycle: dict[str, Any] = Field(default_factory=dict)
     graph: TradeTraceGraphView
     facts: dict[str, Any] = Field(default_factory=dict)
     related_signals: dict[str, Any] = Field(default_factory=dict)

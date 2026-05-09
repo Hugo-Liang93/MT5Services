@@ -75,10 +75,55 @@ def trade_trace_by_trace_id(
     )
 
 
+@router.get("/trade/trace/by-intent/{intent_id}", response_model=ApiResponse[TradeTraceView])
+def trade_trace_by_intent_id(
+    intent_id: str,
+    trace_views: TradingFlowTraceReadModel = Depends(get_trade_trace_read_model),
+) -> ApiResponse[TradeTraceView]:
+    return ApiResponse.success_response(
+        data=trace_views.trace_by_intent_id(intent_id),
+        metadata={
+            "operation": "trade_trace_by_intent_id",
+            "intent_id": intent_id,
+        },
+    )
+
+
+@router.get("/trade/trace/by-command/{command_id}", response_model=ApiResponse[TradeTraceView])
+def trade_trace_by_command_id(
+    command_id: str,
+    trace_views: TradingFlowTraceReadModel = Depends(get_trade_trace_read_model),
+) -> ApiResponse[TradeTraceView]:
+    return ApiResponse.success_response(
+        data=trace_views.trace_by_command_id(command_id),
+        metadata={
+            "operation": "trade_trace_by_command_id",
+            "command_id": command_id,
+        },
+    )
+
+
+@router.get("/trade/trace/by-action/{action_id}", response_model=ApiResponse[TradeTraceView])
+def trade_trace_by_action_id(
+    action_id: str,
+    trace_views: TradingFlowTraceReadModel = Depends(get_trade_trace_read_model),
+) -> ApiResponse[TradeTraceView]:
+    return ApiResponse.success_response(
+        data=trace_views.trace_by_action_id(action_id),
+        metadata={
+            "operation": "trade_trace_by_action_id",
+            "action_id": action_id,
+        },
+    )
+
+
 @router.get("/trade/traces", response_model=ApiResponse[list[TradeTraceListItemView]])
 def trade_traces(
     trace_id: str | None = Query(default=None),
     signal_id: str | None = Query(default=None),
+    intent_id: str | None = Query(default=None),
+    command_id: str | None = Query(default=None),
+    action_id: str | None = Query(default=None),
     symbol: str | None = Query(default=None),
     timeframe: str | None = Query(default=None),
     strategy: str | None = Query(default=None),
@@ -95,6 +140,9 @@ def trade_traces(
 ) -> ApiResponse[list[TradeTraceListItemView]]:
     trace_id = _normalize_optional_string(trace_id)
     signal_id = _normalize_optional_string(signal_id)
+    intent_id = _normalize_optional_string(intent_id)
+    command_id = _normalize_optional_string(command_id)
+    action_id = _normalize_optional_string(action_id)
     symbol = _normalize_optional_string(symbol)
     timeframe = _normalize_optional_string(timeframe)
     strategy = _normalize_optional_string(strategy)
@@ -107,6 +155,9 @@ def trade_traces(
     result = trace_views.list_traces(
         trace_id=trace_id,
         signal_id=signal_id,
+        intent_id=intent_id,
+        command_id=command_id,
+        action_id=action_id,
         symbol=symbol,
         timeframe=timeframe,
         strategy=strategy,
@@ -118,12 +169,17 @@ def trade_traces(
         sort=sort,
     )
     items = list(result.get("items") or [])
+    result_from_time = result.get("from_time")
+    result_to_time = result.get("to_time")
     return ApiResponse.success_response(
         data=[TradeTraceListItemView(**item) for item in items],
         metadata={
             "operation": "trade_traces",
             "trace_id": trace_id,
             "signal_id": signal_id,
+            "intent_id": intent_id,
+            "command_id": command_id,
+            "action_id": action_id,
             "symbol": symbol,
             "timeframe": timeframe,
             "strategy": strategy,
@@ -133,7 +189,20 @@ def trade_traces(
             "count": len(items),
             "total": int(result.get("total") or 0),
             "sort": sort,
-            "from": normalized_from_time.isoformat() if normalized_from_time else None,
-            "to": normalized_to_time.isoformat() if normalized_to_time else None,
+            "from": (
+                result_from_time
+                if result_from_time is not None
+                else normalized_from_time.isoformat()
+                if normalized_from_time
+                else None
+            ),
+            "to": (
+                result_to_time
+                if result_to_time is not None
+                else normalized_to_time.isoformat()
+                if normalized_to_time
+                else None
+            ),
+            "default_window_applied": bool(result.get("default_window_applied")),
         },
     )

@@ -220,6 +220,7 @@ def _compute_drop_rates(runtime: SignalRuntime) -> dict[str, float]:
     dropped_events = max(0, int(runtime._dropped_events))
     dropped_confirmed = max(0, int(runtime._dropped_confirmed))
     dropped_intrabar = max(0, int(runtime._dropped_intrabar))
+    dropped_tick_derived = max(0, int(getattr(runtime, "_dropped_tick_derived", 0)))
     stale_intrabar = max(0, int(runtime._intrabar_stale_drops))
     processed = max(1, int(runtime._processed_events))
     total_arrived = max(1, int(runtime._processed_events + dropped_events))
@@ -237,6 +238,9 @@ def _compute_drop_rates(runtime: SignalRuntime) -> dict[str, float]:
         ),
         "confirmed_drop_vs_arrived_pct": round(
             dropped_confirmed / total_arrived * 100, 2
+        ),
+        "tick_derived_queue_drop_vs_arrived_pct": round(
+            dropped_tick_derived / total_arrived * 100, 2
         ),
     }
 
@@ -322,6 +326,7 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
         "filtered_target_count": max(
             0, len(runtime._targets) - scheduled_target_count
         ),
+        "required_market_data_lanes": list(runtime.required_market_data_lanes()),
         "trigger_mode": {
             "confirmed_snapshot": runtime.enable_confirmed_snapshot,
         },
@@ -350,6 +355,7 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
         "dropped_intrabar_stale": runtime._intrabar_stale_drops,
         "dropped_confirmed": runtime._dropped_confirmed,
         "dropped_intrabar": runtime._dropped_intrabar,
+        "dropped_tick_derived": runtime._dropped_tick_derived,
         "drop_rates": _compute_drop_rates(runtime),
         "confirmed_backpressure_waits": runtime._confirmed_backpressure_waits,
         "confirmed_backpressure_failures": runtime._confirmed_backpressure_failures,
@@ -357,6 +363,15 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
         "confirmed_queue_capacity": runtime._confirmed_events.maxsize,
         "intrabar_queue_size": runtime._intrabar_events.qsize(),
         "intrabar_queue_capacity": runtime._intrabar_events.maxsize,
+        "tick_derived_queue_size": runtime._tick_derived_events.qsize(),
+        "tick_derived_queue_capacity": runtime._tick_derived_events.maxsize,
+        "tick_derived_processed": runtime._tick_derived_processed,
+        "tick_derived_failed": runtime._tick_derived_failed,
+        "tick_derived_last_snapshot_at": (
+            runtime._tick_derived_last_snapshot_at.isoformat()
+            if runtime._tick_derived_last_snapshot_at
+            else None
+        ),
         "last_run_at": (
             runtime._last_run_at.isoformat() if runtime._last_run_at else None
         ),

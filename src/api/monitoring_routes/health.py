@@ -8,10 +8,12 @@ from typing import Any, Dict, List, TypeVar
 from fastapi import APIRouter, HTTPException
 
 from src.api.deps import (
+    get_execution_intent_consumer,
     get_health_monitor_instance,
     get_indicator_manager,
     get_ingestor,
     get_monitoring_manager_instance,
+    get_operator_command_consumer,
     get_pending_entry_manager,
     get_position_manager,
     get_runtime_read_model,
@@ -50,7 +52,7 @@ def _utc_now() -> str:
 def _safe_check_call(label: str, fn):
     try:
         return fn(), None
-    except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+    except (AssertionError, AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
         logger.warning("%s check failed: %s", label, exc)
         return None, str(exc)
     except Exception as exc:
@@ -81,6 +83,50 @@ def _execute_health_call(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _component_health_snapshot(component: Any) -> Dict[str, Any]:
+    health_snapshot = getattr(component, "health_snapshot", None)
+    if callable(health_snapshot):
+        snapshot = health_snapshot()
+        return snapshot if isinstance(snapshot, dict) else {"value": snapshot}
+    status = getattr(component, "status", None)
+    if callable(status):
+        snapshot = status()
+        if isinstance(snapshot, dict):
+            return snapshot
+    running = getattr(component, "is_running", None)
+    if callable(running):
+        return {"running": bool(running())}
+    raise RuntimeError("component has no health_snapshot/status/is_running contract")
+
+
+def _readiness_from_snapshot(snapshot: Dict[str, Any]) -> str:
+    if bool(snapshot.get("stalled")):
+        return "degraded"
+    if bool(snapshot.get("blocking")):
+        return "degraded"
+    if "running" in snapshot and not bool(snapshot.get("running")):
+        return "degraded"
+    status = str(snapshot.get("status") or "").strip().lower()
+    if status in {"critical", "degraded", "error", "stalled"}:
+        return "degraded"
+    return "ok"
+
+
+def _record_health_check(
+    checks: Dict[str, str],
+    details: Dict[str, Any],
+    name: str,
+    snapshot: Any,
+    err: str | None,
+) -> None:
+    if err is not None or not isinstance(snapshot, dict):
+        checks[name] = "error"
+        details[name] = {"error": err or "invalid health snapshot"}
+        return
+    checks[name] = _readiness_from_snapshot(snapshot)
+    details[name] = snapshot
+
+
 # ── K8s 探针（不使用 ApiResponse，返回简单结构）────────────────────
 
 
@@ -103,6 +149,7 @@ async def health_ready() -> Dict[str, Any]:
         )
 
     checks: Dict[str, str] = {}
+    details: Dict[str, Any] = {}
     runtime_read_model = get_runtime_read_model()
     runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
     is_executor = bool(
@@ -119,19 +166,48 @@ async def health_ready() -> Dict[str, Any]:
         writer_alive = thread_stats.get("writer_alive", False)
         ingest_alive = thread_stats.get("ingest_alive", False)
         checks["storage_writer"] = "ok" if writer_alive else "degraded"
+        details["storage_writer"] = {"thread_alive": bool(writer_alive)}
         if not is_executor:
             checks["ingestion"] = "ok" if ingest_alive else "degraded"
+            details["ingestion"] = {"thread_alive": bool(ingest_alive)}
     else:
         checks["storage_writer"] = "error"
+        details["storage_writer"] = {"error": queue_err}
         if not is_executor:
             checks["ingestion"] = "error"
+            details["ingestion"] = {"error": queue_err}
 
     if is_executor:
+        intent_consumer_health, intent_consumer_err = _safe_check_call(
+            "execution_intent_consumer",
+            lambda: _component_health_snapshot(get_execution_intent_consumer()),
+        )
+        _record_health_check(
+            checks,
+            details,
+            "execution_intent_consumer",
+            intent_consumer_health,
+            intent_consumer_err,
+        )
+
+        command_consumer_health, command_consumer_err = _safe_check_call(
+            "operator_command_consumer",
+            lambda: _component_health_snapshot(get_operator_command_consumer()),
+        )
+        _record_health_check(
+            checks,
+            details,
+            "operator_command_consumer",
+            command_consumer_health,
+            command_consumer_err,
+        )
+
         pending_manager, pending_err = _safe_check_call(
             "pending_entry",
             lambda: get_pending_entry_manager().is_running(),
         )
         checks["pending_entry"] = "ok" if pending_err is None and bool(pending_manager) else "degraded"
+        details["pending_entry"] = {"running": bool(pending_manager), "error": pending_err}
 
         position_manager, position_err = _safe_check_call(
             "position_manager",
@@ -140,6 +216,7 @@ async def health_ready() -> Dict[str, Any]:
         checks["position_manager"] = (
             "ok" if position_err is None and bool(position_manager) else "degraded"
         )
+        details["position_manager"] = {"running": bool(position_manager), "error": position_err}
 
         account_risk_state, risk_err = _safe_check_call(
             "account_risk_state",
@@ -150,25 +227,96 @@ async def health_ready() -> Dict[str, Any]:
             if risk_err is None and isinstance(account_risk_state, dict) and bool(account_risk_state)
             else "degraded"
         )
+        details["account_risk_state"] = account_risk_state if isinstance(account_risk_state, dict) else {"error": risk_err}
     else:
+        market_data_health, market_data_err = _safe_check_call(
+            "market_data_health",
+            lambda: _component_health_snapshot(get_ingestor()),
+        )
+        _record_health_check(
+            checks,
+            details,
+            "market_data_health",
+            market_data_health,
+            market_data_err,
+        )
         perf, perf_err = _safe_check_call(
             "indicator_engine",
             get_indicator_manager().get_performance_stats,
         )
         if perf_err is None and isinstance(perf, dict):
             checks["indicator_engine"] = "ok" if perf.get("event_loop_running") else "degraded"
+            details["indicator_engine"] = perf
         else:
             checks["indicator_engine"] = "error"
+            details["indicator_engine"] = {"error": perf_err}
+
+    tick_feature_health_fn = getattr(
+        runtime_read_model,
+        "tick_feature_health_summary",
+        None,
+    )
+    if callable(tick_feature_health_fn):
+        tick_feature_health, tick_feature_err = _safe_check_call(
+            "tick_feature_health",
+            tick_feature_health_fn,
+        )
+        if (
+            tick_feature_err is not None
+            or (
+                isinstance(tick_feature_health, dict)
+                and str(tick_feature_health.get("status") or "").lower()
+                != "not_required"
+            )
+        ):
+            _record_health_check(
+                checks,
+                details,
+                "tick_feature_health",
+                tick_feature_health,
+                tick_feature_err,
+            )
+
+    recovery_runner_fn = getattr(
+        runtime_read_model,
+        "recovery_runner_summary",
+        None,
+    )
+    if callable(recovery_runner_fn):
+        recovery_runner, recovery_runner_err = _safe_check_call(
+            "recovery_runner",
+            recovery_runner_fn,
+        )
+        if (
+            recovery_runner_err is not None
+            or (
+                isinstance(recovery_runner, dict)
+                and bool(recovery_runner.get("enabled"))
+            )
+        ):
+            _record_health_check(
+                checks,
+                details,
+                "recovery_runner",
+                recovery_runner,
+                recovery_runner_err,
+            )
 
     failed_checks = [name for name, status in checks.items() if status in {"degraded", "error"}]
     if failed_checks:
         raise HTTPException(
             status_code=503,
-            detail={"status": "not_ready", "failed_checks": failed_checks, "checks": checks},
+            detail={
+                "status": "not_ready",
+                "failed_checks": failed_checks,
+                "checks": checks,
+                "details": details,
+            },
         )
     return ReadyProbeView(
         status="ready",
         checks=checks,
+        details=details,
         startup_phase=startup.get("phase"),
         timestamp=_utc_now(),
     ).model_dump()

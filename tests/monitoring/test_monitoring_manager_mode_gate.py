@@ -123,3 +123,35 @@ def test_non_trading_components_always_probed() -> None:
 
     # mode 非 active 但组件不是 trading_only → 仍被分发
     health.check_queue_stats.assert_called()
+
+
+def test_status_probe_records_consumer_progress_health_metrics() -> None:
+    """consumer status 不只是 heartbeat，还要落 stalled/errors/takeover 指标。"""
+    health = _StubHealthMonitor()
+    health.record_metric = MagicMock()
+    manager = MonitoringManager(
+        health, check_interval=0, is_trading_active_fn=lambda: True
+    )
+
+    consumer = MagicMock()
+    consumer.status.return_value = {
+        "running": True,
+        "stalled": True,
+        "consecutive_errors": 4,
+        "in_flight_duration_seconds": 61.0,
+        "total_takeovers": 2,
+    }
+    manager.register_component(
+        "execution_intent_consumer",
+        consumer,
+        ["status"],
+        trading_only=True,
+    )
+
+    _drive_one_loop(manager)
+
+    calls = [args[:3] for args, _kwargs in health.record_metric.call_args_list]
+    assert ("execution_intent_consumer", "consumer_stalled", 1.0) in calls
+    assert ("execution_intent_consumer", "consumer_consecutive_errors", 4.0) in calls
+    assert ("execution_intent_consumer", "consumer_in_flight_duration_seconds", 61.0) in calls
+    assert ("execution_intent_consumer", "consumer_lease_takeovers_total", 2.0) in calls

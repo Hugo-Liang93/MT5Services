@@ -5,7 +5,26 @@ from typing import Any, Mapping
 
 from src.monitoring.pipeline.event_bus import PipelineEvent, PipelineEventBus
 from src.trading.execution.intrabar_health import build_execution_intrabar_health
-from src.trading.execution.reasons import REASON_QUOTE_STALE
+from src.trading.execution.reasons import (
+    REASON_MARKET_DATA_UNHEALTHY,
+    REASON_QUOTE_STALE,
+    REASON_TICK_FEATURE_HEALTH_BLOCKED,
+    REASON_TICK_FEATURE_HEALTH_UNAVAILABLE,
+)
+
+_PRECHECK_PAYLOAD_FIELDS = {
+    "symbol",
+    "volume",
+    "side",
+    "order_kind",
+    "price",
+    "sl",
+    "tp",
+    "deviation",
+    "comment",
+    "magic",
+    "metadata",
+}
 
 
 def _utc_now_iso() -> str:
@@ -22,6 +41,18 @@ def _safe_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return list(value)
     return []
+
+
+def _precheck_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    precheck = {
+        key: value
+        for key, value in normalized.items()
+        if key in _PRECHECK_PAYLOAD_FIELDS
+    }
+    if not precheck.get("side") and normalized.get("direction"):
+        precheck["side"] = normalized["direction"]
+    return precheck
 
 
 def _build_reason(
@@ -108,7 +139,9 @@ class TradeAdmissionService:
         scope: str = "confirmed",
     ) -> dict[str, Any]:
         normalized_payload = dict(payload or {})
-        assessment = self._command_service.precheck_trade(**normalized_payload)
+        assessment = self._command_service.precheck_trade(
+            **_precheck_payload(normalized_payload)
+        )
         report = self._build_report(
             payload=normalized_payload,
             assessment=assessment,
@@ -153,6 +186,8 @@ class TradeAdmissionService:
         account_risk = _safe_dict(self._runtime_views.account_risk_state_summary())
         trade_control = _safe_dict(self._runtime_views.trade_control_summary())
         quote_health = _safe_dict(tradability.get("quote_health"))
+        market_data_health = _safe_dict(tradability.get("market_data_health"))
+        tick_feature_health = _safe_dict(tradability.get("tick_feature_health"))
         margin_guard = _safe_dict(tradability.get("margin_guard"))
         last_risk_block = str(account_risk.get("last_risk_block") or "").strip()
         payload_scope = (
@@ -281,6 +316,34 @@ class TradeAdmissionService:
                     details=quote_health,
                 )
             )
+        if bool(market_data_health.get("blocking", False)) or str(
+            market_data_health.get("status") or ""
+        ).lower() == "critical":
+            reasons.append(
+                _build_reason(
+                    code=REASON_MARKET_DATA_UNHEALTHY,
+                    stage="market_tradability",
+                    message="required market data health is critical",
+                    details={"market_data_health": market_data_health},
+                )
+            )
+        if payload_scope == "tick_derived" and bool(
+            tick_feature_health.get("blocking", False)
+        ):
+            tick_status = str(tick_feature_health.get("status") or "").lower()
+            tick_reason = (
+                REASON_TICK_FEATURE_HEALTH_BLOCKED
+                if tick_status in {"blocked", "sparse", "critical"}
+                else REASON_TICK_FEATURE_HEALTH_UNAVAILABLE
+            )
+            reasons.append(
+                _build_reason(
+                    code=tick_reason,
+                    stage="market_tradability",
+                    message="tick feature health is not tradeable",
+                    details={"tick_feature_health": tick_feature_health},
+                )
+            )
         if bool(intrabar_health.get("stale", False)):
             reasons.append(
                 _build_reason(
@@ -351,6 +414,7 @@ class TradeAdmissionService:
         ]
         resolved_trace_id = (
             str(trace_id or "").strip()
+            or str(payload.get("trace_id") or "").strip()
             or str(signal_id or "").strip()
             or str(intent_id or "").strip()
             or str(action_id or "").strip()
@@ -381,6 +445,8 @@ class TradeAdmissionService:
             "deployment_contract": deployment_contract,
             "economic_guard": economic_guard,
             "quote_health": quote_health,
+            "market_data_health": market_data_health,
+            "tick_feature_health": tick_feature_health,
             "trade_control": trade_control,
             "margin_guard": margin_guard,
             "position_limits": {

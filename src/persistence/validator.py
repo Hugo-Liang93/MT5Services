@@ -20,15 +20,30 @@ class DataValidator:
     MAX_VOLUME = 1e12      # 最大交易量
     
     @staticmethod
-    def validate_tick(symbol: str, price: float, volume: float, time_str: str) -> Tuple[bool, str]:
+    def validate_tick(
+        symbol: str,
+        price: Optional[float],
+        bid: Optional[float],
+        ask: Optional[float],
+        last: Optional[float],
+        volume: float,
+        time_str: str,
+        time_msc: Optional[int],
+        flags: Optional[int],
+    ) -> Tuple[bool, str]:
         """
         验证 tick 数据有效性
         
         Args:
             symbol: 交易品种
-            price: 价格
+            price: 兼容展示价格，由 bid/ask/last 推导
+            bid: 可成交买价
+            ask: 可成交卖价
+            last: 最新成交价
             volume: 交易量
             time_str: ISO 格式时间字符串
+            time_msc: MT5 毫秒时间戳
+            flags: MT5 tick flags
             
         Returns:
             (是否有效, 错误信息)
@@ -46,19 +61,39 @@ class DataValidator:
             if dt > now + timedelta(seconds=10):
                 return False, f"Future time detected: {dt} > {now}"
             
-            # 3. 验证价格
-            if price <= 0:
-                return False, f"Invalid price: {price} <= 0"
-            if price > DataValidator.MAX_PRICE:
-                return False, f"Price too high: {price} > {DataValidator.MAX_PRICE}"
-            if price < DataValidator.MIN_PRICE:
-                return False, f"Price too low: {price} < {DataValidator.MIN_PRICE}"
+            # 3. 验证价格事实源
+            price_sources = [value for value in (bid, ask, last, price) if value is not None]
+            if not price_sources:
+                return False, "Missing tick price source"
+            for label, value in (
+                ("price", price),
+                ("bid", bid),
+                ("ask", ask),
+                ("last", last),
+            ):
+                if value is None:
+                    continue
+                if value <= 0:
+                    return False, f"Invalid {label}: {value} <= 0"
+                if value > DataValidator.MAX_PRICE:
+                    return False, f"{label} too high: {value} > {DataValidator.MAX_PRICE}"
+                if value < DataValidator.MIN_PRICE:
+                    return False, f"{label} too low: {value} < {DataValidator.MIN_PRICE}"
+            if bid is not None and ask is not None and bid > ask:
+                return False, f"Bid > Ask: {bid} > {ask}"
             
             # 4. 验证交易量
             if volume < 0:
                 return False, f"Invalid volume: {volume} < 0"
             if volume > DataValidator.MAX_VOLUME:
                 return False, f"Volume too large: {volume} > {DataValidator.MAX_VOLUME}"
+
+            if time_msc is None:
+                return False, "Missing time_msc"
+            if int(time_msc) < 0:
+                return False, f"Invalid time_msc: {time_msc}"
+            if flags is not None and int(flags) < 0:
+                return False, f"Invalid flags: {flags}"
             
             # 5. 验证交易品种
             if not symbol or len(symbol.strip()) == 0:
@@ -270,11 +305,21 @@ class DataValidator:
         """过滤有效的 tick 数据"""
         valid_rows = []
         for row in rows:
-            if len(row) < 4:
+            if len(row) != 9:
                 logger.warning("Invalid tick row length: %s", len(row))
                 continue
-            symbol, price, volume, time_str = row[:4]
-            valid, msg = DataValidator.validate_tick(symbol, price, volume, time_str)
+            symbol, price, bid, ask, last, volume, time_str, time_msc, flags = row
+            valid, msg = DataValidator.validate_tick(
+                symbol,
+                price,
+                bid,
+                ask,
+                last,
+                volume,
+                time_str,
+                time_msc,
+                flags,
+            )
             if valid:
                 valid_rows.append(row)
             else:

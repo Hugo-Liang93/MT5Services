@@ -14,7 +14,17 @@ CREATE TABLE IF NOT EXISTS pipeline_trace_events (
     symbol      TEXT NOT NULL,
     timeframe   TEXT NOT NULL,
     scope       TEXT NOT NULL
-                CHECK (scope IN ('confirmed', 'intrabar')),
+                CHECK (scope IN (
+                    'confirmed',
+                    'intrabar',
+                    'tick_derived',
+                    'trade_control',
+                    'position',
+                    'positions',
+                    'exposure',
+                    'orders',
+                    'runtime_mode'
+                )),
     event_type  TEXT NOT NULL,
     payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
     instance_id TEXT,
@@ -35,6 +45,21 @@ ALTER TABLE pipeline_trace_events ADD COLUMN IF NOT EXISTS signal_id TEXT;
 ALTER TABLE pipeline_trace_events ADD COLUMN IF NOT EXISTS intent_id TEXT;
 ALTER TABLE pipeline_trace_events ADD COLUMN IF NOT EXISTS command_id TEXT;
 ALTER TABLE pipeline_trace_events ADD COLUMN IF NOT EXISTS action_id TEXT;
+ALTER TABLE pipeline_trace_events
+    DROP CONSTRAINT IF EXISTS pipeline_trace_events_scope_check;
+ALTER TABLE pipeline_trace_events
+    ADD CONSTRAINT pipeline_trace_events_scope_check
+    CHECK (scope IN (
+        'confirmed',
+        'intrabar',
+        'tick_derived',
+        'trade_control',
+        'position',
+        'positions',
+        'exposure',
+        'orders',
+        'runtime_mode'
+    ));
 CREATE INDEX IF NOT EXISTS idx_pipeline_trace_trace
 ON pipeline_trace_events (trace_id, recorded_at ASC);
 CREATE INDEX IF NOT EXISTS idx_pipeline_trace_symbol_tf

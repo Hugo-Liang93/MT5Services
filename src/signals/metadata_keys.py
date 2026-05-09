@@ -73,6 +73,10 @@ class MetadataKey:
     # ── 数据注入（runtime / service → strategy） ──
 
     RECENT_BARS = "recent_bars"
+    TICK_FEATURE_STATUS = "tick_feature_status"
+    TICK_FEATURE_REASONS = "tick_feature_reasons"
+    TICK_FEATURE_WINDOW_START_MSC = "tick_feature_window_start_msc"
+    TICK_FEATURE_WINDOW_END_MSC = "tick_feature_window_end_msc"
 
     # ── 交易状态（trading 内部） ──
 

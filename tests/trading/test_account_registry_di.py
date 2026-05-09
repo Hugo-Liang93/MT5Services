@@ -155,10 +155,20 @@ def test_registry_propagates_injected_configs_to_pre_trade_risk_service(
 
     class _StubPreTradeRiskService:
         def __init__(
-            self, *, economic_calendar_service, account_service, settings, risk_settings
+            self,
+            *,
+            economic_calendar_service,
+            account_service,
+            settings,
+            risk_settings,
+            trade_frequency_provider=None,
+            account_key=None,
+            **_kwargs,
         ):
             captured["risk_settings"] = risk_settings
             captured["economic_settings"] = settings
+            captured["trade_frequency_provider"] = trade_frequency_provider
+            captured["account_key"] = account_key
 
     monkeypatch.setattr(
         "src.trading.runtime.registry.MT5AccountClient", _StubAccountClient

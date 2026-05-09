@@ -5,7 +5,7 @@
   - EntrySpecGroup / EntrySpecMember / EntryType / new_group_id（输出契约）
   - EntryIntent / MarketSnapshot / BarSnapshot / Direction（输入契约）
   - PatternType（结构化形态枚举）
-  - EntryPolicyRegistry / EntryPolicyNotFoundError（解析中枢）
+  - EntryPolicyRegistry / EntryPolicyMappingError / EntryPolicyNotFoundError（解析中枢）
   - MarketEntryPolicy（P1 内置实现；P2 加 Pullback/Breakout/Oco/FibPullback）
 
 边界（参 ADR-013）：
@@ -32,6 +32,7 @@ from src.trading.entry_policy.policies import (
 )
 from src.trading.entry_policy.port import EntryPolicy, PolicyParams
 from src.trading.entry_policy.registry import (
+    EntryPolicyMappingError,
     EntryPolicyNotFoundError,
     EntryPolicyRegistry,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "Direction",
     "EntryIntent",
     "EntryPolicy",
+    "EntryPolicyMappingError",
     "EntryPolicyNotFoundError",
     "EntryPolicyRegistry",
     "EntrySpecGroup",

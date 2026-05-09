@@ -7,7 +7,11 @@ from typing import Any
 from src.signals.metadata_keys import MetadataKey as MK
 
 from ..ports import RecoveryTradingPort, TradeControlStatePort
-from ..reasons import REASON_STARTUP_EXPIRED, REASON_STARTUP_OCO_SIBLING_FILLED
+from ..reasons import (
+    REASON_STARTUP_EXPIRED,
+    REASON_STARTUP_MT5_MISSING,
+    REASON_STARTUP_OCO_SIBLING_FILLED,
+)
 from .recovery_policy import TradingStateRecoveryPolicy, _normalize_ticket_set
 
 
@@ -184,6 +188,72 @@ class TradingStateRecovery:
                 )
                 summary[outcome] = summary.get(outcome, 0) + 1
 
+        return summary
+
+    def reconcile_position_runtime_states(
+        self,
+        *,
+        trading_module: Any,
+    ) -> dict[str, Any]:
+        try:
+            live_positions = list(trading_module.get_positions())
+        except Exception as exc:
+            return {
+                "live": 0,
+                "open_states": 0,
+                "kept_open": 0,
+                "closed_missing": 0,
+                "skipped": 0,
+                "error": str(exc),
+            }
+        live_tickets: set[int] = set()
+        for position in live_positions:
+            try:
+                ticket = int(self._row_value(position, "ticket", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if ticket > 0:
+                live_tickets.add(ticket)
+        try:
+            states = list(
+                self._store.list_position_runtime_states(
+                    statuses=["open"],
+                    limit=5000,
+                )
+            )
+        except Exception as exc:
+            return {
+                "live": len(live_tickets),
+                "open_states": 0,
+                "kept_open": 0,
+                "closed_missing": 0,
+                "skipped": 0,
+                "error": str(exc),
+            }
+        summary = {
+            "live": len(live_tickets),
+            "open_states": len(states),
+            "kept_open": 0,
+            "closed_missing": 0,
+            "skipped": 0,
+        }
+        for row in states:
+            try:
+                ticket = int(self._row_value(row, "position_ticket", 0) or 0)
+            except (TypeError, ValueError):
+                summary["skipped"] += 1
+                continue
+            if ticket <= 0:
+                summary["skipped"] += 1
+                continue
+            if ticket in live_tickets:
+                summary["kept_open"] += 1
+                continue
+            self._store.mark_position_missing(
+                row,
+                reason=REASON_STARTUP_MT5_MISSING,
+            )
+            summary["closed_missing"] += 1
         return summary
 
     @staticmethod
