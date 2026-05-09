@@ -79,9 +79,13 @@ class StructuredPriceAction(StructuredStrategyBase):
     _bb_extreme_sell: float = 0.75  # sell 时 BB position 下限（上轨区域）
 
     # ── Exit 参数 ──
-    _sl_atr: float = 1.5
-    _tp_atr: float = 2.5
-    _time_bars: int = 20  # 约 5 小时（20 × 15min）
+    # _exit_mode: "barrier" (固定 SL/TP/Time) | "chandelier" (ATR trailing + breakeven)
+    # plan §0zl C 方向：BARRIER vs CHANDELIER 对比试验入口
+    _exit_mode: str = "barrier"
+    _sl_atr: float = 1.5  # BARRIER mode 用
+    _tp_atr: float = 2.5  # BARRIER mode 用
+    _time_bars: int = 20  # 约 5 小时（20 × 15min），BARRIER mode 用
+    _aggression: float = 0.50  # CHANDELIER mode α 系数（regime_aware 启用时被覆盖）
 
     def _candle(self, ctx: SignalContext) -> Dict[str, float]:
         return ctx.indicators.get("candle_pattern", {})
@@ -286,7 +290,27 @@ class StructuredPriceAction(StructuredStrategyBase):
         return 1.0
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
-        """BARRIER 模式：固定 SL/TP/Time，不用 Chandelier trail。"""
+        """根据 _exit_mode 类变量分派 BARRIER 或 CHANDELIER。
+
+        BARRIER (默认)：固定 SL/TP/Time barrier（挖掘语义一致）
+        CHANDELIER：ATR trailing + breakeven + signal reversal + timeout（trend-friendly）
+
+        类变量切换允许 grid CLI 通过 monkey-patch 对比两种 exit。
+        """
+        mode_str = (
+            str(get_tf_param(self, "exit_mode", ctx.timeframe, self._exit_mode))
+            .strip()
+            .lower()
+        )
+        if mode_str == "chandelier":
+            aggression = float(
+                get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
+            )
+            return ExitSpec(
+                aggression=aggression,
+                mode=ExitMode.CHANDELIER,
+            )
+        # 默认 BARRIER
         sl = get_tf_param(self, "sl_atr", ctx.timeframe, self._sl_atr)
         tp = get_tf_param(self, "tp_atr", ctx.timeframe, self._tp_atr)
         tb = int(get_tf_param(self, "time_bars", ctx.timeframe, self._time_bars))
