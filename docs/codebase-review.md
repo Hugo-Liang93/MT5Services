@@ -141,8 +141,44 @@ C 方向数据证实 PA 核心问题不在出场，**在 _when 入场过密 + _w
 |---|---|---|
 | 1 | C 替换出场 | ✅ 已测，PF 0.39→0.46 略改善但不达 gate |
 | 2 | D tick_features filter | ⏸ 跳过回测验证（回测里 noop），等 live runtime 测 |
-| 3 | **A 收紧 _when** | 🔜 下一步：要求 pin_bar + structure 共振，或 close_position 严格阈值 |
-| 4 | **B 加 vetting** | 🔜 备选：Where < 0.3 强制 hold，confidence_floor 提升 |
+| 3 | **A 收紧 _when** | ✅ 已测，consensus=Y 显著有效（详见下） |
+| 4 | **B 加 vetting** | 🔜 下一步：consensus=Y 仍 PF<1.0 → 需要 _why/_where vetting |
+
+### A 方向实测：min_score + consensus 1 月对比（CHANDELIER α=0.5 baseline）
+
+工具补齐：[pa_barrier_grid.py](../src/ops/cli/pa_barrier_grid.py) 加 `--when-min-score` + `--when-consensus {false,true,both}`。
+[price_action_m15.py](../src/signals/strategies/structured/price_action_m15.py) 加 `_when_min_score`（默认 0.5 全部启用）+ `_require_when_consensus`（默认 False 不破坏）。
+
+| min_score | consensus | trades | WR | **PF** | **MaxDD** | Gate |
+|---|---|---|---|---|---|---|
+| 0.50 (默认) | N | 93 | 35.5% | 0.46 | 22.97% | pf_below |
+| **0.50** | **Y** | **51** | 39.2% | **0.55** | **12.76%** | pf_below |
+| 0.65 | N | 81 | 34.6% | 0.52 | 17.51% | pf_below |
+| 0.65 | Y | 24 | 25.0% | 0.25 | 12.82% | insufficient |
+| 0.70 | N | 78 | 37.2% | 0.54 | 19.34% | pf_below |
+| 0.70 | Y | 10 | 30.0% | 0.48 | 3.02% | insufficient |
+| 0.80 | N | 77 | 36.4% | 0.51 | 19.34% | pf_below |
+| 0.80 | Y | 2 | 50.0% | 2.09 | 0.86% | insufficient |
+
+**关键结论**：
+
+1. **min_score 单独无效**（max(signals) 取最强信号，过滤弱信号几乎没变化）：PF 0.46→0.51-0.54，无显著改善
+2. **consensus=Y 真有效**：93→51 trades（-45%），DD 22.97%→**12.76%**（-44%），PF 0.46→0.55（+20%）
+3. 但 consensus=Y 仍 PF<1.0——entry 质量仍不够
+4. min_score=0.8 + consensus=Y 看似 PF=2.09，但只 2 trades 不显著
+
+**A 方向数据证实**：多形态共振是真过滤器，但**单独使用仍不能让 PA 越过 PF 1.0 门槛**。
+
+### A → B 方向自然过渡
+
+下一步：A consensus=Y + B vetting 联合：
+- _why 改硬条件：`structure_type` 必须 ≠ 0（不靠 trend_bars 兜底）→ 减少 1/3 弱方向信号
+- _where 改严格：buy 时 BB position < 0.15（当前 0.25）→ 减少高位入场
+- consensus=Y 保持
+
+预期：trades 降到 30-50/year（从 93/月 = ~1100/year），WR 升到 45%+，PF 应能升到 0.7-0.9 量级。
+
+是否能跨过 1.0 门槛要数据来定，但**结构性问题集中在 _why/_where 兜底过宽**已经是数据共识。
 
 ---
 

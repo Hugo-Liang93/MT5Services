@@ -74,6 +74,17 @@ class StructuredPriceAction(StructuredStrategyBase):
     _big_bar_body_ratio: float = 1.5  # 大 bar 动量入场阈值
     _adx_floor: float = 12.0  # ADX 最低门槛（M15 更宽松，靠形态质量过滤）
 
+    # plan §0zl A 方向：收紧 _when 入场密度
+    # _when_min_score: 最低形态分数门槛（过滤弱信号）
+    #   0.5 (默认) = 全部形态启用（pin 0.9 / engulfing 0.85 / three 0.8 / hammer 0.7
+    #                              / rejection 0.65 / big_bar 0.6）
+    #   0.65 = 去掉 big_bar
+    #   0.7  = 去掉 big_bar + rejection
+    #   0.8  = 仅保留 pin / engulfing / three（强信号）
+    _when_min_score: float = 0.5
+    # _require_when_consensus: 要求多形态共振（≥ 2 个形态同时触发）
+    _require_when_consensus: bool = False
+
     # ── Where 参数 ──
     _bb_extreme_buy: float = 0.25  # buy 时 BB position 上限（下轨区域）
     _bb_extreme_sell: float = 0.75  # sell 时 BB position 下限（上轨区域）
@@ -205,8 +216,32 @@ class StructuredPriceAction(StructuredStrategyBase):
         if not signals:
             return False, 0, "no_pattern"
 
-        # 取最强信号
-        best_score, best_reason = max(signals, key=lambda x: x[0])
+        # plan §0zl A 方向：min_score 过滤 + consensus 共振
+        min_score = float(
+            get_tf_param(self, "when_min_score", ctx.timeframe, self._when_min_score)
+        )
+        require_consensus = bool(
+            get_tf_param(
+                self,
+                "require_when_consensus",
+                ctx.timeframe,
+                self._require_when_consensus,
+            )
+        )
+        # 过滤低分形态（保留 score >= min_score 的）
+        filtered = [(score, reason) for score, reason in signals if score >= min_score]
+        if not filtered:
+            return False, 0, f"no_pattern_above:{min_score:.2f}"
+
+        # 共振：要求 ≥ 2 个形态同时触发
+        if require_consensus and len(filtered) < 2:
+            return False, 0, f"no_consensus:n={len(filtered)}"
+
+        # 取最强信号；consensus 时 reason 拼接 top-2 名字便于审计
+        filtered_sorted = sorted(filtered, key=lambda x: x[0], reverse=True)
+        best_score, best_reason = filtered_sorted[0]
+        if require_consensus and len(filtered_sorted) >= 2:
+            best_reason = f"{best_reason}+{filtered_sorted[1][1]}"
         return True, best_score, best_reason
 
     def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:

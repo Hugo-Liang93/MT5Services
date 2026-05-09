@@ -67,11 +67,14 @@ def _patch_pa(
     adx_floor: float,
     exit_mode: str = "barrier",
     aggression: float = 0.50,
+    when_min_score: float = 0.5,
+    when_consensus: bool = False,
 ) -> Dict[str, Any]:
     """Monkey-patch PA 类变量，返回原始值字典（用于 finally 还原）。
 
     exit_mode='chandelier' 时 sl/tp/tb 被忽略（ExitSpec.CHANDELIER 由 aggression 驱动），
     但仍保留参数完整性以便 grid 报告统一展示。
+    when_min_score / when_consensus 是 plan §0zl A 方向参数（收紧入场密度）。
     """
     import importlib
 
@@ -84,6 +87,8 @@ def _patch_pa(
         "_adx_floor": cls._adx_floor,
         "_exit_mode": cls._exit_mode,
         "_aggression": cls._aggression,
+        "_when_min_score": cls._when_min_score,
+        "_require_when_consensus": cls._require_when_consensus,
     }
     cls._sl_atr = sl_atr
     cls._tp_atr = tp_atr
@@ -91,6 +96,8 @@ def _patch_pa(
     cls._adx_floor = adx_floor
     cls._exit_mode = exit_mode
     cls._aggression = aggression
+    cls._when_min_score = when_min_score
+    cls._require_when_consensus = when_consensus
     return originals
 
 
@@ -114,6 +121,8 @@ def _run_single_combo(
     adx_floor: float,
     exit_mode: str = "barrier",
     aggression: float = 0.50,
+    when_min_score: float = 0.5,
+    when_consensus: bool = False,
 ) -> Dict[str, Any]:
     originals = _patch_pa(
         sl_atr=sl_atr,
@@ -122,6 +131,8 @@ def _run_single_combo(
         adx_floor=adx_floor,
         exit_mode=exit_mode,
         aggression=aggression,
+        when_min_score=when_min_score,
+        when_consensus=when_consensus,
     )
     try:
         # 清 component_factory 缓存确保策略实例重建
@@ -220,6 +231,20 @@ def main() -> None:
         help="Chandelier α 候选（exit-mode=chandelier|both 时启用），默认 0.30/0.50/0.70",
     )
     parser.add_argument(
+        "--when-min-score",
+        default="0.5",
+        help=(
+            "_when 形态分数下限候选 (A 方向，plan §0zl)：0.5 (全部形态) / "
+            "0.65 (去 big_bar) / 0.7 (去 big_bar+rejection) / 0.8 (仅 pin/engulfing/three)"
+        ),
+    )
+    parser.add_argument(
+        "--when-consensus",
+        choices=["false", "true", "both"],
+        default="false",
+        help="是否要求 _when 多形态共振 (≥2 形态同时触发)。both 时各扫一遍",
+    )
+    parser.add_argument(
         "--top",
         type=int,
         default=10,
@@ -245,20 +270,32 @@ def main() -> None:
     time_bars_values = _parse_ints(args.time_bars)
     adx_floor_values = _parse_floats(args.adx_floor)
     aggression_values = _parse_floats(args.aggression)
+    when_min_score_values = _parse_floats(args.when_min_score)
+    if args.when_consensus == "both":
+        when_consensus_values = [False, True]
+    elif args.when_consensus == "true":
+        when_consensus_values = [True]
+    else:
+        when_consensus_values = [False]
 
-    # 构造组合：每个 mode 一个独立空间
-    # BARRIER mode: (sl, tp, tb, adx, exit="barrier", aggression=ignored)
-    # CHANDELIER mode: (sl=ignored, tp=ignored, tb=ignored, adx, exit="chandelier", aggression)
-    combinations: List[Tuple[float, float, int, float, str, float]] = []
-    if args.exit_mode in ("barrier", "both"):
-        for sl, tp, tb, adx in itertools.product(
-            sl_values, tp_values, time_bars_values, adx_floor_values
-        ):
-            combinations.append((sl, tp, tb, adx, "barrier", 0.50))
-    if args.exit_mode in ("chandelier", "both"):
-        for adx, alpha in itertools.product(adx_floor_values, aggression_values):
-            # CHANDELIER 不用 sl/tp/tb，但保留为占位符以统一报告
-            combinations.append((0.0, 0.0, 0, adx, "chandelier", alpha))
+    # 构造组合：每个 mode × when_min_score × when_consensus 独立空间
+    # 元组: (sl, tp, tb, adx, exit, aggression, when_min_score, when_consensus)
+    combinations: List[Tuple[float, float, int, float, str, float, float, bool]] = []
+    for when_min, when_cons in itertools.product(
+        when_min_score_values, when_consensus_values
+    ):
+        if args.exit_mode in ("barrier", "both"):
+            for sl, tp, tb, adx in itertools.product(
+                sl_values, tp_values, time_bars_values, adx_floor_values
+            ):
+                combinations.append(
+                    (sl, tp, tb, adx, "barrier", 0.50, when_min, when_cons)
+                )
+        if args.exit_mode in ("chandelier", "both"):
+            for adx, alpha in itertools.product(adx_floor_values, aggression_values):
+                combinations.append(
+                    (0.0, 0.0, 0, adx, "chandelier", alpha, when_min, when_cons)
+                )
 
     total = len(combinations)
     if total == 0:
@@ -271,19 +308,21 @@ def main() -> None:
         )
         sys.exit(1)
 
-    print(f"\n{'='*92}")
+    print(f"\n{'='*100}")
     print(
         f"PA grid: tf={args.tf} {args.start}~{args.end} "
         f"({total} combinations, exit_mode={args.exit_mode})"
     )
     print(
         f"sl={sl_values} | tp={tp_values} | time_bars={time_bars_values} | "
-        f"adx_floor={adx_floor_values} | aggression={aggression_values}"
+        f"adx_floor={adx_floor_values} | aggression={aggression_values} | "
+        f"when_min={when_min_score_values} | consensus={when_consensus_values}"
     )
-    print(f"{'='*92}\n")
+    print(f"{'='*100}\n")
 
     header = (
         f"{'mode':>10} {'sl':>5} {'tp':>5} {'tb':>4} {'adx':>5} {'α':>5} "
+        f"{'wmin':>5} {'cons':>5} "
         f"{'trades':>7} {'WR':>7} {'PnL':>10} {'PF':>6} "
         f"{'Sharpe':>8} {'MaxDD':>7} {'Gate':>22}"
     )
@@ -291,7 +330,16 @@ def main() -> None:
     print("-" * len(header))
 
     results: List[Dict[str, Any]] = []
-    for sl_atr, tp_atr, time_bars, adx_floor, exit_mode, aggression in combinations:
+    for (
+        sl_atr,
+        tp_atr,
+        time_bars,
+        adx_floor,
+        exit_mode,
+        aggression,
+        when_min,
+        when_cons,
+    ) in combinations:
         try:
             # CHANDELIER mode: sl/tp/tb 不影响 ExitSpec，但仍传入以便复用 _patch_pa
             sl_use = sl_atr if exit_mode == "barrier" else 1.5
@@ -307,6 +355,8 @@ def main() -> None:
                 adx_floor=adx_floor,
                 exit_mode=exit_mode,
                 aggression=aggression,
+                when_min_score=when_min,
+                when_consensus=when_cons,
             )
             summary = _summarize(data)
             summary.update(
@@ -317,14 +367,18 @@ def main() -> None:
                     "time_bars": time_bars,
                     "adx_floor": adx_floor,
                     "aggression": aggression,
+                    "when_min_score": when_min,
+                    "when_consensus": when_cons,
                 }
             )
             summary["gate"] = _evaluate_promotion_gate(summary)
             results.append(summary)
+            cons_str = "Y" if when_cons else "N"
             print(
                 f"{exit_mode:>10} "
                 f"{sl_atr:>5.2f} {tp_atr:>5.2f} {time_bars:>4d} "
                 f"{adx_floor:>5.1f} {aggression:>5.2f} "
+                f"{when_min:>5.2f} {cons_str:>5} "
                 f"{summary['total_trades']:>7d} "
                 f"{summary['win_rate_pct']:>6.1f}% "
                 f"{summary['pnl']:>+10.2f} "
@@ -334,10 +388,11 @@ def main() -> None:
                 f"{summary['gate']:>22}"
             )
         except Exception as exc:
+            cons_str = "Y" if when_cons else "N"
             print(
                 f"{exit_mode:>10} {sl_atr:>5.2f} {tp_atr:>5.2f} "
                 f"{time_bars:>4d} {adx_floor:>5.1f} {aggression:>5.2f} "
-                f"FAILED: {exc}"
+                f"{when_min:>5.2f} {cons_str:>5} FAILED: {exc}"
             )
 
     if not results:
