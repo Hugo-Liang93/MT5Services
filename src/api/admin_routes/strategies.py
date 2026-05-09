@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, Query
@@ -17,6 +18,7 @@ from src.signals.service import SignalModule
 from .common import build_strategy_detail
 from .view_models import ConfidencePipelineView, StrategySessionDetailView
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
@@ -97,6 +99,9 @@ def _resolve_backtest_execution_plan(run_id: str | None) -> dict[str, Any]:
         try:
             db_row = repo.fetch_run(candidate)
         except Exception:
+            logger.warning(
+                "fetch_run fallback failed for run %s", candidate, exc_info=True
+            )
             db_row = None
         db_plan = _extract_backtest_execution_plan(db_row)
         if db_plan is not None:
@@ -205,18 +210,24 @@ def admin_performance_strategies(
     try:
         ranking = perf_tracker.strategy_ranking()
     except Exception:
+        logger.warning("perf_tracker.strategy_ranking() failed", exc_info=True)
         ranking = []
     try:
         summary = perf_tracker.describe()
     except Exception:
+        logger.warning("perf_tracker.describe() failed", exc_info=True)
         summary = {}
     try:
         winrates = signal_svc.strategy_winrates(hours=hours)
     except Exception:
+        logger.warning(
+            "signal_svc.strategy_winrates(hours=%s) failed", hours, exc_info=True
+        )
         winrates = []
     try:
         calibrator_info = calibrator.describe()
     except Exception:
+        logger.warning("calibrator.describe() failed", exc_info=True)
         calibrator_info = {}
     report = StrategyPerformanceReport(
         session_ranking=ranking,
@@ -246,10 +257,16 @@ def admin_confidence_pipeline(
         try:
             stats = perf_tracker.get_strategy_stats(name)
         except Exception:
+            logger.warning(
+                "perf_tracker.get_strategy_stats(%s) failed", name, exc_info=True
+            )
             stats = None
         try:
             multiplier = perf_tracker.get_multiplier(name)
         except Exception:
+            logger.warning(
+                "perf_tracker.get_multiplier(%s) failed", name, exc_info=True
+            )
             multiplier = 1.0
         strategies_pipeline.append(
             {**descriptor, "session_multiplier": multiplier, "session_stats": stats}
@@ -370,6 +387,9 @@ def admin_strategy_detail(
     try:
         stats = perf_tracker.get_strategy_stats(name)
     except Exception:
+        logger.warning(
+            "perf_tracker.get_strategy_stats(%s) failed", name, exc_info=True
+        )
         stats = None
     return ApiResponse.success_response(
         StrategySessionDetailView(**detail.model_dump(), session_performance=stats)

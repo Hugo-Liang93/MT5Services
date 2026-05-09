@@ -203,7 +203,7 @@ class TradeAdmissionService:
             _safe_dict(payload.get("metadata")),
             scope=payload_scope,
         )
-        economic_guard = {
+        economic_guard: dict[str, Any] = {
             "event_blocked": bool(assessment_dict.get("event_blocked", False)),
             "calendar_health_degraded": bool(
                 assessment_dict.get("calendar_health_degraded", False)

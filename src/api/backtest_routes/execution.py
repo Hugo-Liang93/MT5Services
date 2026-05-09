@@ -19,13 +19,14 @@ def cleanup_components(components: Optional[Dict[str, Any]]) -> None:
         try:
             pipeline.shutdown()
         except Exception:
-            logger.debug("Pipeline shutdown error", exc_info=True)
+            # CLAUDE.md §12: debug + exc_info 反模式 → warning
+            logger.warning("Pipeline shutdown error", exc_info=True)
     writer = components.get("writer")
     if writer is not None:
         try:
             writer.close()
         except Exception:
-            logger.debug("Writer close error", exc_info=True)
+            logger.warning("Writer close error", exc_info=True)
 
 
 def persist_result(result: Any) -> None:
@@ -57,7 +58,7 @@ def _update_experiment_on_backtest(result: Any) -> None:
                 win_rate=getattr(metrics, "win_rate", 0.0),
             )
     except Exception:
-        logger.debug("Failed to update experiment %s", exp_id, exc_info=True)
+        logger.warning("Failed to update experiment %s", exp_id, exc_info=True)
 
 
 def get_backtest_repo() -> Optional[Any]:
@@ -68,7 +69,7 @@ def get_backtest_repo() -> Optional[Any]:
     try:
         return deps.get_backtest_repo()
     except Exception:
-        logger.debug("BacktestRepository not available", exc_info=True)
+        logger.warning("BacktestRepository not available", exc_info=True)
         return None
 
 
@@ -80,7 +81,7 @@ def get_walk_forward_repo() -> Optional[Any]:
     try:
         return deps.get_walk_forward_repo()
     except Exception:
-        logger.debug("WalkForwardRepository not available", exc_info=True)
+        logger.warning("WalkForwardRepository not available", exc_info=True)
         return None
 
 
@@ -89,7 +90,7 @@ def get_correlation_repo() -> Optional[Any]:
     try:
         return deps.get_correlation_repo()
     except Exception:
-        logger.debug("CorrelationAnalysisRepository not available", exc_info=True)
+        logger.warning("CorrelationAnalysisRepository not available", exc_info=True)
         return None
 
 
@@ -143,7 +144,7 @@ def _persist_walk_forward_failed(
             experiment_id=experiment_id,
         )
     except Exception:
-        logger.debug(
+        logger.warning(
             "Failed to persist failed walk-forward %s", wf_run_id, exc_info=True
         )
 

@@ -206,6 +206,16 @@ class RuntimeReadModel:
         return value
 
     @staticmethod
+    def _json_safe_dict(value: Any) -> dict[str, Any]:
+        """N2: 类型化 _json_safe_value 包装——保证返回 dict[str, Any]。
+
+        消费 mypy 的 `Returning Any from function declared to return "dict[str, Any]"`
+        告警；非 dict 输入返回空 dict（容错）。
+        """
+        safe = RuntimeReadModel._json_safe_value(value)
+        return cast(dict[str, Any], safe) if isinstance(safe, dict) else {}
+
+    @staticmethod
     def _component_running(component: Any, *, fallback: bool = False) -> bool:
         if component is None:
             return fallback
@@ -225,7 +235,7 @@ class RuntimeReadModel:
             payload = dict(getattr(item, "__dict__", {}) or {})
         if hasattr(payload.get("time"), "isoformat"):
             payload["time"] = payload["time"].isoformat()
-        return cls._json_safe_value(payload)
+        return cls._json_safe_dict(payload)
 
     @staticmethod
     def _runtime_indicator_status(
@@ -317,12 +327,11 @@ class RuntimeReadModel:
             for item in items.values()
             if str(item.get("status") or "").strip() == "warming_up"
         )
-        ages = [
-            float(item.get("last_age_seconds"))
-            for item in items.values()
-            if isinstance(item.get("last_age_seconds"), (int, float))
-            and float(item.get("last_age_seconds")) >= 0.0
-        ]
+        ages = []
+        for item in items.values():
+            last_age = item.get("last_age_seconds")
+            if isinstance(last_age, (int, float)) and last_age >= 0.0:
+                ages.append(float(last_age))
         if stale_count > 0:
             status = "warning"
         elif warming_up_count > 0:
@@ -719,7 +728,7 @@ class RuntimeReadModel:
                 "blocked_lanes": [],
                 "dependency_contract": {"required_lanes": []},
             }
-        return self._json_safe_value(
+        return self._json_safe_dict(
             normalize_market_data_health_snapshot(snapshot, symbol=None)
         )
 
@@ -919,7 +928,7 @@ class RuntimeReadModel:
         )
 
     def health_report(self, *, hours: int = 24) -> dict[str, Any]:
-        report = (
+        report: dict[str, Any] = (
             self._health_monitor.generate_report(hours)
             if self._health_monitor is not None
             else {"status": "unavailable", "alerts": [], "metrics": {}}
@@ -1342,7 +1351,7 @@ class RuntimeReadModel:
         payload.setdefault("enabled", True)
         payload.setdefault("running", False)
         payload.setdefault("status", "running" if payload.get("running") else "stopped")
-        return self._json_safe_value(payload)
+        return self._json_safe_dict(payload)
 
     def tracked_positions_payload(self, *, limit: int = 20) -> dict[str, Any]:
         summary = self.position_manager_summary()
@@ -1622,7 +1631,7 @@ class RuntimeReadModel:
             exit_reason = str(item.get("exit_reason") or "unknown")
             exit_reason_counts[exit_reason] = exit_reason_counts.get(exit_reason, 0) + 1
 
-        return self._json_safe_value(
+        return self._json_safe_dict(
             {
                 "count": len(items),
                 "status_counts": self._state_counts(cycle_rows),
@@ -1835,14 +1844,13 @@ class RuntimeReadModel:
     @staticmethod
     def _recovery_cycle_step_index(row: Mapping[str, Any]) -> int | None:
         metadata = row.get("metadata")
-        if (
-            isinstance(metadata, Mapping)
-            and metadata.get("recovery_step_index") is not None
-        ):
-            try:
-                return int(metadata.get("recovery_step_index"))
-            except (TypeError, ValueError):
-                return None
+        if isinstance(metadata, Mapping):
+            step_index = metadata.get("recovery_step_index")
+            if step_index is not None:
+                try:
+                    return int(step_index)
+                except (TypeError, ValueError):
+                    return None
         text = " ".join(str(row.get(field) or "") for field in ("signal_id", "comment"))
         parts = [part.lower() for part in text.replace(" ", ":").split(":") if part]
         if "initial" in parts:
@@ -1906,8 +1914,8 @@ class RuntimeReadModel:
             return None
         payload = self._trading_state_store.load_trade_control_state()
         if not isinstance(payload, dict):
-            return payload
-        return self._json_safe_value(payload)
+            return None
+        return self._json_safe_dict(payload)
 
     def account_risk_state_summary(self) -> dict[str, Any] | None:
         if self._trading_state_store is not None:
@@ -1920,11 +1928,12 @@ class RuntimeReadModel:
         if self.db_writer is None or self._runtime_identity is None:
             return None
         try:
-            return self.db_writer.fetch_account_risk_state(
+            result = self.db_writer.fetch_account_risk_state(
                 account_key=self._runtime_identity.account_key,
             )
         except Exception:
             return None
+        return cast(dict[str, Any] | None, result)
 
     def account_risk_states_payload(self, *, limit: int = 100) -> dict[str, Any]:
         if self.db_writer is None:
@@ -1975,8 +1984,9 @@ class RuntimeReadModel:
         unmanaged_items: list[dict[str, Any]] = []
         for position in live_positions:
             ticket = position.get("ticket")
+            normalized_ticket: int | None
             try:
-                normalized_ticket = int(ticket)
+                normalized_ticket = int(ticket) if ticket is not None else None
             except (TypeError, ValueError):
                 normalized_ticket = None
             if normalized_ticket is not None and normalized_ticket in managed_tickets:
@@ -2063,6 +2073,10 @@ class RuntimeReadModel:
         )
         # P9 bug #2: multi_account 拓扑下 main role 不挂 executor，
         # 不应误报 blocked/runtime_not_ready，应明示 not_applicable。
+        verdict: str
+        reason_code: str | None
+        reason: str | None
+        recommended_action: str | None
         if self._shared_compute_main_without_local_execution():
             verdict = TRADABILITY_VERDICT_NOT_APPLICABLE
             reason_code = TRADABILITY_REASON_NOT_EXECUTOR_ROLE
@@ -2231,7 +2245,7 @@ class RuntimeReadModel:
                 "summary": [],
                 "observed": {},
             }
-        return self._trading_state_alerts.summary()
+        return cast(dict[str, Any], self._trading_state_alerts.summary())
 
     def dashboard_overview(self, startup_status: Mapping[str, Any]) -> dict[str, Any]:
         account = self._safe_call(
