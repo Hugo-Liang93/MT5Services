@@ -116,10 +116,17 @@ def _run_single_combo(
 
         from src.ops.cli.backtest_runner import _run_single
 
+        # PA 当前 deployment status=candidate（PF 0.29 / DD 99% 待重设计），
+        # 默认 backtest_runner 会被 deployment gate 排除。本 CLI 是研究路径，
+        # 通过 research_disabled gate + audit_reason 显式绕过 ADR-009。
         data = _run_single(
             tf,
             start,
             end,
+            research_mode_audit_reason=(
+                f"pa_barrier_grid_scan:sl={sl_atr}"
+                f",tp={tp_atr},tb={time_bars},adx={adx_floor}"
+            ),
             strategy_names=["structured_price_action"],
         )
         return data

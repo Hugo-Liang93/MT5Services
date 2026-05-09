@@ -62,6 +62,7 @@ def _run_single(
     entry_meta_artifact: Optional[str] = None,
     entry_meta_mode: str = "shadow",
     entry_meta_threshold: float = 0.50,
+    research_mode_audit_reason: Optional[str] = None,
 ) -> dict:
     """执行单个 TF 回测，返回结构化结果 dict。
 
@@ -184,6 +185,15 @@ def _run_single(
             threshold=entry_meta_threshold,
         )
 
+    deployment_gate_arg: Optional[Any] = None
+    if research_mode_audit_reason:
+        from src.backtesting.engine.deployment_gate import BacktestDeploymentGate
+
+        deployment_gate_arg = BacktestDeploymentGate.research_disabled(
+            audit_reason=str(research_mode_audit_reason).strip()
+            or "research_mode_unspecified"
+        )
+
     engine = BacktestEngine(
         config=config,
         data_loader=components["data_loader"],
@@ -194,6 +204,7 @@ def _run_single(
         intrabar_confidence_factor=intrabar_cfg.confidence_factor,
         state_edge_overlay=state_edge_overlay,
         entry_meta_overlay=entry_meta_overlay,
+        deployment_gate=deployment_gate_arg,
     )
     result = engine.run()
     state_edge_overlay_report = engine.state_edge_overlay_report()
@@ -654,6 +665,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--research-mode",
+        default=None,
+        metavar="AUDIT_REASON",
+        help=(
+            "Research-only backtest: bypass deployment gate (allows CANDIDATE / "
+            "DEMO_VALIDATION strategies). Pass an audit reason describing why the gate "
+            "is bypassed (e.g. 'pa_grid_scan'). Required by ADR-009 for traceability."
+        ),
+    )
+    parser.add_argument(
         "--simulation-mode",
         default=None,
         choices=["research", "execution_feasibility"],
@@ -797,6 +818,7 @@ def main() -> None:
                     entry_meta_artifact=args.entry_meta_artifact,
                     entry_meta_mode=args.entry_meta_mode,
                     entry_meta_threshold=entry_meta_threshold,
+                    research_mode_audit_reason=args.research_mode,
                 )
                 raw_result = data.pop("_raw_result", None)
                 if raw_result is not None:
