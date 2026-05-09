@@ -69,12 +69,17 @@ def _patch_pa(
     aggression: float = 0.50,
     when_min_score: float = 0.5,
     when_consensus: bool = False,
+    require_structure: bool = False,
+    bb_extreme_buy: float = 0.25,
+    bb_extreme_sell: float = 0.75,
 ) -> Dict[str, Any]:
     """Monkey-patch PA 类变量，返回原始值字典（用于 finally 还原）。
 
-    exit_mode='chandelier' 时 sl/tp/tb 被忽略（ExitSpec.CHANDELIER 由 aggression 驱动），
-    但仍保留参数完整性以便 grid 报告统一展示。
-    when_min_score / when_consensus 是 plan §0zl A 方向参数（收紧入场密度）。
+    plan §0zl A/B 方向参数全集：
+    - exit_mode/aggression: C 方向（出场模式）
+    - when_min_score/when_consensus: A 方向（_when 收紧）
+    - require_structure: B 方向（_why 硬条件，禁 trend_bars 兜底）
+    - bb_extreme_buy/sell: B 方向（_where 严格阈值）
     """
     import importlib
 
@@ -89,6 +94,9 @@ def _patch_pa(
         "_aggression": cls._aggression,
         "_when_min_score": cls._when_min_score,
         "_require_when_consensus": cls._require_when_consensus,
+        "_require_structure": cls._require_structure,
+        "_bb_extreme_buy": cls._bb_extreme_buy,
+        "_bb_extreme_sell": cls._bb_extreme_sell,
     }
     cls._sl_atr = sl_atr
     cls._tp_atr = tp_atr
@@ -98,6 +106,9 @@ def _patch_pa(
     cls._aggression = aggression
     cls._when_min_score = when_min_score
     cls._require_when_consensus = when_consensus
+    cls._require_structure = require_structure
+    cls._bb_extreme_buy = bb_extreme_buy
+    cls._bb_extreme_sell = bb_extreme_sell
     return originals
 
 
@@ -123,6 +134,9 @@ def _run_single_combo(
     aggression: float = 0.50,
     when_min_score: float = 0.5,
     when_consensus: bool = False,
+    require_structure: bool = False,
+    bb_extreme_buy: float = 0.25,
+    bb_extreme_sell: float = 0.75,
 ) -> Dict[str, Any]:
     originals = _patch_pa(
         sl_atr=sl_atr,
@@ -133,6 +147,9 @@ def _run_single_combo(
         aggression=aggression,
         when_min_score=when_min_score,
         when_consensus=when_consensus,
+        require_structure=require_structure,
+        bb_extreme_buy=bb_extreme_buy,
+        bb_extreme_sell=bb_extreme_sell,
     )
     try:
         # 清 component_factory 缓存确保策略实例重建
@@ -245,6 +262,25 @@ def main() -> None:
         help="是否要求 _when 多形态共振 (≥2 形态同时触发)。both 时各扫一遍",
     )
     parser.add_argument(
+        "--require-structure",
+        choices=["false", "true", "both"],
+        default="false",
+        help=(
+            "B 方向：_why 是否要求 structure_type≠0（禁 trend_bars 兜底）。"
+            "默认 false（保持当前 PA 行为）。both 时对比两种"
+        ),
+    )
+    parser.add_argument(
+        "--bb-extreme-buy",
+        default="0.25",
+        help="B 方向：_where buy 时 BB position 上限候选（默认 0.25，严格 0.15）",
+    )
+    parser.add_argument(
+        "--bb-extreme-sell",
+        default="0.75",
+        help="B 方向：_where sell 时 BB position 下限候选（默认 0.75，严格 0.85）",
+    )
+    parser.add_argument(
         "--top",
         type=int,
         default=10,
@@ -277,24 +313,62 @@ def main() -> None:
         when_consensus_values = [True]
     else:
         when_consensus_values = [False]
+    if args.require_structure == "both":
+        require_structure_values = [False, True]
+    elif args.require_structure == "true":
+        require_structure_values = [True]
+    else:
+        require_structure_values = [False]
+    bb_buy_values = _parse_floats(args.bb_extreme_buy)
+    bb_sell_values = _parse_floats(args.bb_extreme_sell)
 
-    # 构造组合：每个 mode × when_min_score × when_consensus 独立空间
-    # 元组: (sl, tp, tb, adx, exit, aggression, when_min_score, when_consensus)
-    combinations: List[Tuple[float, float, int, float, str, float, float, bool]] = []
-    for when_min, when_cons in itertools.product(
-        when_min_score_values, when_consensus_values
+    # 构造组合：每个 mode × when × structure × bb_extreme 独立空间
+    # 元组: (sl, tp, tb, adx, exit, agg, when_min, consensus, req_struct, bb_buy, bb_sell)
+    combinations: List[
+        Tuple[float, float, int, float, str, float, float, bool, bool, float, float]
+    ] = []
+    for when_min, when_cons, req_struct, bb_buy, bb_sell in itertools.product(
+        when_min_score_values,
+        when_consensus_values,
+        require_structure_values,
+        bb_buy_values,
+        bb_sell_values,
     ):
         if args.exit_mode in ("barrier", "both"):
             for sl, tp, tb, adx in itertools.product(
                 sl_values, tp_values, time_bars_values, adx_floor_values
             ):
                 combinations.append(
-                    (sl, tp, tb, adx, "barrier", 0.50, when_min, when_cons)
+                    (
+                        sl,
+                        tp,
+                        tb,
+                        adx,
+                        "barrier",
+                        0.50,
+                        when_min,
+                        when_cons,
+                        req_struct,
+                        bb_buy,
+                        bb_sell,
+                    )
                 )
         if args.exit_mode in ("chandelier", "both"):
             for adx, alpha in itertools.product(adx_floor_values, aggression_values):
                 combinations.append(
-                    (0.0, 0.0, 0, adx, "chandelier", alpha, when_min, when_cons)
+                    (
+                        0.0,
+                        0.0,
+                        0,
+                        adx,
+                        "chandelier",
+                        alpha,
+                        when_min,
+                        when_cons,
+                        req_struct,
+                        bb_buy,
+                        bb_sell,
+                    )
                 )
 
     total = len(combinations)
@@ -308,21 +382,23 @@ def main() -> None:
         )
         sys.exit(1)
 
-    print(f"\n{'='*100}")
+    print(f"\n{'='*116}")
     print(
         f"PA grid: tf={args.tf} {args.start}~{args.end} "
         f"({total} combinations, exit_mode={args.exit_mode})"
     )
     print(
-        f"sl={sl_values} | tp={tp_values} | time_bars={time_bars_values} | "
-        f"adx_floor={adx_floor_values} | aggression={aggression_values} | "
-        f"when_min={when_min_score_values} | consensus={when_consensus_values}"
+        f"sl={sl_values} | tp={tp_values} | tb={time_bars_values} | "
+        f"adx={adx_floor_values} | α={aggression_values} | "
+        f"when_min={when_min_score_values} | cons={when_consensus_values} | "
+        f"req_str={require_structure_values} | bb_buy={bb_buy_values} | "
+        f"bb_sell={bb_sell_values}"
     )
-    print(f"{'='*100}\n")
+    print(f"{'='*116}\n")
 
     header = (
         f"{'mode':>10} {'sl':>5} {'tp':>5} {'tb':>4} {'adx':>5} {'α':>5} "
-        f"{'wmin':>5} {'cons':>5} "
+        f"{'wmin':>5} {'cons':>5} {'rstr':>5} {'bbB':>5} {'bbS':>5} "
         f"{'trades':>7} {'WR':>7} {'PnL':>10} {'PF':>6} "
         f"{'Sharpe':>8} {'MaxDD':>7} {'Gate':>22}"
     )
@@ -339,9 +415,11 @@ def main() -> None:
         aggression,
         when_min,
         when_cons,
+        req_struct,
+        bb_buy,
+        bb_sell,
     ) in combinations:
         try:
-            # CHANDELIER mode: sl/tp/tb 不影响 ExitSpec，但仍传入以便复用 _patch_pa
             sl_use = sl_atr if exit_mode == "barrier" else 1.5
             tp_use = tp_atr if exit_mode == "barrier" else 2.5
             tb_use = time_bars if exit_mode == "barrier" else 20
@@ -357,6 +435,9 @@ def main() -> None:
                 aggression=aggression,
                 when_min_score=when_min,
                 when_consensus=when_cons,
+                require_structure=req_struct,
+                bb_extreme_buy=bb_buy,
+                bb_extreme_sell=bb_sell,
             )
             summary = _summarize(data)
             summary.update(
@@ -369,16 +450,21 @@ def main() -> None:
                     "aggression": aggression,
                     "when_min_score": when_min,
                     "when_consensus": when_cons,
+                    "require_structure": req_struct,
+                    "bb_extreme_buy": bb_buy,
+                    "bb_extreme_sell": bb_sell,
                 }
             )
             summary["gate"] = _evaluate_promotion_gate(summary)
             results.append(summary)
             cons_str = "Y" if when_cons else "N"
+            rstr_str = "Y" if req_struct else "N"
             print(
                 f"{exit_mode:>10} "
                 f"{sl_atr:>5.2f} {tp_atr:>5.2f} {time_bars:>4d} "
                 f"{adx_floor:>5.1f} {aggression:>5.2f} "
-                f"{when_min:>5.2f} {cons_str:>5} "
+                f"{when_min:>5.2f} {cons_str:>5} {rstr_str:>5} "
+                f"{bb_buy:>5.2f} {bb_sell:>5.2f} "
                 f"{summary['total_trades']:>7d} "
                 f"{summary['win_rate_pct']:>6.1f}% "
                 f"{summary['pnl']:>+10.2f} "
@@ -389,10 +475,12 @@ def main() -> None:
             )
         except Exception as exc:
             cons_str = "Y" if when_cons else "N"
+            rstr_str = "Y" if req_struct else "N"
             print(
                 f"{exit_mode:>10} {sl_atr:>5.2f} {tp_atr:>5.2f} "
                 f"{time_bars:>4d} {adx_floor:>5.1f} {aggression:>5.2f} "
-                f"{when_min:>5.2f} {cons_str:>5} FAILED: {exc}"
+                f"{when_min:>5.2f} {cons_str:>5} {rstr_str:>5} "
+                f"{bb_buy:>5.2f} {bb_sell:>5.2f} FAILED: {exc}"
             )
 
     if not results:
