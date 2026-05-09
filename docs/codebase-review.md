@@ -230,6 +230,62 @@ C 方向数据证实 PA 核心问题不在出场，**在 _when 入场过密 + _w
 2. 或放弃 PA 当前评分函数，重写 Why-When-Where
 3. 或转向 mined_rule 通道（catalog.register_mined_rule_strategies）作为第二验证对象
 
+### A 方向 1y 验证（决定性数据）
+
+`pa_barrier_grid` 1y M15 跑 consensus=N vs Y（CHANDELIER α=0.5）：
+
+| consensus | trades | WR | PnL | **PF** | **DD** |
+|---|---|---|---|---|---|
+| N (default) | 1105 | 32.9% | -1947 | **0.31** | 98.45% |
+| **Y** | 496 (-55%) | 30.6% (**反降 2.3pp**) | -1741 | **0.30** | 88.15% |
+
+**惊人结论 — A 方向也失败**：
+
+1月 consensus=Y 看似 PF 0.55 / DD 12.76% / WR 39.2% 的"显著有效"在 1y 上完全消失：
+- PF 0.31 → 0.30（**几乎相同**，无统计意义改善）
+- WR 32.9% → 30.6%（**反而下降**）
+- DD 98.45% → 88.15%（仍然接近爆仓）
+- Trades -55%（仅是降低密度，质量没改善）
+
+**1 月数据是 sample size 偶然**（51 trades 不足以稳定估计 PF）。在 1y 上 consensus=Y
+本质就是 **noop with -55% trades** —— 把 PA 的"低质量信号"按比例砍掉一半，但
+留下的 Y/N 共识信号 PF 跟随机一样差。
+
+### 最终结论：**ABCD 全部失败**
+
+| 方向 | 1y 实测 PF | 1y 实测 DD | 决断 |
+|---|---|---|---|
+| BARRIER baseline | 0.285 | 98.81% | 不达标（plan §R1） |
+| C Chandelier | 0.31 | 98.45% | +9% 远不够 |
+| A consensus=Y (1y) | **0.30** | **88.15%** | **1月幻觉，1y 失败** |
+| B require_structure=Y | 0 trades | – | binary cliff |
+| B bb_extreme 严格 | noop | – | _where 软门控 |
+| D tick_features filter | 回测 noop | – | live 才能测 |
+
+**PA 当前实现的 _why-When-Where 评分函数在 M15 上 PF 上限 ≈ 0.31**。
+没有任何参数搜索 / 出场切换 / 共振过滤能让 PF 达到 1.0。
+
+### 决策树（开市前必做）
+
+**选项 1：完全重写 PA 评分核**（高成本高产出）
+- _why：从"structure or trend_bars" 改为 multi-condition vetting
+  （要求 ATR 在合理区间 + ADX > 18 + price 在 EMA50 同侧）
+- _when：要求 K 线形态 **+** body_ratio > 1.0 **+** close_pos 极端
+- _where：BB 位置 + Keltner 同向 hard veto
+- 预期 trades 50-200/year，WR 45%+
+
+**选项 2：放弃 PA，转 mined_rule 通道**（中成本，依赖挖掘产出）
+- `python -m src.ops.cli.mining_runner --tf M15,M30,H1` 跑历史挖掘
+- `catalog.register_mined_rule_strategies` 把 promotable spec 注入回测验证
+- 用挖掘产出替代 PA 作为信号轨主策略
+
+**选项 3：把 PA 降级为"训练样本生成器"**（低成本，备选）
+- 保留 PA candidate 状态不动
+- 只用 PA 信号 + 实际 trade 结果作为 mining feature 候选
+- 主信号轨等待 mined_rule / 选项 1 重写产出
+
+数据已经清楚：**继续在当前 PA 框架上参数调优是错的方向**。
+
 ---
 
 ## 0zk. 2026-05-09 tick-derived recovery 落地后的全量审查 + 文档同步
