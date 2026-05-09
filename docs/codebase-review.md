@@ -180,6 +180,56 @@ C 方向数据证实 PA 核心问题不在出场，**在 _when 入场过密 + _w
 
 是否能跨过 1.0 门槛要数据来定，但**结构性问题集中在 _why/_where 兜底过宽**已经是数据共识。
 
+### B 方向实测：require_structure / bb_extreme 真实效果
+
+工具补齐：`pa_barrier_grid` 加 `--require-structure {false,true,both}` + `--bb-extreme-buy/sell` 候选。
+
+16 组合 1 月数据（CHANDELIER α=0.5, when_min=0.5, 全 cons × req_struct × bb 矩阵）：
+
+| consensus | req_struct | bb_buy | bb_sell | trades | PF |
+|---|---|---|---|---|---|
+| N | N | 0.25 | 0.75 | 93 | 0.46 |
+| N | N | 0.15 | 0.85 | 94 | 0.45 |
+| N | **Y** | 任意 | 任意 | **0** | **0.00** |
+| Y | N | 0.25 | 0.75 | 51 | 0.55 |
+| Y | N | 0.15 | 0.85 | 51 | 0.55 |
+| Y | **Y** | 任意 | 任意 | **0** | **0.00** |
+
+**关键修正发现**：
+
+1. **`require_structure=Y` 让 PA 完全沉默**（所有 8 组合都 0 trades）
+   原因：M15 上 `structure_type=0` 是常态（HH+HL 形成需要更长窗口），1167 trades/1y
+   全靠 `trend_bars` 兜底产生。禁用 trend_bars 兜底 = PA 不再交易。
+
+2. **`bb_extreme` 严格化几乎无影响**（93 vs 94 trades 差 1）
+   原因：`_where` 是软门控（位置不达标返回 score 0~0.2，不阻断方向决策）。
+   降低 `_bb_extreme` 阈值只让 `channel_low/high` 评分更严，对入场计数无效。
+
+**结论**：B 方向当前实现下是 **binary cliff（require_structure）+ noop（bb_extreme）**，
+不能通过参数搜索改进。要让 B 真正生效需要 **PA 内核改动**：
+
+- `_where` 改 hard veto（增加 `_require_extreme_zone` 类变量，不达标直接返回 hold）
+- `_why` 改渐进 trend_bars 阈值（如 `_min_trend_bars=5`，仅在 trend 足够长时才用 trend_bars 兜底）
+
+### 当前 ABCD 综合数据（截至本轮结束）
+
+| 方向 | 数据 | 结论 |
+|---|---|---|
+| BARRIER 1y baseline | 1167 / 26.7% / **PF 0.285** / DD 98.81% | 不达标 |
+| C Chandelier 1y | 1105 / 32.9% / **PF 0.31** / DD 98.45% | +9%（远不够） |
+| A consensus=Y 1月 | 51 / 39.2% / **PF 0.55** / DD 12.76% | 最有效 leverage |
+| A consensus=Y 1y | 后台跑中 | 验证泛化性 |
+| B require_structure=Y | 0 trades | binary cliff（不可行） |
+| B bb_extreme 严格化 | trades 差 1 | _where 软门控（noop） |
+| D tick_features filter | 回测 noop | 等 live runtime 测 |
+
+**真相**：PA 的入场质量 **结构性过差**。参数搜索 + consensus 改进有限（最高 PF ~0.55）。
+要让 PA 越过 PF 1.0 门槛必须做：
+
+1. PA 内核改动（_why 渐进 trend_bars / _where hard veto）
+2. 或放弃 PA 当前评分函数，重写 Why-When-Where
+3. 或转向 mined_rule 通道（catalog.register_mined_rule_strategies）作为第二验证对象
+
 ---
 
 ## 0zk. 2026-05-09 tick-derived recovery 落地后的全量审查 + 文档同步
