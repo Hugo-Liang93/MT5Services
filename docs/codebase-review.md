@@ -1,9 +1,66 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-05-09
+> 最近更新：2026-05-09 (晚)
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
+
+---
+
+## 0zl. 2026-05-09 (晚) 休市期回测验证：PA 1y baseline 数据落地 + research-mode 工具链补齐
+
+### 触发
+
+休市期推进 plan T2/T3/T6/N2 收尾后，按 §三 推荐路径跑 baseline 工具链验证。
+发现 backtest_runner 默认会被 ADR-009 deployment gate 排除 CANDIDATE 状态策略
+（PA 当前状态），导致整套 backtest_routes / pa_barrier_grid 在 research 路径下
+拿到 0 trades——这与 plan §R1 描述的"PA 是回测系统唯一活跃策略但本身不达标"
+事实链相互验证。
+
+### 收口
+
+1. **新增 `backtest_runner --research-mode AUDIT_REASON` 参数**
+   ([src/ops/cli/backtest_runner.py](src/ops/cli/backtest_runner.py))：
+   - 显式构造 `BacktestDeploymentGate.research_disabled(audit_reason=...)` 注入到 BacktestEngine
+   - 保留 ADR-009 traceability（required audit_reason）
+   - 不影响默认 production backtest 行为（gate 仍默认拒 CANDIDATE）
+
+2. **`pa_barrier_grid` 自动启用 research_mode**：grid scan 是研究路径，
+   内部调 _run_single 时强制传 `research_mode_audit_reason=...`，无需用户额外配参数。
+
+3. **PA 1y baseline 实测（落地为事实）**（`data/research/pa_baseline_m15_2026-05-09.json`）：
+
+   | 指标 | M15 (2025-04-01 ~ 2026-04-30) |
+   |---|---|
+   | Trades | 1167 |
+   | Win rate | 26.7% |
+   | PnL | −1954.57 |
+   | PF | 0.285 |
+   | Max DD | **98.81%** |
+   | Sharpe | −5.80 |
+   | Sortino | −5.82 |
+   | Calmar | −0.09 |
+
+   完全验证 plan §R1 的 "PF 0.29 / DD 99%" 描述。PA 当前默认参数
+   (sl=1.5/tp=2.5/tb=20/adx=12) 在 1y M15 上严重亏损。
+
+### 影响
+
+- ADR-009 默认严格性保留（live 路径不变）
+- research / grid path 显式启用 audit_reason 后绕过（traceability 保留）
+- PA candidate 状态的事实数据有了（plan §R1 不再是"未验证"，而是"已验证为事实"）
+
+### 后续行动
+
+1. PA grid 实跑（task b4fh632xu 后台进行中，36 组合 × 4 月数据）→ 找 promotable 组合
+2. 若 grid 找不到 promotable → PA Why-When-Where 评分函数本身需要重设计（不是单参数搜索能解决）
+3. 若 grid 找到 → 写入 `signal.local.ini [strategy_params.M15]` + 启动 demo validation
+
+### 验证
+
+- pytest 446 passed (tests/backtesting + tests/ops 子集)
+- backtest_runner --help 显示 `--research-mode` 参数
+- PA grid 1 组合 smoke 跑通：97 trades / PF 0.39 / DD 27% (1 月数据，与 1y 趋势一致)
 
 ---
 
